@@ -3,17 +3,17 @@ Script to remove unneeded images from Docker.
 
 This project was created to automate the deletion of unused Compute Environments in Domino's Docker registry using Skopeo, and builds upon an existing script that was written to migrate all images from one registry to another.
 
-Over time, Domino has stored Compute Environments in Docker with two naming conventions:
+Domino stores Compute Environments in Docker with two naming conventions:
 `<server>:5000/domino-<computeEnvironmentId>:<revision>`
-and
+is an older format and
 `<server>5000/dominodatalab/environment:<computeEnvironmentId>-<revision>`
+is found in newer Domino instances. 
+If a Domino instance has upgraded over time, older environment revisions may have the first format, while newer revisions may have the second.
 
-Because these naming conventions differ (in one, the tag is the revision number, while the other combines the Compute Environment's ID with the revision number), we need two different methods to list and delete the tags for any one environment.
+Because these naming conventions differ (in one, the tag is just the revision number, while in the other, the tag is the Compute Environment's ID and the revision number), we need two different methods to list and delete the tags for any one environment.
 
 If you know your environment images are all in one repository (on a newer instance, or one that never adopted the newer naming convention), consider commenting out the sections of code that relate to the other naming convention, for speed and reliability.
 
-### Note:
-If a Domino instance has upgraded over time, older environment revisions may have the first format, while newer revisions may have the latter.
 
 # Usage
 The script needs three things to run:
@@ -51,6 +51,7 @@ For `domino-<environmentId>`:
 * Queries Docker for a list of tags in the `domino-<environmentId>` repository and writes them to `./tags/domino-<environmentId>`.
 * Removes any tags from `./tags/domino-<environmentId>` that should be retained.
 
+Then:
 * The script enables deletion of Docker images (disabled by default, for security).
 * The script iterates over `revisions_to_delete` and deletes each tag from `dominodatalab/environment`.
 * For each environment in `environments`, the script iterates over `./tags/domino-<environmentId>` and deletes each tag from `domino-<environmentId>`.
@@ -58,9 +59,13 @@ For `domino-<environmentId>`:
 * The script disables deletion of Docker images again.
 * The script deletes the Skopeo pod.
 
+### Note:
+The `skopeo delete` commands are intentionally commented out to allow you to check the contents of `revisions_to_delete` and `./tags/domino-<environmentId>` before committing to deleting anything.
+Once you are happy to go, uncomment these lines.
+
 # Known Issues
 * If you run `skopeo list-tags` against a Docker repository that doesn't exist, it will crash the script.
+This can cause issues listing tags for `domino-<environmentId>`, so a check was added to allow commenting out environment IDs in `environments`.
+and code relating to `domino-<environmentId>` will skip any environments that are commented out.
 
-This doesn't matter for `dominodatalab/environment`, but it can cause issues listing tags for `domino-<environmentId>`.
-For this reason, a check was added to allow commenting out environment IDs in `environments`.
-Code blocks relating to `domino-<environmentId>` will skip any environments that are commented out, but any code relating to `dominodatalab/environment` will ignore these comments.
+* If you have no environment revisions in `dominodatalab/environment`, or the repository doesn't exist at all, comment out the two code blocks that list and delete tags in it.
