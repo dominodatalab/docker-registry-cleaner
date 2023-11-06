@@ -6,6 +6,14 @@ else
   PASSWORD=$1
 fi
 
+# GNU Sed and MacOS Sed have different options
+# Detect when running on Mac and adjust accordingly
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  SEDOPTION='-i \x27\x27'
+else
+  SEDOPTION='-i'
+fi
+
 
 echo "Creating Skopeo pod"
 kubectl apply -f pod.yaml
@@ -52,7 +60,7 @@ while read environment; do
       # If so, remove it from revisions_to_delete
       if [[ $tag == "$environmentId-${array[$i]}" ]]; then
         echo "Found tag $tag in Environments file"
-        sed -i '' -e "/^${tag}$/d" revisions_to_delete
+        sed $SEDOPTION -e "/^${tag}$/d" revisions_to_delete
       fi
     done < revisions_to_delete
     ((i++))
@@ -80,11 +88,12 @@ while read environment; do
         # If so, remove it from ./tags/<environment> file
         if [[ $tag == ${array[$i]} ]]; then
           echo "$tag matches a revision to retain– removing from file"
-          sed -i '' -e "/^${tag}$/d" ./tags/domino-$environmentId
+          sed $SEDOPTION -e "/^${tag}$/d" ./tags/domino-$environmentId
         fi
       done < ./tags/domino-$environmentId
       ((i++))
     done
+    sed $SEDOPTION -e "/^buildcache$/d" ./tags/domino-$environmentId
   fi
 done < ./environments
 
@@ -97,7 +106,7 @@ kubectl wait --for=condition=Ready -n domino-platform pod/docker-registry-0
 # Delete revisions from /dominodatalab/environment
 while read revision_to_delete; do
   echo "Deleting docker-registry:5000/dominodatalab/environment:${revision_to_delete}"
-#  kubectl exec -it quay.io/skopeo/stable:latest -- skopeo delete --tls-verify=false --creds=domino-registry:$PASSWORD docker://docker-registry:5000/dominodatalab/environment:${revision_to_delete}
+#  kubectl exec -i -n domino-platform skopeo -- skopeo delete --tls-verify=false --creds domino-registry:$PASSWORD docker://docker-registry:5000/dominodatalab/environment:${revision_to_delete}
 done < revisions_to_delete
 
 # Delete revisions from /domino-<environmentId>
@@ -107,7 +116,7 @@ while read environment; do
   if [[ -f ./tags/domino-$environmentId ]] && [[ `wc -l ./tags/domino-$environmentId | awk '{print $1}'` -ge "1" ]]; then
     while read revision_to_delete; do
       echo "Deleting docker-registry:5000/domino-$environmentId:${revision_to_delete}"
-#      kubectl exec -it quay.io/skopeo/stable:latest -- skopeo delete --tls-verify=false --creds=domino-registry:$PASSWORD docker://docker-registry:5000/domino-$environmentId:${revision_to_delete}
+#      kubectl exec -i -n domino-platform skopeo -- skopeo delete --tls-verify=false --creds domino-registry:$PASSWORD docker://docker-registry:5000/domino-$environmentId:${revision_to_delete}
     done < ./tags/domino-$environmentId
     mv ./tags/domino-$environmentId  ./tags/done/domino-$environmentId
   fi
