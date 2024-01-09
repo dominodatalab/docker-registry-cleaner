@@ -83,6 +83,7 @@ if "--registry-url" in sys.argv:
         registry_url = sys.argv[index]
     else:
         print("Error: Missing value for --registry-url")
+        print_help()
         sys.exit(1)
 
 if "--repository-name" in sys.argv:
@@ -91,6 +92,7 @@ if "--repository-name" in sys.argv:
         repository_name = sys.argv[index]
     else:
         print("Error: Missing value for --repository-name")
+        print_help()
         sys.exit(1)
 
 if "--registry-url" in sys.argv and "--repository-name" in sys.argv:
@@ -98,6 +100,7 @@ if "--registry-url" in sys.argv and "--repository-name" in sys.argv:
 else:
     #images_start_index = 1
     print("Error: Both --registry-url and --repository-name are required")
+    print_help()
     sys.exit(1)
 
 if len(sys.argv) > images_start_index:
