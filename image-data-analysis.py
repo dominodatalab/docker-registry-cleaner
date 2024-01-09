@@ -96,11 +96,14 @@ if "--repository-name" in sys.argv:
 if "--registry-url" in sys.argv and "--repository-name" in sys.argv:
     images_start_index = sys.argv.index("--repository-name") + 2
 else:
-    images_start_index = 1
+    #images_start_index = 1
+    print("Error: Both --registry-url and --repository-name are required")
+    sys.exit(1)
 
 if len(sys.argv) > images_start_index:
     images = sys.argv[images_start_index:]
 else:
+    print("No images provided, scanning default images...")
     images = ["environment", "model"]
 
 if "-h" in sys.argv or "--help" in sys.argv:
