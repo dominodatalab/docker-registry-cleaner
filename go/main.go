@@ -9,7 +9,7 @@ import (
 
 const envName = "stevel33582"
 
-var repoNames = []string{"environment" /*, "model"*/}
+var repoNames = []string{"environment", "model"}
 
 type ImageData struct {
 	Name          string            `json:"Name"`
