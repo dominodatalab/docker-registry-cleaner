@@ -30,16 +30,27 @@ def filter_images_by_registry(images, registry):
 def remove_prefix(tag, prefix):
     return tag.replace(prefix, "").split(":")[1]
 
-def save_to_file(data, output_file):
-    with open(output_file, "w") as file:
-        file.write(data)
+
+def save_to_file(table_data, json_data, output_file):
+    # Convert sets to lists in the JSON data
+    json_data_copy = json_data.copy()
+    for tag, info in json_data_copy.items():
+        info['pods'] = list(info['pods'])
+
+    # Save console table format to txt file
+    with open(output_file + ".txt", "w") as file:
+        file.write(table_data)
+
+    # Save JSON format to json file
+    with open(output_file + ".json", "w") as json_file:
+        json.dump(json_data_copy, json_file, indent=2)
 
 def main():
     registry_url = "946429944765.dkr.ecr.us-west-2.amazonaws.com/stevel3358"
     prefix_to_remove = "946429944765.dkr.ecr.us-west-2.amazonaws.com/stevel3358/"
     target_namespace = "domino-compute"
     pod_name_prefixes = ["model-", "run-"]
-    output_file = "workload-report.txt"
+    output_file = "workload-report"
 
     image_tags = defaultdict(lambda: {'pods': set(), 'count': 0, 'labels': []})
 
@@ -94,8 +105,8 @@ def main():
     table = tabulate(rows, headers=headers, tablefmt="grid")
     print(table)
 
-    save_to_file(table, output_file)
-    print(f"Results saved to {output_file}")
+    save_to_file(table, image_tags, output_file)
+    print(f"Results saved to {output_file}.txt and {output_file}.json")
+
 if __name__ == "__main__":
     main()
-
