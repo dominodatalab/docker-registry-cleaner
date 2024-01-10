@@ -82,14 +82,14 @@ def main():
                 except subprocess.CalledProcessError as e:
                     print(f"Error retrieving container images for {pod}: {e}")
 
-    headers = ["Tag", "Pod Names", "Count", "Pod Labels"]
+    headers = ["Tag", "Num of Pods", "Pods Info"]
     rows = []
 
     for tag, info in image_tags.items():
         pod_names = ', '.join(info['pods'])
         count = info['count']
         labels_str = json.dumps(info['labels'], indent=2)
-        rows.append([tag, pod_names, count, labels_str])
+        rows.append([tag, count, labels_str])
 
     table = tabulate(rows, headers=headers, tablefmt="grid")
     print(table)

@@ -1,27 +1,36 @@
-+---------------------------------------------------+------------------------------------------------------------------------+---------+---------------------------------------------------------------------+
-| Tag                                               | Pod Names                                                              |   Count | Pod Labels                                                          |
-+===================================================+========================================================================+=========+=====================================================================+
-| 659d755348824d102d3ec6df-v1-202419163323_HfGeD8Ia | model-659d755348824d102d3ec6e0-6d67f98765-9rxnl                        |       1 | [                                                                   |
-|                                                   |                                                                        |         |   {                                                                 |
-|                                                   |                                                                        |         |     "Pod Name": "model-659d755348824d102d3ec6e0-6d67f98765-9rxnl",  |
-|                                                   |                                                                        |         |     "dominodatalab.com/project-name": "quick-start",                |
-|                                                   |                                                                        |         |     "dominodatalab.com/project-owner-username": "integration-test", |
-|                                                   |                                                                        |         |     "dominodatalab.com/workload-type": "ModelAPI"                   |
-|                                                   |                                                                        |         |   }                                                                 |
-|                                                   |                                                                        |         | ]                                                                   |
-+---------------------------------------------------+------------------------------------------------------------------------+---------+---------------------------------------------------------------------+
-| 659c516f24a4aa48d5365374-1                        | run-659eaef1e63dbc67d664a567-c2fzf, run-659ead94e63dbc67d664a553-8jngh |       2 | [                                                                   |
-|                                                   |                                                                        |         |   {                                                                 |
-|                                                   |                                                                        |         |     "Pod Name": "run-659ead94e63dbc67d664a553-8jngh",               |
-|                                                   |                                                                        |         |     "dominodatalab.com/project-name": "test-yass",                  |
-|                                                   |                                                                        |         |     "dominodatalab.com/project-owner-username": "integration-test", |
-|                                                   |                                                                        |         |     "dominodatalab.com/workload-type": "Workspace"                  |
-|                                                   |                                                                        |         |   },                                                                |
-|                                                   |                                                                        |         |   {                                                                 |
-|                                                   |                                                                        |         |     "Pod Name": "run-659eaef1e63dbc67d664a567-c2fzf",               |
-|                                                   |                                                                        |         |     "dominodatalab.com/project-name": "test-yass",                  |
-|                                                   |                                                                        |         |     "dominodatalab.com/project-owner-username": "integration-test", |
-|                                                   |                                                                        |         |     "dominodatalab.com/workload-type": "Workspace"                  |
-|                                                   |                                                                        |         |   }                                                                 |
-|                                                   |                                                                        |         | ]                                                                   |
-+---------------------------------------------------+------------------------------------------------------------------------+---------+---------------------------------------------------------------------+
++---------------------------------------------------+---------------+---------------------------------------------------------------------+
+| Tag                                               |   Num of Pods | Pods Info                                                           |
++===================================================+===============+=====================================================================+
+| 659d755348824d102d3ec6df-v1-202419163323_HfGeD8Ia |             1 | [                                                                   |
+|                                                   |               |   {                                                                 |
+|                                                   |               |     "Pod Name": "model-659d755348824d102d3ec6e0-6d67f98765-9rxnl",  |
+|                                                   |               |     "dominodatalab.com/project-name": "quick-start",                |
+|                                                   |               |     "dominodatalab.com/project-owner-username": "integration-test", |
+|                                                   |               |     "dominodatalab.com/workload-type": "ModelAPI"                   |
+|                                                   |               |   }                                                                 |
+|                                                   |               | ]                                                                   |
++---------------------------------------------------+---------------+---------------------------------------------------------------------+
+| 659c516f24a4aa48d5365374-1                        |             2 | [                                                                   |
+|                                                   |               |   {                                                                 |
+|                                                   |               |     "Pod Name": "run-659ead94e63dbc67d664a553-8jngh",               |
+|                                                   |               |     "dominodatalab.com/project-name": "test-yass",                  |
+|                                                   |               |     "dominodatalab.com/project-owner-username": "integration-test", |
+|                                                   |               |     "dominodatalab.com/workload-type": "Workspace"                  |
+|                                                   |               |   },                                                                |
+|                                                   |               |   {                                                                 |
+|                                                   |               |     "Pod Name": "run-659eaef1e63dbc67d664a567-c2fzf",               |
+|                                                   |               |     "dominodatalab.com/project-name": "test-yass",                  |
+|                                                   |               |     "dominodatalab.com/project-owner-username": "integration-test", |
+|                                                   |               |     "dominodatalab.com/workload-type": "Workspace"                  |
+|                                                   |               |   }                                                                 |
+|                                                   |               | ]                                                                   |
++---------------------------------------------------+---------------+---------------------------------------------------------------------+
+| 659c7bce85f6381e675bb205-1                        |             1 | [                                                                   |
+|                                                   |               |   {                                                                 |
+|                                                   |               |     "Pod Name": "run-659ecaf8e63dbc67d664a57c-kvjmn",               |
+|                                                   |               |     "dominodatalab.com/project-name": "test-ben",                   |
+|                                                   |               |     "dominodatalab.com/project-owner-username": "integration-test", |
+|                                                   |               |     "dominodatalab.com/workload-type": "Workspace"                  |
+|                                                   |               |   }                                                                 |
+|                                                   |               | ]                                                                   |
++---------------------------------------------------+---------------+---------------------------------------------------------------------+
