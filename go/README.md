@@ -1,11 +1,9 @@
 # Docker Layer Analyzer
 
-**Warning:** This is a sample program of a _proof-of-concept_ type not intended for any productional use. 
+**Warning:** This is a sample program of a proof-of-concept type not intended for any productional use. 
 
 This utility fetches image information from a set of Docker repositories and reports the size of their constituent 
 layers as well as a frequency of their use.
-
-The Domino environment is currently hardcoded to `stevel33582`.
 
 ## How to use
 
@@ -26,13 +24,21 @@ aws ecr get-login-password --region us-west-2 | skopeo login \
     946429944765.dkr.ecr.us-west-2.amazonaws.com
 ```
 
-(You may also need to login to docker using the same method; simply replace `skopeo` to `docker` )
-
 * Run the program:
 
 ```
-    ./docker-registry-cleaner
+./docker-registry-cleaner layers|images <docker-registry-address> <domino-environment>
 ```
 
-It's not really a "cleaner", the name is confusing. The program will run for a minute and then
-print some useful information on stdout.
+* **layers** - Will list all the layers (sorted by use and size) and image tags for each layer.
+* **images** - Will list all the images and layers information for each image. 
+
+The output will be formatted as json. Redirect stderr to `/dev/null` to hide logging.
+
+For example, these are valid arguments:
+```
+./docker-registry-cleaner layers 946429944765.dkr.ecr.us-west-2.amazonaws.com stevel33582 2>/dev/null
+```
+
+(It's not really a "cleaner", the name is confusing. The program will run for a minute and then
+print some useful information on stdout.)

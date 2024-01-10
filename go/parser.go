@@ -7,10 +7,8 @@ import (
 	"os/exec"
 )
 
-const dockerHost = "946429944765.dkr.ecr.us-west-2.amazonaws.com"
-
-func readTags(envName string, repoName string) ([]string, error) {
-	registry := fmt.Sprintf("docker://%s/%s/%s", dockerHost, envName, repoName)
+func readTags(repoName string) ([]string, error) {
+	registry := fmt.Sprintf("docker://%s/%s/%s", dockerAddress, envName, repoName)
 	cmd := exec.Command("skopeo", "list-tags", registry)
 	log.Printf("Executing '%s'\n", cmd)
 	stdout, err := cmd.StdoutPipe()
@@ -33,11 +31,11 @@ func readTags(envName string, repoName string) ([]string, error) {
 	return tagList.Tags, nil
 }
 
-func readImageData(envName string, repoName string, tag string) (ImageData, error) {
-	registry := fmt.Sprintf("docker://%s/%s/%s:%s", dockerHost, envName, repoName, tag)
+func readImageData(repoName string, tag string) (SkopeoImageData, error) {
+	registry := fmt.Sprintf("docker://%s/%s/%s:%s", dockerAddress, envName, repoName, tag)
 	cmd := exec.Command("skopeo", "inspect", registry)
 	log.Printf("Executing '%s'\n", cmd)
-	var image ImageData
+	var image SkopeoImageData
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return image, err
