@@ -116,21 +116,24 @@ for image in images:
 # Merge tables based on layer ID
 merged_table = merge_tables(image_tables)
 
-# Prepare merged table for tabulate
+# Sort the merged table based on layer size
+sorted_table = dict(sorted(merged_table.items(), key=lambda x: x[1]['size'], reverse=True))
+
+# Prepare sorted table for tabulate
 headers = ["Layer ID", "Layer size (bytes)", "Total Size (bytes)", "Tag Count", "Tags"]
 rows = []
 
-for layer_id, info in merged_table.items():
+for layer_id, info in sorted_table.items():
     tag_count = len(info['tags'])
     ind_layer_size = '{:.0f}'.format(info['size'] / tag_count if tag_count > 0 else 0)
     rows.append((layer_id, ind_layer_size, info['size'], tag_count, ', '.join(info['tags'])))
 
-# Print merged table
+# Print sorted table
 print(tabulate(rows, headers=headers, tablefmt="grid"))
 
-# Save merged table to a file
+# Save sorted table to a file
 output_file = os.path.join(output_dir, "images_report.txt")
 with open(output_file, "w") as file:
     file.write(tabulate(rows, headers=headers, tablefmt="grid"))
 
-print(f"Merged results saved to {output_file}")
+print(f"Merged and sorted results saved to {output_file}")
