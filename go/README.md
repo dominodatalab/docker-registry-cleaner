@@ -30,10 +30,10 @@ aws ecr get-login-password --region us-west-2 | skopeo login \
 ./docker-registry-cleaner layers|images <docker-registry-address> <domino-environment>
 ```
 
-* **layers** - Will list all the layers (sorted by use and size) and image tag for each layer.
+* **layers** - Will list all the layers (sorted by use and size) and image tags for each layer.
 * **images** - Will list all the images and layers information for each image. 
 
-The output will be formatted as json. Redirect stderr to /dev/null to hide logging.
+The output will be formatted as json. Redirect stderr to `/dev/null` to hide logging.
 
 For example, these are valid arguments:
 ```
