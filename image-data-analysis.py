@@ -17,7 +17,6 @@ def print_help():
     print("Example: python image-data-analysis.py --registry-url <registry_url> --repository-name <repository_name> environment model")
 
 def get_image_info(registry_url, repository_name, image, output_dir):
-    print(f"Report for {image} images:")
     layers_info = defaultdict(lambda: {'size': 0, 'tags': set()})
 
     try:
@@ -37,31 +36,12 @@ def get_image_info(registry_url, repository_name, image, output_dir):
                 layers_info[layer_id]['size'] += layer_size
                 layers_info[layer_id]['tags'].add(tag)
 
-        print("\r----------------------------------")
-
-        sorted_layers = sorted(layers_info.items(), key=lambda x: x[1]['size'], reverse=True)
-        
-        headers = ["Layer ID", "Layer size (bytes)", "Total Size (bytes)", "Tag Count", "Tags"]
-        rows = []
-        
-        for layer_id, info in sorted_layers:
-            layer_info = layers_info[layer_id]
-            tag_count = len(info['tags'])
-
-            ind_layer_size = '{:.0f}'.format(layer_info['size'] / tag_count if tag_count > 0 else 0)
-    
-            rows.append((layer_id, ind_layer_size, info['size'], tag_count, ', '.join(info['tags'])))
-        
-        print(tabulate(rows, headers=headers, tablefmt="grid"))
-        
-        # Save to a file
-        output_file = os.path.join(output_dir, f"{image}_report.txt")
-        with open(output_file, "w") as file:
-            file.write(tabulate(rows, headers=headers, tablefmt="grid"))
+        return layers_info
 
     except subprocess.CalledProcessError:
         print(f"Failed to retrieve information for image: {image}")
         print("----------------------------------")
+        return None
 
 def show_spinner():
     spinner = "|/-\\"
@@ -73,6 +53,18 @@ def show_spinner():
     sys.stdout.write("\rProcessing... Done!\n")
     sys.stdout.flush()
 
+def merge_tables(image_tables):
+    # Merge tables based on layer ID
+    merged_table = defaultdict(lambda: {'size': 0, 'tags': set()})
+
+    for table in image_tables:
+        for layer_id, info in table.items():
+            merged_table[layer_id]['size'] += info['size']
+            merged_table[layer_id]['tags'].update(info['tags'])
+
+    return merged_table
+
+# Parse command line arguments
 registry_url = ""
 repository_name = ""
 output_dir = os.getcwd() 
@@ -98,11 +90,11 @@ if "--repository-name" in sys.argv:
 if "--registry-url" in sys.argv and "--repository-name" in sys.argv:
     images_start_index = sys.argv.index("--repository-name") + 2
 else:
-    #images_start_index = 1
     print("Error: Both --registry-url and --repository-name are required")
     print_help()
     sys.exit(1)
 
+# Get a list of images from the command line arguments or use default images
 if len(sys.argv) > images_start_index:
     images = sys.argv[images_start_index:]
 else:
@@ -113,8 +105,32 @@ if "-h" in sys.argv or "--help" in sys.argv:
     print_help()
     sys.exit(0)
 
+# Loop through each image and get its information
+image_tables = []
 for image in images:
-    get_image_info(registry_url, repository_name, image, output_dir)
+    image_info = get_image_info(registry_url, repository_name, image, output_dir)
+    if image_info:
+        image_tables.append(image_info)
     print()  
 
-print("All images processed.")
+# Merge tables based on layer ID
+merged_table = merge_tables(image_tables)
+
+# Prepare merged table for tabulate
+headers = ["Layer ID", "Layer size (bytes)", "Total Size (bytes)", "Tag Count", "Tags"]
+rows = []
+
+for layer_id, info in merged_table.items():
+    tag_count = len(info['tags'])
+    ind_layer_size = '{:.0f}'.format(info['size'] / tag_count if tag_count > 0 else 0)
+    rows.append((layer_id, ind_layer_size, info['size'], tag_count, ', '.join(info['tags'])))
+
+# Print merged table
+print(tabulate(rows, headers=headers, tablefmt="grid"))
+
+# Save merged table to a file
+output_file = os.path.join(output_dir, "images_report.txt")
+with open(output_file, "w") as file:
+    file.write(tabulate(rows, headers=headers, tablefmt="grid"))
+
+print(f"Merged results saved to {output_file}")
