@@ -40,11 +40,9 @@ def execute_mongo_script(namespace, host, opts, mongo_js, admin_auth):
         return ""
 
 def process_output(output):
-    # Process the output from the MongoDB script
     data = []
     for line in output.split('\n'):
         if line.strip().startswith('{'):
-            # Transform MongoDB-specific formats to standard JSON
             line = re.sub(r'ObjectId\("([^"]+)"\)', r'"\1"', line)
             line = re.sub(r'ISODate\("([^"]+)"\)', r'"\1"', line)
             try:
@@ -54,10 +52,10 @@ def process_output(output):
                 logging.warning(f"Skipping non-JSON line: {line}")
     return data
 
+
 def write_to_file(data, filename):
-    # Write the processed data to a file in a table format
     with open(filename, 'w') as file:
-        headers = ["Author ID", "Created", "Repository", "Tag", "_id"]
+        headers = ["Author ID", "Created", "Repository", "Tag", "_id", "Project Name"]
         file.write(" | ".join(headers) + "\n")
         file.write("-" * 50 + "\n")
         for record in data:
@@ -66,7 +64,8 @@ def write_to_file(data, filename):
                 str(record.get("created", "")),
                 record.get("repository", ""),
                 record.get("tag", ""),
-                str(record.get("_id", ""))
+                str(record.get("_id", "")),
+                record.get("projectName", "")
             ]
             file.write(" | ".join(row) + "\n")
 
