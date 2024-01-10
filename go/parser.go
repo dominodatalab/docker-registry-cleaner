@@ -1,0 +1,55 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"os/exec"
+)
+
+const dockerHost = "946429944765.dkr.ecr.us-west-2.amazonaws.com"
+
+func readTags(envName string, repoName string) ([]string, error) {
+	registry := fmt.Sprintf("docker://%s/%s/%s", dockerHost, envName, repoName)
+	cmd := exec.Command("skopeo", "list-tags", registry)
+	log.Printf("Executing '%s'\n", cmd)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	var tagList struct {
+		Repository string   `json:"Repository"`
+		Tags       []string `json:"Tags"`
+	}
+	if err := json.NewDecoder(stdout).Decode(&tagList); err != nil {
+		return nil, err
+	}
+	if err := cmd.Wait(); err != nil {
+		return nil, err
+	}
+	return tagList.Tags, nil
+}
+
+func readImageData(envName string, repoName string, tag string) (ImageData, error) {
+	registry := fmt.Sprintf("docker://%s/%s/%s:%s", dockerHost, envName, repoName, tag)
+	cmd := exec.Command("skopeo", "inspect", registry)
+	log.Printf("Executing '%s'\n", cmd)
+	var image ImageData
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return image, err
+	}
+	if err := cmd.Start(); err != nil {
+		return image, err
+	}
+	if err := json.NewDecoder(stdout).Decode(&image); err != nil {
+		return image, err
+	}
+	if err := cmd.Wait(); err != nil {
+		return image, err
+	}
+	return image, nil
+}
