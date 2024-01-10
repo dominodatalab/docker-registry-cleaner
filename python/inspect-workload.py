@@ -2,6 +2,8 @@ import subprocess
 import json
 from collections import defaultdict
 from tabulate import tabulate
+import sys
+import time
 
 def get_running_pods(namespace, prefix=None):
     command = f"kubectl get pods -n {namespace} -o custom-columns=:metadata.name"
@@ -30,7 +32,6 @@ def filter_images_by_registry(images, registry):
 def remove_prefix(tag, prefix):
     return tag.replace(prefix, "").split(":")[1]
 
-
 def save_to_file(table_data, json_data, output_file):
     # Convert sets to lists in the JSON data
     json_data_copy = json_data.copy()
@@ -45,6 +46,16 @@ def save_to_file(table_data, json_data, output_file):
     with open(output_file + ".json", "w") as json_file:
         json.dump(json_data_copy, json_file, indent=2)
 
+def show_spinner():
+    spinner = "|/-\\"
+    for _ in range(10): 
+        for char in spinner:
+            sys.stdout.write("\rProcessing... " + char)
+            sys.stdout.flush()
+            time.sleep(0.1)
+    sys.stdout.write("\rProcessing... Done!\n")
+    sys.stdout.flush()
+
 def main():
     registry_url = "946429944765.dkr.ecr.us-west-2.amazonaws.com/stevel3358"
     prefix_to_remove = "946429944765.dkr.ecr.us-west-2.amazonaws.com/stevel3358/"
@@ -53,7 +64,9 @@ def main():
     output_file = "workload-report"
 
     image_tags = defaultdict(lambda: {'pods': set(), 'count': 0, 'labels': []})
-
+    print("----------------------------------")
+    print(f"   Kubernetes cluster scanning")
+    print("----------------------------------")
     for prefix in pod_name_prefixes:
         running_pods = get_running_pods(target_namespace, prefix)
 
@@ -62,11 +75,15 @@ def main():
         
             for pod in running_pods:
                 try:
+                    print(f"|_ Analyzing Pod {pod}...")
+                    show_spinner()
                     images = get_container_images(pod, target_namespace)
                     filtered_images = filter_images_by_registry(images, registry_url)
         
                     for image in filtered_images:
                         clean_tag = remove_prefix(image, prefix_to_remove)
+                        print(f"  |_ Analyzing Image {clean_tag}...")
+                        show_spinner()
         
                         if clean_tag not in image_tags:
                             image_tags[clean_tag] = {
@@ -103,7 +120,7 @@ def main():
         rows.append([tag, count, labels_str])
 
     table = tabulate(rows, headers=headers, tablefmt="grid")
-    print(table)
+    #print(table)
 
     save_to_file(table, image_tags, output_file)
     print(f"Results saved to {output_file}.txt and {output_file}.json")
