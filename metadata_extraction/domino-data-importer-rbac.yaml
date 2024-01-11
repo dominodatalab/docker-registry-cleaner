@@ -1,0 +1,37 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: domino-data-importer-tmp
+  namespace: domino-platform
+rules:
+- apiGroups:
+  - ""
+  - apps
+  resources:
+  - pods
+  - pods/exec
+  - secrets
+  - statefulsets
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - pods/exec
+  verbs:
+  - create  
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: domino-data-importer-tmp
+  namespace: domino-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: domino-data-importer-tmp
+subjects:
+- kind: ServiceAccount
+  name: domino-data-importer
+  namespace: domino-platform
