@@ -16,6 +16,18 @@ def print_help():
     print("If no images are provided, the default images will be used.")
     print("Example: python image-data-analysis.py --registry-url <registry_url> --repository-name <repository_name> environment model")
 
+def add_environments(original_json):
+    transformed_json = {}
+
+    for sha256, data in original_json.items():
+        transformed_json[sha256] = {
+            "size": data["size"],
+            "tags": data["tags"],
+            "environments": [tag.split('-')[0] for tag in data["tags"]]
+        }
+
+    return transformed_json
+
 def inspect_workload(registry_url, prefix_to_remove, target_namespace, pod_name_prefixes, output_file):
     command = [
         "python3.10",
@@ -60,6 +72,37 @@ def get_image_info(registry_url, repository_name, image, output_dir):
         print("----------------------------------")
         return None
 
+def count_tags_per_layer(original_json):
+    tags_per_layer = {}
+
+    for sha256, data in original_json.items():
+        tags_per_layer[sha256] = len(data["tags"])
+
+    return tags_per_layer
+
+def extract_layers_and_sizes(original_json):
+    layers_and_sizes = {}
+
+    for sha256, data in original_json.items():
+        layers_and_sizes[sha256] = int(data["size"])
+
+    return layers_and_sizes
+
+def filter_layers_by_single_tag(original_json):
+    filtered_layers = {sha256: data for sha256, data in original_json.items() if len(data["tags"]) == 1}
+    return filtered_layers
+
+def sum_layers_by_tag(filtered_layers):
+    tag_sum_dict = {}
+    for sha256, data in filtered_layers.items():
+        for tag in data["tags"]:
+            if tag in tag_sum_dict:
+                tag_sum_dict[tag]["size"] += int(data["size"])
+            else:
+                tag_sum_dict[tag] = {"size": int(data["size"]), "environments": data["environments"]}
+
+    return tag_sum_dict
+
 def show_spinner():
     spinner = "|/-\\"
     for _ in range(10): 
@@ -97,11 +140,19 @@ def save_to_file(table_data, json_data, output_file):
     with open(output_file + ".json", "w") as json_file:
         json.dump(json_data_copy, json_file, indent=2)
 
+def save_to_json(data, output_file):
+    with open(output_file, 'w') as json_file:
+        json.dump(data, json_file, indent=2)
+
 def main():
     # Parse command line arguments
     registry_url = ""
     repository_name = ""
     final_output_file = "final-report.json"
+    tags_per_layer_output_file = "tags-per-layer.json"
+    layers_and_sizes_output_file = "layers-and-sizes.json"
+    filtered_layers_output_file = "filtered-layers.json"
+    tag_sums_output_file = "tag-sums.json"
     workload_output = "workload-report"
     output_dir = os.getcwd() 
     
@@ -140,9 +191,7 @@ def main():
     if "-h" in sys.argv or "--help" in sys.argv:
         print_help()
         sys.exit(0)
-    
-    inspect_workload("{registry_url}/{repository_name}", "{registry_url}/{repository_name}/", "domino-compute", ["model-", "run-"], workload_output)
-    
+        
     print("----------------------------------")
     print(f"   Container registry  scanning")
     print("----------------------------------")
@@ -179,42 +228,35 @@ def main():
     save_to_file(table, sorted_table, output_file)
     print(f"Merged and sorted results saved to {output_file}.txt and {output_file}.json")
 
-    # Read JSON data from the first file
-    with open(f"{output_file}.json", 'r') as file_1:
-        images_json_data = json.load(file_1)
-    
-    # Read JSON data from the second file
-    with open(f"{workload_output}.json", 'r') as file_2:
-        workload_json_data = json.load(file_2)
-    
-    # Create a dictionary to map tags to workload counts
-    tag_to_workload = {}
-    for tag, pod_info in workload_json_data.items():
-        if "count" in pod_info:
-            tag_to_workload[tag] = {
-                "count": pod_info["count"],
-                "pods": pod_info.get("pods", [])
-            }
-    
-    # Update pods key in the first JSON with counts from the second JSON
-    for tag, info in images_json_data.items():
-        info["pods"] = []
-        info["workload"] = 0
-    
-        if "tags" in info:
-            for tag_2 in info["tags"]:
-                if tag_2 in tag_to_workload:
-                    info["pods"].extend(tag_to_workload[tag_2]["pods"])
-                    info["workload"] += tag_to_workload[tag_2]["count"]
-    
-    # Convert the updated data back to JSON
-    final_json_data = json.dumps(images_json_data, indent=2)
-    
-    # Save the updated JSON to the output file
-    with open(final_output_file, 'w') as output_file:
-        output_file.write(final_json_data)
-    
+    # Read JSON data from the final output file
+    with open(f"{output_file}.json", 'r') as final_file:
+        final_json_data = json.load(final_file)
+
+    transformed_json = add_environments(final_json_data)
+
+    # Save the updated JSON with environments to the output file
+    save_to_json(transformed_json, final_output_file)
     print(f"Updated JSON data saved to: {final_output_file}")
+
+    # Get number of tags per layer
+    tags_per_layer = count_tags_per_layer(final_json_data)
+    save_to_json(tags_per_layer, tags_per_layer_output_file)
+    print(f"Tags per layer count saved to: {tags_per_layer_output_file}")
+
+    # Get size per layer
+    layers_and_sizes = extract_layers_and_sizes(final_json_data)
+    save_to_json(layers_and_sizes, layers_and_sizes_output_file)
+    print(f"Layers and sizes saved to: {layers_and_sizes_output_file}")
+
+    # Get layers with unique tag
+    filtered_layers = filter_layers_by_single_tag(transformed_json)
+    save_to_json(filtered_layers, filtered_layers_output_file)
+    print(f"Filtered layers saved to: {filtered_layers_output_file}")
+
+    # Sum the unique layers together by tag to know how much space would save if we delete the tag
+    tag_sums = sum_layers_by_tag(filtered_layers)
+    save_to_json(tag_sums, tag_sums_output_file)
+    print(f"Tag sums saved to: {tag_sums_output_file}")
 
 if __name__ == "__main__":
     main()
