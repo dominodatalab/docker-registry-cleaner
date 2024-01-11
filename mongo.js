@@ -1,11 +1,8 @@
-// connect to domino database
-use domino;
-
 db.environments_v2.aggregate([
   {
     // Match environments that are archived
     $match: {
-      isArchived: false
+      isArchived: true
     }
   },
   {
