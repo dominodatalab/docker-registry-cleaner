@@ -1,9 +1,14 @@
 db.workspace.aggregate([
+    // {
+    //     "$match": {
+    //         "state": {"$ne": "Running"}
+    //     }
+    // },
     {
         "$match": {
-            "state": {"$ne": "Deleted"}
+            "state": {"$in": ["Stopped", "Deleted"]}
         }
-    },
+    },    
     {
         "$lookup": {
             "from": "users",
@@ -51,7 +56,7 @@ db.workspace.aggregate([
                     "input": "$workspace_id",
                     "as": "item",
                     "cond": {
-                        "$eq": ["$$item.rawExecutionDisplayStatus", "Running"]
+                        "$ne": ["$$item.rawExecutionDisplayStatus", "Running"]
                     }
                 }
             }
