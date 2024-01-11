@@ -31,10 +31,15 @@ This project consists of a Python script and JavaScript files designed to extrac
      ```
      python3 extract-metadata.py workspace
      ```
+   - To run your own query:
+     ```
+     python3 extract-metadata.py yourfile.js
+     ```
    - To extract both types of data:
      ```
      python3 extract-metadata.py
      ```
+
 
 ## Output
 The script generates JSON files with extracted data:

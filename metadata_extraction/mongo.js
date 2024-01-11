@@ -51,4 +51,4 @@ db.environments_v2.aggregate([
       "projectName": 1 // Include project name in the projection
     }
   }
-]);
+]).pretty()
