@@ -1,3 +1,1 @@
 tabulate
-networkx
-matplotlib
