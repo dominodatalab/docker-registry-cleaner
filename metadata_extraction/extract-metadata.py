@@ -2,6 +2,7 @@ import argparse
 import os
 import subprocess
 import logging
+import json
 
 def setup_logging():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -25,15 +26,19 @@ def get_admin_auth(namespace):
     cmd = f"kubectl get secret -n {namespace} -o go-template=\"{{{{ printf \\\"%s:%s\\\" (.data.user | base64decode) (.data.password | base64decode) }}}}\" mongodb-replicaset-admin"
     return run_command(cmd)
 
+
 def execute_mongo_script(namespace, host, opts, mongo_js, admin_auth):
     output_file = mongo_js.rsplit('.', 1)[0] + "_output.json"
     mongo_cmd = f"kubectl exec -it -n {namespace} mongodb-replicaset-0 -c mongodb-replicaset -- mongo --quiet mongodb://{admin_auth}@{host}:27017/domino?{opts} < {mongo_js} 2>/dev/null"
     try:
+        output_data = []
+        process = subprocess.Popen(mongo_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        for line in iter(process.stdout.readline, b''):
+            if "WARNING: some history file lines were truncated" not in line.decode():
+                output_data.append(line.decode())
+        formatted_output = ''.join(output_data)
         with open(output_file, 'w') as file:
-            process = subprocess.Popen(mongo_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            for line in iter(process.stdout.readline, b''):
-                if "WARNING: some history file lines were truncated" not in line.decode():
-                    file.write(line.decode())
+            file.write(formatted_output)
     except Exception as e:
         logging.error(f"Error executing MongoDB script: {e}")
 
@@ -74,8 +79,8 @@ def main():
         execute_mongo_script(namespace, host, opts, args.script, admin_auth)
     else:
         script_details = {
-            'model': ("model_env_usage.js", "model_output.json"),
-            'workspace': ("workspace_env_usage.js", "workspace_output.json")
+            'model': ("metadata_extraction/model_env_usage.js", "model_output.json"),
+            'workspace': ("metadata_extraction/workspace_env_usage.js", "workspace_output.json")
         }
         for key, value in script_details.items():
             mongo_js, _ = value
