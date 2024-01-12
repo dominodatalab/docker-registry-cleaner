@@ -40,10 +40,26 @@ def execute_mongo_script(namespace, host, opts, mongo_js, admin_auth):
 def main():
     setup_logging()
 
-    parser = argparse.ArgumentParser(description='Run MongoDB scripts.')
-    parser.add_argument('script', nargs='?', default=None, help='Path to the MongoDB script to run (*.js). If not specified, default scripts will be run.')
-    args = parser.parse_args()
+    parser = argparse.ArgumentParser(
+        description='Run MongoDB scripts within a Kubernetes environment.',
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    parser.add_argument(
+        'script',
+        nargs='?',
+        default=None,
+        help='Path to the MongoDB script to run (*.js). If not specified, default scripts will be run.\n'
+             'Example usage:\n'
+             '  python extract-metadata.py mongo.js  # Runs a specified script\n'
+             '  python extract-metadata.py           # Runs default scripts (model and workspace)'
+    )
 
+    args = parser.parse_args() 
+
+    if args.script and not os.path.isfile(args.script):
+        logging.error(f"The specified script file does not exist: {args.script}")
+        return  
+    
     namespace = get_env_variable('NAMESPACE', 'domino-platform')
     host = "mongodb-replicaset-0.mongodb-replicaset"
     opts = "authSource=admin"
