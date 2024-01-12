@@ -2,7 +2,6 @@ import argparse
 import os
 import subprocess
 import logging
-import sys
 from pathlib import Path 
 
 def setup_logging():
