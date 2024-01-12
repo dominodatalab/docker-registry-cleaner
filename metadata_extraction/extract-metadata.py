@@ -2,7 +2,8 @@ import argparse
 import os
 import subprocess
 import logging
-import json
+from pathlib import Path 
+
 
 def setup_logging():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -28,8 +29,14 @@ def get_admin_auth(namespace):
 
 
 def execute_mongo_script(namespace, host, opts, mongo_js, admin_auth):
-    output_file = mongo_js.rsplit('.', 1)[0] + "_output.json"
+    results_dir = Path(__file__).resolve().parent.parent / 'results'
+    os.makedirs(results_dir, exist_ok=True)
+
+    output_file_name = Path(mongo_js).stem + "_output.json"
+    output_file_path = results_dir / output_file_name
+
     mongo_cmd = f"kubectl exec -it -n {namespace} mongodb-replicaset-0 -c mongodb-replicaset -- mongo --quiet mongodb://{admin_auth}@{host}:27017/domino?{opts} < {mongo_js} 2>/dev/null"
+    
     try:
         output_data = []
         process = subprocess.Popen(mongo_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -37,7 +44,7 @@ def execute_mongo_script(namespace, host, opts, mongo_js, admin_auth):
             if "WARNING: some history file lines were truncated" not in line.decode():
                 output_data.append(line.decode())
         formatted_output = ''.join(output_data)
-        with open(output_file, 'w') as file:
+        with open(output_file_path, 'w') as file:
             file.write(formatted_output)
     except Exception as e:
         logging.error(f"Error executing MongoDB script: {e}")
