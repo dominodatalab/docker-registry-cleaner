@@ -17,6 +17,9 @@ def load_script_paths():
     }
 
 def run_script(script_path, args):
+    if script_path.endswith('image-data-analysis.py') and ('--registry-url' not in args or '--repository-name' not in args):
+        logging.error("Both --registry-url and --repository-name are required for image_data_analysis.")
+        sys.exit(1)
     try:
         subprocess.run([sys.executable, script_path] + args, check=True)
     except subprocess.CalledProcessError as e:

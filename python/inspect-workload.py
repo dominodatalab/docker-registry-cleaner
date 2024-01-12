@@ -4,6 +4,7 @@ from collections import defaultdict
 from tabulate import tabulate
 import sys
 import time
+import argparse
 
 def get_running_pods(namespace, prefix=None):
     command = f"kubectl get pods -n {namespace} -o custom-columns=:metadata.name"
@@ -56,12 +57,33 @@ def show_spinner():
     sys.stdout.write("\rProcessing... Done!\n")
     sys.stdout.flush()
 
+def display_usage():
+    print("Usage:")
+    print("  python inspect-workload.py --registry-url <url> --prefix-to-remove <prefix> --namespace <namespace> --pod-prefixes <prefix1 prefix2 ...> --output-file <filename>")
+    print("\nArguments:")
+    print("  --registry-url         Container registry URL.")
+    print("  --prefix-to-remove     Prefix to remove from image tags.")
+    print("  --namespace            Kubernetes namespace. Default is 'default'.")
+    print("  --pod-prefixes         List of pod name prefixes to filter. Multiple prefixes can be specified.")
+    print("  --output-file          Output file name. Default is 'workload-report'.")
+    print("\nExample:")
+    print("  python inspect-workload.py --registry-url 'registry.example.com' --prefix-to-remove 'registry.example.com/' --namespace 'my-namespace' --pod-prefixes 'app1-' 'app2-' --output-file 'my-report'")
+
 def main():
-    registry_url = "946429944765.dkr.ecr.us-west-2.amazonaws.com/stevel3358"
-    prefix_to_remove = "946429944765.dkr.ecr.us-west-2.amazonaws.com/stevel3358/"
-    target_namespace = "domino-compute"
-    pod_name_prefixes = ["model-", "run-"]
-    output_file = "workload-report"
+    parser = argparse.ArgumentParser(description='Kubernetes cluster workload inspection tool.')
+    parser.add_argument('--registry-url', type=str, required=True, help='Container registry URL.')
+    parser.add_argument('--prefix-to-remove', type=str, required=True, help='Prefix to remove from image tags.')
+    parser.add_argument('--namespace', type=str, default='domino-compute', help='Kubernetes namespace.')
+    parser.add_argument('--pod-prefixes', nargs='+', default=["model-", "run-"], help='List of pod name prefixes to filter.')
+    parser.add_argument('--output-file', type=str, default='workload-report', help='Output file name.')
+
+    args = parser.parse_args()
+
+    registry_url = args.registry_url
+    prefix_to_remove = args.prefix_to_remove
+    target_namespace = args.namespace
+    pod_name_prefixes = args.pod_prefixes
+    output_file = args.output_file
 
     image_tags = defaultdict(lambda: {'pods': set(), 'count': 0, 'labels': []})
     print("----------------------------------")
