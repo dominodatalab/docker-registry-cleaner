@@ -51,7 +51,7 @@ def main():
         help='Path to the MongoDB script to run (*.js). If not specified, default scripts will be run.\n'
              'Example usage:\n'
              '  python extract-metadata.py mongo.js  # Runs a specified script\n'
-             '  python extract-metadata.py           # Runs default scripts (model and workspace)'
+             '  python extract-metadata.py           # Runs default scripts (model and workspace metadata)'
     )
 
     args = parser.parse_args() 
