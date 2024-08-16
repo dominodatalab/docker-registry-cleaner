@@ -4,11 +4,14 @@ import subprocess
 import logging
 from pathlib import Path 
 
+
 def setup_logging():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+
 def get_env_variable(var_name, default=None):
     return os.getenv(var_name, default)
+
 
 def run_command(cmd):
     try:
@@ -17,10 +20,12 @@ def run_command(cmd):
         logging.error(f"Command '{cmd}' failed with error: {e.output.decode().strip()}")
         return ""
 
+
 def get_mongo_replicas(namespace):
     cmd = f"kubectl -n {namespace} get statefulset mongodb-replicaset -o jsonpath='{{.spec.replicas}}'"
     replicas = run_command(cmd)
     return int(replicas) if replicas.isdigit() else 0
+
 
 def get_admin_auth(namespace):
     cmd = f"kubectl get secret -n {namespace} -o go-template=\"{{{{ printf \\\"%s:%s\\\" (.data.user | base64decode) (.data.password | base64decode) }}}}\" mongodb-replicaset-admin"
@@ -47,6 +52,7 @@ def execute_mongo_script(namespace, host, opts, mongo_js, admin_auth):
             file.write(formatted_output)
     except Exception as e:
         logging.error(f"Error executing MongoDB script: {e}")
+
 
 def main():
     setup_logging()
@@ -91,6 +97,7 @@ def main():
         for key, value in script_details.items():
             mongo_js, _ = value
             execute_mongo_script(namespace, host, opts, mongo_js, admin_auth)
+
 
 if __name__ == "__main__":
     main()
