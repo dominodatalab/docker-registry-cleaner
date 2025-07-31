@@ -1,0 +1,31 @@
+# Docker Registry Cleaner Configuration
+# This file contains shared configuration for all scripts
+
+# Registry Configuration
+registry:
+  url: "docker-registry:5000"
+  repository_name: "dominodatalab"
+  password_env_var: "SKOPEO_PASSWORD"
+
+# Kubernetes Configuration
+kubernetes:
+  namespace: "domino-platform"
+  compute_namespace: "domino-compute"
+  pod_prefixes: ["model-", "run-"]
+
+# Analysis Configuration
+analysis:
+  max_workers: 4
+  timeout: 300
+  output_dir: "."
+
+# Default Report Paths
+reports:
+  workload_report: "workload-report.json"
+  image_analysis: "final-report.json"
+  deletion_analysis: "deletion-analysis.json"
+
+# Security Configuration
+security:
+  dry_run_by_default: true
+  require_confirmation: true 

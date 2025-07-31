@@ -1,10 +1,12 @@
 import subprocess
 import json
-from collections import defaultdict
-from tabulate import tabulate
+import argparse
 import sys
 import time
 import os
+from collections import defaultdict
+from tabulate import tabulate
+from typing import List, Optional, Set
 
 def print_help():
     print("Usage: python image-data-analysis.py [options] [image1 image2 ...]")
@@ -12,9 +14,10 @@ def print_help():
     print("Options:")
     print("  --registry-url URL     Container registry URL")
     print("  --repository-name NAME Container repository name")
+    print("  --file FILE            File containing ObjectIDs (first column) to filter images")
     print("  -h, --help              Display this help message")
     print("If no images are provided, the default images will be used.")
-    print("Example: python image-data-analysis.py --registry-url <registry_url> --repository-name <repository_name> environment model")
+    print("Example: python image-data-analysis.py --registry-url <registry_url> --repository-name <repository_name> --file environments environment model")
 
 def add_environments(original_json):
     transformed_json = {}
@@ -27,6 +30,48 @@ def add_environments(original_json):
         }
 
     return transformed_json
+
+def read_object_ids_from_file(file_path: str) -> List[str]:
+    """Read ObjectIDs from a file, extracting the first column"""
+    object_ids = []
+    try:
+        with open(file_path, 'r') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if line and not line.startswith('#'):  # Skip empty lines and comments
+                    parts = line.split()
+                    if parts:
+                        obj_id = parts[0]  # First column is the ObjectID
+                        if len(obj_id) == 24:
+                            try:
+                                int(obj_id, 16)  # Validate hexadecimal
+                                object_ids.append(obj_id)
+                            except ValueError:
+                                print(f"Warning: Invalid ObjectID '{obj_id}' on line {line_num}")
+                        else:
+                            print(f"Warning: ObjectID '{obj_id}' on line {line_num} is not 24 characters")
+        return object_ids
+    except FileNotFoundError:
+        print(f"Error: File '{file_path}' not found")
+        return []
+    except Exception as e:
+        print(f"Error reading file '{file_path}': {e}")
+        return []
+
+def filter_tags_by_object_ids(tags: List[str], object_ids: Optional[List[str]] = None) -> List[str]:
+    """Filter tags to only include those that start with one of the provided ObjectIDs"""
+    if not object_ids:
+        return tags
+    
+    filtered_tags = []
+    for tag in tags:
+        # Check if the tag starts with any of the provided ObjectIDs
+        for obj_id in object_ids:
+            if tag.startswith(obj_id):
+                filtered_tags.append(tag)
+                break
+    
+    return filtered_tags
 
 def inspect_workload(registry_url, prefix_to_remove, target_namespace, pod_name_prefixes, output_file):
     command = [
@@ -45,12 +90,23 @@ def inspect_workload(registry_url, prefix_to_remove, target_namespace, pod_name_
     ]
     subprocess.run(command)
 
-def get_image_info(registry_url, repository_name, image, output_dir):
+def get_image_info(registry_url, repository_name, image, output_dir, object_ids: Optional[List[str]] = None):
     layers_info = defaultdict(lambda: {'size': 0, 'tags': set()})
 
     try:
         output = subprocess.check_output(["skopeo", "list-tags", f"docker://{registry_url}/{repository_name}/{image}"], stderr=subprocess.DEVNULL)
         tags = json.loads(output.decode())['Tags']
+        
+        # Filter tags by ObjectIDs if provided
+        if object_ids:
+            original_count = len(tags)
+            tags = filter_tags_by_object_ids(tags, object_ids)
+            filtered_count = len(tags)
+            print(f"Filtered tags: {filtered_count}/{original_count} tags match the provided ObjectIDs")
+            
+            if filtered_count == 0:
+                print(f"No tags found matching the provided ObjectIDs for image: {image}")
+                return None
 
         for tag in tags:
             print(f"Analyzing Tag {tag}...")
@@ -146,8 +202,41 @@ def save_to_json(data, output_file):
 
 def main():
     # Parse command line arguments
-    registry_url = ""
-    repository_name = ""
+    parser = argparse.ArgumentParser(
+        description="Analyze Docker registry images and extract layer information",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python image-data-analysis.py --registry-url docker-registry:5000 --repository-name dominodatalab environment model
+  python image-data-analysis.py --registry-url docker-registry:5000 --repository-name dominodatalab --file environments environment model
+        """
+    )
+    
+    parser.add_argument("--registry-url", required=True, help="Container registry URL")
+    parser.add_argument("--repository-name", required=True, help="Container repository name")
+    parser.add_argument("--file", help="File containing ObjectIDs (first column) to filter images")
+    parser.add_argument("images", nargs="*", help="Images to analyze (default: environment, model)")
+    
+    args = parser.parse_args()
+    
+    # Parse ObjectIDs from file if provided
+    object_ids = None
+    if args.file:
+        object_ids = read_object_ids_from_file(args.file)
+        if not object_ids:
+            print(f"Error: No valid ObjectIDs found in file '{args.file}'")
+            sys.exit(1)
+        print(f"Filtering images by ObjectIDs from file '{args.file}': {object_ids}")
+    
+    # Get a list of images from the command line arguments or use default images
+    if args.images:
+        images = args.images
+    else:
+        print("No images provided for registry scanning, scanning default Domino images...")
+        images = ["environment", "model"]
+    
+    registry_url = args.registry_url
+    repository_name = args.repository_name
     final_output_file = "final-report.json"
     tags_per_layer_output_file = "tags-per-layer.json"
     layers_and_sizes_output_file = "layers-and-sizes.json"
@@ -156,53 +245,23 @@ def main():
     workload_output = "workload-report"
     output_dir = os.getcwd() 
     
-    if "--registry-url" in sys.argv:
-        index = sys.argv.index("--registry-url") + 1
-        if index < len(sys.argv):
-            registry_url = sys.argv[index]
-        else:
-            print("Error: Missing value for --registry-url")
-            print_help()
-            sys.exit(1)
-    
-    if "--repository-name" in sys.argv:
-        index = sys.argv.index("--repository-name") + 1
-        if index < len(sys.argv):
-            repository_name = sys.argv[index]
-        else:
-            print("Error: Missing value for --repository-name")
-            print_help()
-            sys.exit(1)
-    
-    if "--registry-url" in sys.argv and "--repository-name" in sys.argv:
-        images_start_index = sys.argv.index("--repository-name") + 2
-    else:
-        print("Error: Both --registry-url and --repository-name are required")
-        print_help()
-        sys.exit(1)
-    
-    # Get a list of images from the command line arguments or use default images
-    if len(sys.argv) > images_start_index:
-        images = sys.argv[images_start_index:]
-    else:
-        print("No images provided for registry scanning, scanning default Domino images...")
-        images = ["environment", "model"]
-    
-    if "-h" in sys.argv or "--help" in sys.argv:
-        print_help()
-        sys.exit(0)
-        
     print("----------------------------------")
     print(f"   Container registry  scanning")
+    if object_ids:
+        print(f"   Filtering by ObjectIDs: {', '.join(object_ids)}")
     print("----------------------------------")
     
     # Loop through each image and get its information
     image_tables = []
     for image in images:
-        image_info = get_image_info(registry_url, repository_name, image, output_dir)
+        image_info = get_image_info(registry_url, repository_name, image, output_dir, object_ids)
         if image_info:
             image_tables.append(image_info)
         print()
+    
+    if not image_tables:
+        print("No image data found. Check your ObjectID filters or registry access.")
+        sys.exit(1)
     
     # Merge tables based on layer ID
     merged_table = merge_tables(image_tables)
@@ -248,15 +307,17 @@ def main():
     save_to_json(layers_and_sizes, layers_and_sizes_output_file)
     print(f"Layers and sizes saved to: {layers_and_sizes_output_file}")
 
-    # Get layers with unique tag
-    filtered_layers = filter_layers_by_single_tag(transformed_json)
+    # Get filtered layers by single tag
+    filtered_layers = filter_layers_by_single_tag(final_json_data)
     save_to_json(filtered_layers, filtered_layers_output_file)
     print(f"Filtered layers saved to: {filtered_layers_output_file}")
 
-    # Sum the unique layers together by tag to know how much space would save if we delete the tag
+    # Get tag sums
     tag_sums = sum_layers_by_tag(filtered_layers)
     save_to_json(tag_sums, tag_sums_output_file)
     print(f"Tag sums saved to: {tag_sums_output_file}")
+
+    print("Analysis complete!")
 
 if __name__ == "__main__":
     main()

@@ -1,2 +1,5 @@
 tabulate
-clair
+tqdm
+pyclair
+kubernetes
+PyYAML
