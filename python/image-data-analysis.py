@@ -7,6 +7,7 @@ import os
 from collections import defaultdict
 from tabulate import tabulate
 from typing import List, Optional, Set
+from config_manager import config_manager, SkopeoClient
 
 def print_help():
     print("Usage: python image-data-analysis.py [options] [image1 image2 ...]")
@@ -94,8 +95,11 @@ def get_image_info(registry_url, repository_name, image, output_dir, object_ids:
     layers_info = defaultdict(lambda: {'size': 0, 'tags': set()})
 
     try:
-        output = subprocess.check_output(["skopeo", "list-tags", f"docker://{registry_url}/{repository_name}/{image}"], stderr=subprocess.DEVNULL)
-        tags = json.loads(output.decode())['Tags']
+        # Use standardized SkopeoClient
+        skopeo_client = SkopeoClient(config_manager, use_pod=False)
+        
+        # Get tags using standardized client
+        tags = skopeo_client.list_tags(f"{repository_name}/{image}")
         
         # Filter tags by ObjectIDs if provided
         if object_ids:
@@ -111,8 +115,13 @@ def get_image_info(registry_url, repository_name, image, output_dir, object_ids:
         for tag in tags:
             print(f"Analyzing Tag {tag}...")
             show_spinner()
-            output = subprocess.check_output(["skopeo", "inspect", f"docker://{registry_url}/{repository_name}/{image}:{tag}"], stderr=subprocess.DEVNULL)
-            image_info = json.loads(output.decode())
+            
+            # Inspect image using standardized client
+            image_info = skopeo_client.inspect_image(f"{repository_name}/{image}", tag)
+            if not image_info:
+                print(f"Failed to inspect image {image}:{tag}")
+                continue
+                
             layers_data = image_info['LayersData']
 
             for layer in layers_data:
@@ -123,8 +132,9 @@ def get_image_info(registry_url, repository_name, image, output_dir, object_ids:
 
         return layers_info
 
-    except subprocess.CalledProcessError:
+    except Exception as e:
         print(f"Failed to retrieve information for image: {image}")
+        print(f"Error: {e}")
         print("----------------------------------")
         return None
 

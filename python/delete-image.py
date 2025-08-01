@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-Docker Image Deletion Tool
+Intelligent Docker Image Deletion Tool
 
-This script deletes Docker images from registry based on environments file,
-with intelligent analysis of workload usage and image layer information.
+This script analyzes workload usage patterns and safely deletes unused Docker images
+from the registry while preserving all actively used ones.
 """
 
-import os
-import time
-import json
-import subprocess
-import sys
-import yaml
 import argparse
-from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
-from dataclasses import dataclass
-from kubernetes import client, config
+import json
 import logging
+import os
+import sys
+import time
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Set
+from kubernetes import client, config
+from config_manager import config_manager, SkopeoClient
 
 
 @dataclass
@@ -40,22 +40,25 @@ class LayerAnalysis:
 
 
 class IntelligentImageDeleter:
-    """Enhanced image deletion with workload analysis"""
+    """Main class for intelligent Docker image deletion"""
     
-    def __init__(self, registry_url: str = "docker-registry:5000", namespace: str = "domino-platform"):
-        self.registry_url = registry_url
-        self.namespace = namespace
+    def __init__(self, registry_url: str = None, namespace: str = None):
+        self.registry_url = registry_url or config_manager.get_registry_url()
+        self.namespace = namespace or config_manager.get_kubernetes_namespace()
         self.logger = self._setup_logging()
         
-        # Initialize Kubernetes client
+        # Initialize Kubernetes clients
         try:
             config.load_kube_config()
-            self.core_v1_client = client.CoreV1Api()
             self.apps_v1_client = client.AppsV1Api()
-            self.logger.info("Kubernetes client initialized successfully")
+            self.core_v1_client = client.CoreV1Api()
+            self.logger.info("Kubernetes clients initialized successfully")
         except Exception as e:
-            self.logger.error(f"Failed to initialize Kubernetes client: {e}")
+            self.logger.error(f"Failed to initialize Kubernetes clients: {e}")
             raise
+        
+        # Initialize standardized Skopeo client
+        self.skopeo_client = SkopeoClient(config_manager, use_pod=True, namespace=self.namespace)
     
     def _setup_logging(self) -> logging.Logger:
         """Setup logging configuration"""
@@ -66,29 +69,29 @@ class IntelligentImageDeleter:
         return logging.getLogger(__name__)
     
     def load_workload_report(self, report_path: str = "workload-report.json") -> Dict:
-        """Load workload analysis report"""
+        """Load workload analysis report from JSON file"""
         try:
             with open(report_path, 'r') as f:
                 return json.load(f)
         except FileNotFoundError:
-            self.logger.warning(f"Workload report not found: {report_path}")
+            self.logger.error(f"Workload report not found: {report_path}")
             return {}
         except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to parse workload report: {e}")
+            self.logger.error(f"Invalid JSON in workload report: {e}")
             return {}
     
     def load_image_analysis_report(self, report_path: str = "final-report.json") -> Dict:
-        """Load image analysis report"""
+        """Load image analysis report from JSON file"""
         try:
             with open(report_path, 'r') as f:
                 return json.load(f)
         except FileNotFoundError:
-            self.logger.warning(f"Image analysis report not found: {report_path}")
+            self.logger.error(f"Image analysis report not found: {report_path}")
             return {}
         except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to parse image analysis report: {e}")
+            self.logger.error(f"Invalid JSON in image analysis report: {e}")
             return {}
-    
+
     def analyze_image_usage(self, workload_report: Dict, image_analysis: Dict, object_ids: Optional[List[str]] = None) -> WorkloadAnalysis:
         """Analyze which images are used vs unused based on workload and image analysis"""
         used_images = set()
@@ -166,63 +169,105 @@ class IntelligentImageDeleter:
             total_size_saved=total_size_saved,
             image_usage_stats=image_usage_stats
         )
-    
+
     def generate_deletion_report(self, analysis: WorkloadAnalysis, output_file: str = "deletion-analysis.json") -> None:
-        """Generate a detailed report of what can be deleted"""
+        """Generate a detailed deletion analysis report"""
         report = {
-            'summary': {
-                'total_images_in_use': len(analysis.used_images),
-                'total_images_unused': len(analysis.unused_images),
-                'total_size_saved_bytes': analysis.total_size_saved,
-                'total_size_saved_mb': analysis.total_size_saved / (1024 * 1024),
-                'total_size_saved_gb': analysis.total_size_saved / (1024 * 1024 * 1024)
+            "summary": {
+                "total_images_analyzed": len(analysis.used_images) + len(analysis.unused_images),
+                "used_images": len(analysis.used_images),
+                "unused_images": len(analysis.unused_images),
+                "total_size_saved": analysis.total_size_saved,
+                "total_size_saved_gb": analysis.total_size_saved / (1024**3)
             },
-            'used_images': list(analysis.used_images),
-            'unused_images': list(analysis.unused_images),
-            'layer_analysis': analysis.image_usage_stats
+            "unused_images": []
         }
         
-        with open(output_file, 'w') as f:
-            json.dump(report, f, indent=2)
+        # Add details for each unused image
+        for image_tag in analysis.unused_images:
+            stats = analysis.image_usage_stats.get(image_tag, {})
+            report["unused_images"].append({
+                "tag": image_tag,
+                "size": stats.get('size', 0),
+                "size_gb": stats.get('size', 0) / (1024**3),
+                "layer_id": stats.get('layer_id', ''),
+                "status": stats.get('status', 'unused'),
+                "pods_using": stats.get('pods_using', [])
+            })
         
-        self.logger.info(f"Deletion analysis report saved to: {output_file}")
+        # Save report
+        try:
+            with open(output_file, 'w') as f:
+                json.dump(report, f, indent=2)
+            self.logger.info(f"Deletion analysis report saved to: {output_file}")
+        except Exception as e:
+            self.logger.error(f"Failed to save deletion report: {e}")
         
         # Print summary
         print(f"\n📊 Deletion Analysis Summary:")
-        print(f"   Images in use: {len(analysis.used_images)}")
-        print(f"   Images unused: {len(analysis.unused_images)}")
-        print(f"   Potential space saved: {analysis.total_size_saved / (1024**3):.2f} GB")
-        print(f"   Detailed report: {output_file}")
-    
+        print(f"   Total images analyzed: {report['summary']['total_images_analyzed']}")
+        print(f"   Images in use: {report['summary']['used_images']}")
+        print(f"   Images unused: {report['summary']['unused_images']}")
+        print(f"   Potential space saved: {report['summary']['total_size_saved_gb']:.2f} GB")
+
     def create_skopeo_pod(self):
         """Create the Skopeo pod for Docker registry operations"""
         print("Creating Skopeo pod")
         
-        # Read the pod.yaml file
-        with open("pod.yaml", "r") as f:
-            pod_data = yaml.safe_load(f)
-        
-        # Create the pod using Kubernetes client
         try:
+            # Check if pod already exists
+            try:
+                self.core_v1_client.read_namespaced_pod(
+                    name="skopeo",
+                    namespace=self.namespace
+                )
+                print("Pod skopeo already exists")
+                return
+            except client.exceptions.ApiException as e:
+                if e.status != 404:
+                    raise
+        
+        except Exception as e:
+            self.logger.error(f"Error checking existing pod: {e}")
+            return
+        
+        # Create the pod
+        try:
+            pod_manifest = {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {
+                    "name": "skopeo",
+                    "namespace": self.namespace
+                },
+                "spec": {
+                    "containers": [{
+                        "name": "skopeo",
+                        "image": "quay.io/skopeo/stable:latest",
+                        "command": ["sleep", "infinity"]
+                    }]
+                }
+            }
+            
             self.core_v1_client.create_namespaced_pod(
                 namespace=self.namespace,
-                body=pod_data
+                body=pod_manifest
             )
             print(f"Created pod skopeo in namespace {self.namespace}")
-        except client.exceptions.ApiException as e:
-            if e.status == 409:  # Already exists
-                print("Pod skopeo already exists")
-            else:
-                raise
+            
+        except Exception as e:
+            self.logger.error(f"Error creating Skopeo pod: {e}")
+            return
         
-        # Wait for the pod to be ready
+        # Wait for pod to be ready
         print("Waiting for pod skopeo to be ready...")
         self._wait_for_pod_ready(self.namespace, "skopeo")
         print("Skopeo pod is ready")
-    
+
     def delete_skopeo_pod(self):
         """Delete the Skopeo pod"""
         print("Deleting Skopeo pod")
+        
         try:
             self.core_v1_client.delete_namespaced_pod(
                 name="skopeo",
@@ -230,101 +275,35 @@ class IntelligentImageDeleter:
             )
             print("Deleted pod skopeo")
         except client.exceptions.ApiException as e:
-            if e.status == 404:  # Not found
+            if e.status == 404:
                 print("Pod skopeo not found")
             else:
-                raise
-    
+                self.logger.error(f"Error deleting Skopeo pod: {e}")
+
     def _wait_for_pod_ready(self, namespace: str, name: str, timeout: int = 300, interval: int = 10):
         """Wait for a pod to be ready"""
         start_time = time.time()
+        
         while time.time() - start_time < timeout:
             try:
-                pod = self.core_v1_client.read_namespaced_pod(name=name, namespace=namespace)
+                pod = self.core_v1_client.read_namespaced_pod(
+                    name=name,
+                    namespace=namespace
+                )
+                
                 if pod.status.phase == "Running":
-                    # Check if all containers are ready
-                    ready = all(
-                        container.ready for container in pod.status.container_statuses or []
-                    )
-                    if ready:
-                        print(f"Pod {name} is ready")
-                        return
-                print(f"Waiting for pod {name} to be ready...")
-                time.sleep(interval)
+                    return
+                    
             except client.exceptions.ApiException as e:
                 if e.status == 404:
-                    print(f"Pod {name} not found, waiting...")
-                    time.sleep(interval)
+                    pass  # Pod not found yet
                 else:
-                    raise
+                    self.logger.error(f"Error checking pod status: {e}")
+            
+            time.sleep(interval)
+        
         raise TimeoutError(f"Timeout waiting for pod {name} to be ready")
-    
-    def run_skopeo_command(self, cmd_args: List[str]) -> Optional[str]:
-        """Run a skopeo command in the pod using Kubernetes client"""
-        try:
-            # Create the exec request
-            exec_request = client.V1ExecAction(
-                command=["skopeo"] + cmd_args
-            )
-            
-            # Execute the command in the pod
-            response = self.core_v1_client.connect_get_namespaced_pod_exec(
-                name="skopeo",
-                namespace=self.namespace,
-                command=["skopeo"] + cmd_args,
-                container="skopeo",
-                stderr=True,
-                stdout=True,
-                stdin=False,
-                tty=False
-            )
-            
-            # Read the response
-            if response:
-                return response
-            else:
-                self.logger.error(f"Empty response from skopeo command: {' '.join(cmd_args)}")
-                return None
-                
-        except client.exceptions.ApiException as e:
-            if e.status == 404:
-                self.logger.error(f"Skopeo pod not found in namespace {self.namespace}")
-            else:
-                self.logger.error(f"API error executing skopeo command: {e}")
-            return None
-        except Exception as e:
-            self.logger.error(f"Unexpected error executing skopeo command: {e}")
-            return None
-    
-    def get_docker_tags(self, repository: str, password: str) -> List[str]:
-        """Get all Docker tags for a repository"""
-        cmd = [
-            "list-tags", "--tls-verify=false", 
-            f"--creds", f"domino-registry:{password}",
-            f"docker://{self.registry_url}/{repository}"
-        ]
-        
-        output = self.run_skopeo_command(cmd)
-        if output:
-            try:
-                tags_data = json.loads(output)
-                return tags_data.get('Tags', [])
-            except json.JSONDecodeError:
-                self.logger.error(f"Failed to parse tags for {repository}")
-                return []
-        return []
-    
-    def delete_image_tag(self, repository: str, tag: str, password: str) -> bool:
-        """Delete a specific image tag"""
-        cmd = [
-            "delete", "--tls-verify=false",
-            f"--creds", f"domino-registry:{password}",
-            f"docker://{self.registry_url}/{repository}:{tag}"
-        ]
-        
-        output = self.run_skopeo_command(cmd)
-        return output is not None
-    
+
     def enable_deletion_of_docker_images(self):
         """Enable deletion of Docker images"""
         print("Enabling deletion of Docker images")
@@ -360,14 +339,10 @@ class IntelligentImageDeleter:
                 namespace=self.namespace,
                 body=sts_data
             )
-            print("Updated StatefulSet with deletion enabled")
-        except client.exceptions.ApiException as e:
-            self.logger.error(f"Error updating StatefulSet: {e}")
-            return
-        
-        # Wait for the pod to be ready
-        self._wait_for_pod_ready(self.namespace, "docker-registry-0")
-    
+            print("Enabled deletion of Docker images")
+        except Exception as e:
+            self.logger.error(f"Error enabling deletion: {e}")
+
     def disable_deletion_of_docker_images(self):
         """Disable deletion of Docker images"""
         print("Disabling deletion of Docker images")
@@ -381,10 +356,10 @@ class IntelligentImageDeleter:
             self.logger.error(f"Error reading StatefulSet: {e}")
             return
         
-        # Remove the environment variable
+        # Remove the environment variable if it exists
         if sts_data.spec.template.spec.containers[0].env:
             sts_data.spec.template.spec.containers[0].env = [
-                env for env in sts_data.spec.template.spec.containers[0].env 
+                env for env in sts_data.spec.template.spec.containers[0].env
                 if env.name != "REGISTRY_STORAGE_DELETE_ENABLED"
             ]
         
@@ -395,75 +370,63 @@ class IntelligentImageDeleter:
                 namespace=self.namespace,
                 body=sts_data
             )
-            print("Updated StatefulSet with deletion disabled")
-        except client.exceptions.ApiException as e:
-            self.logger.error(f"Error updating StatefulSet: {e}")
+            print("Disabled deletion of Docker images")
+        except Exception as e:
+            self.logger.error(f"Error disabling deletion: {e}")
+
+    def delete_unused_images(self, analysis: WorkloadAnalysis, password: str, dry_run: bool = True) -> None:
+        """Delete unused images based on analysis"""
+        if not analysis.unused_images:
+            print("No unused images found to delete.")
             return
         
-        # Wait for the pod to be ready
-        self._wait_for_pod_ready(self.namespace, "docker-registry-0")
-    
-    def delete_unused_images(self, analysis: WorkloadAnalysis, password: str, dry_run: bool = True) -> None:
-        """Delete unused images based on workload analysis"""
-        if dry_run:
-            print("🔍 DRY RUN MODE: Analyzing what would be deleted")
-        else:
-            print("🗑️  DELETE MODE: Actually deleting unused images")
+        print(f"\n🗑️  {'DRY RUN: ' if dry_run else ''}Deleting {len(analysis.unused_images)} unused images...")
         
-        deleted_count = 0
         total_size_deleted = 0
+        successful_deletions = 0
+        failed_deletions = 0
         
-        # Group unused images by repository
-        repositories = {}
         for image_tag in analysis.unused_images:
-            # Extract repository from image tag (assuming format: repo/image:tag)
-            if ':' in image_tag:
-                repo_part, tag = image_tag.rsplit(':', 1)
-                if '/' in repo_part:
-                    repo = repo_part.split('/')[0]
-                    image = repo_part.split('/')[1]
-                else:
-                    repo = "dominodatalab"
-                    image = repo_part
-            else:
-                repo = "dominodatalab"
-                image = image_tag
-                tag = "latest"
+            # Extract repository and tag from image tag
+            # Assuming format: repository/image:tag
+            parts = image_tag.split(':')
+            if len(parts) != 2:
+                self.logger.warning(f"Invalid image tag format: {image_tag}")
+                failed_deletions += 1
+                continue
             
-            if repo not in repositories:
-                repositories[repo] = {}
-            if image not in repositories[repo]:
-                repositories[repo][image] = []
-            repositories[repo][image].append(tag)
-        
-        # Delete images from each repository
-        for repo, images in repositories.items():
-            for image, tags in images.items():
-                repository = f"{repo}/{image}"
+            repository_tag = parts[0]
+            tag = parts[1]
+            
+            # Extract repository name (remove registry URL if present)
+            if '/' in repository_tag:
+                repository = repository_tag.split('/', 1)[1]  # Remove registry URL
+            else:
+                repository = repository_tag
+            
+            stats = analysis.image_usage_stats.get(image_tag, {})
+            size = stats.get('size', 0)
+            
+            if dry_run:
+                print(f"  Would delete: {image_tag} ({size / (1024**3):.2f} GB)")
+                total_size_deleted += size
+            else:
+                print(f"  Deleting: {image_tag} ({size / (1024**3):.2f} GB)")
                 
-                for tag in tags:
-                    if dry_run:
-                        print(f"[DRY RUN] Would delete {repository}:{tag}")
-                    else:
-                        print(f"Deleting {repository}:{tag}")
-                        if self.delete_image_tag(repository, tag, password):
-                            deleted_count += 1
-                            # Find the size of this tag in the analysis
-                            for layer_info in analysis.image_usage_stats.values():
-                                if tag in layer_info['tags']:
-                                    total_size_deleted += layer_info['size']
-                                    break
-                        else:
-                            print(f"Failed to delete {repository}:{tag}")
+                # Use standardized Skopeo client for deletion
+                if self.skopeo_client.delete_image(repository, tag):
+                    print(f"    ✅ Deleted successfully")
+                    successful_deletions += 1
+                    total_size_deleted += size
+                else:
+                    print(f"    ❌ Failed to delete")
+                    failed_deletions += 1
         
-        if dry_run:
-            print(f"\n🔍 DRY RUN SUMMARY:")
-            print(f"   Would delete {len(analysis.unused_images)} image tags")
-            print(f"   Would save {analysis.total_size_saved / (1024**3):.2f} GB")
-        else:
-            print(f"\n✅ DELETION SUMMARY:")
-            print(f"   Deleted {deleted_count} image tags")
-            print(f"   Saved {total_size_deleted / (1024**3):.2f} GB")
+        print(f"\n📊 Deletion Summary:")
+        print(f"   {'Would delete' if dry_run else 'Successfully deleted'}: {successful_deletions} images")
+        if not dry_run:
+            print(f"   Failed deletions: {failed_deletions} images")
+        print(f"   {'Would save' if dry_run else 'Saved'}: {total_size_deleted / (1024**3):.2f} GB")
 
 
 def read_object_ids_from_file(file_path: str) -> List[str]:

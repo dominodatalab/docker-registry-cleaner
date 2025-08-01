@@ -264,9 +264,27 @@ security:
 ### Environment Variables
 - `REGISTRY_URL` - Docker registry URL
 - `REPOSITORY_NAME` - Repository name
-- `SKOPEO_PASSWORD` - Registry password
+- `SKOPEO_PASSWORD` - Registry password (required for all Skopeo operations)
 - `KUBERNETES_NAMESPACE` - Kubernetes namespace
 - `COMPUTE_NAMESPACE` - Compute namespace
+
+### Skopeo Configuration
+
+The tool uses a standardized `SkopeoClient` that provides consistent authentication and configuration across all scripts:
+
+- **Authentication**: Uses `--creds domino-registry:{password}` for all operations
+- **TLS**: Disabled with `--tls-verify=false` for internal registries
+- **Execution modes**: 
+  - **Local mode**: Direct subprocess calls (used by `image-data-analysis.py`)
+  - **Pod mode**: Kubernetes pod execution (used by `delete-image.py`)
+- **Centralized config**: All Skopeo operations use the same credentials from `SKOPEO_PASSWORD`
+
+### Registry Access Requirements
+
+- **Password**: Must be set via `SKOPEO_PASSWORD` environment variable
+- **Authentication**: Uses `domino-registry` username with provided password
+- **Permissions**: Requires read access for analysis, delete permissions for cleanup
+- **Network**: Must be accessible from both local machine and Kubernetes pods
 
 ## 📊 Sample Output
 
