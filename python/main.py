@@ -3,38 +3,40 @@ import subprocess
 import sys
 import logging
 import os
-import json
-from python.config_manager import config_manager
 from typing import List
+from config_manager import config_manager
+from logging_utils import setup_logging
 
-def setup_logging():
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def load_script_paths():
     return {
-        "extract_metadata": "metadata_extraction/extract-metadata.py",
-        "image_data_analysis": "python/image-data-analysis.py",
-        "inspect_workload": "python/inspect-workload.py",
-        "security_scanning": "python/security-scanning.py",
-        "delete_image": "python/delete-image.py",
-        "reports": "python/reports.py"
+        "delete_image": "delete_image.py",
+        "extract_metadata": "extract_metadata.py",
+        "find_archived_env_tags": "find_archived_env_tags.py",
+        "image_data_analysis": "image_data_analysis.py",
+        "inspect_workload": "inspect_workload.py",
+        "mongo_cleanup": "mongo_cleanup.py",
+        "reports": "reports.py",
+        "security_scanning": "security_scanning.py",
     }
 
 def get_script_descriptions():
     return {
+        "delete_image": "Delete Docker images from registry (default: dry-run)",
         "extract_metadata": "Extract metadata from MongoDB",
+        "find_archived_env_tags": "Find Docker tags associated with archived environments in Mongo",
         "image_data_analysis": "Analyze container images and generate reports",
         "inspect_workload": "Inspect Kubernetes workload and pod information",
+        "mongo_cleanup": "Find or delete environment revision records in Mongo by Docker tag",
+        "reports": "Generate reports from analysis data",
         "security_scanning": "Scan container images for security vulnerabilities using Clair",
-        "delete_image": "Delete Docker images from registry (default: dry-run)",
-        "reports": "Generate reports from analysis data"
     }
 
-def run_script(script_path, args, dry_run=False):
+def run_script(script_path, args, dry_run=True):
     """Run a script with the given arguments"""
     
     # Special handling for delete_image script
-    if script_path.endswith('delete-image.py'):
+    if script_path.endswith('delete_image.py'):
         if dry_run:
             logging.info("Running delete-image.py in DRY RUN mode (default) - no images will be deleted")
             # Remove any --apply flags and ensure dry-run behavior
@@ -96,17 +98,17 @@ def validate_script_requirements(script_keyword, args):
     if script_keyword == "image_data_analysis":
         # Check if registry URL and repository name are provided, otherwise use config defaults
         has_registry_url = any('--registry-url' in arg for arg in args)
-        has_repository_name = any('--repository-name' in arg for arg in args)
+        has_repository = any('--repository' in arg for arg in args)
         
-        if not has_registry_url and not has_repository_name:
+        if not has_registry_url and not has_repository:
             # Use config defaults
             registry_url = config_manager.get_registry_url()
-            repository_name = config_manager.get_repository_name()
-            args.extend(['--registry-url', registry_url, '--repository-name', repository_name])
-            logging.info(f"Using config defaults: registry-url={registry_url}, repository-name={repository_name}")
-        elif not has_registry_url or not has_repository_name:
-            logging.error("Both --registry-url and --repository-name are required for image_data_analysis.")
-            logging.error("Example: main.py image_data_analysis --registry-url <url> --repository-name <name>")
+            repository = config_manager.get_repository()
+            args.extend(['--registry-url', registry_url, '--repository', repository])
+            logging.info(f"Using config defaults: registry-url={registry_url}, repository={repository}")
+        elif not has_registry_url or not has_repository:
+            logging.error("Both --registry-url and --repository are required for image_data_analysis.")
+            logging.error("Example: main.py image_data_analysis --registry-url <url> --repository <name>")
             logging.error("Or configure defaults in config.yaml")
             sys.exit(1)
     
@@ -132,9 +134,9 @@ def validate_script_requirements(script_keyword, args):
         has_env_password = config_manager.get_registry_password() is not None
         
         if not has_password_arg and not has_env_password:
-            logging.warning("No password provided for delete_image. Use SKOPEO_PASSWORD environment variable or provide password as first argument.")
+            logging.warning("No password provided for delete_image. Use REGISTRY_PASSWORD environment variable or provide password as first argument.")
             logging.warning("Example: main.py delete_image <password>")
-            logging.warning("Or: export SKOPEO_PASSWORD=<password> && main.py delete_image")
+            logging.warning("Or: export REGISTRY_PASSWORD=<password> && main.py delete_image")
     
     # Validate ObjectID file if provided for supported scripts
     if script_keyword in ["image_data_analysis", "inspect_workload", "delete_image"]:
@@ -166,14 +168,16 @@ Available scripts:
   inspect_workload      - Inspect Kubernetes workload and pod information
   security_scanning     - Scan container images for security vulnerabilities
   delete_image          - Delete Docker images from registry (default: dry-run)
+  mongo_cleanup         - Clean up environment revision records in MongoDB
   reports               - Generate reports from analysis data
+  find_archived_env_tags- Find Docker tags associated with archived environments
 
 Configuration:
   The tool uses config.yaml for default settings. You can also use environment variables:
   - REGISTRY_URL: Docker registry URL
-  - REPOSITORY_NAME: Repository name
-  - SKOPEO_PASSWORD: Registry password
-  - KUBERNETES_NAMESPACE: Kubernetes namespace
+  - REPOSITORY: Repository name
+  - REGISTRY_PASSWORD: Registry password
+  - PLATFORM_NAMESPACE: Domino platform namespace
   - COMPUTE_NAMESPACE: Compute namespace
 
 Examples:
@@ -181,6 +185,7 @@ Examples:
   python main.py image_data_analysis
   python main.py inspect_workload
   python main.py delete_image mypassword
+  python main.py find_archived_env_tags --output archived-tags.json
 
   # Override defaults
   python main.py image_data_analysis --registry-url registry.example.com --repository-name my-repo
@@ -202,8 +207,15 @@ Examples:
   python main.py inspect_workload --file environments
   python main.py delete_image mypassword --file environments
 
+  # Mongo cleanup
+  python main.py mongo_cleanup find --file scripts/to_delete.txt
+  python main.py mongo_cleanup delete --file scripts/to_delete.txt
+
   # Security scanning
   python main.py security_scanning --clair-url http://clair:6060 --layers-file layers.json
+  
+  # Find archived environment tags
+   python main.py find_archived_env_tags --images environment model --output archived-tags.json
 
 Safety Notes:
   - delete_image runs in dry-run mode by default for safety

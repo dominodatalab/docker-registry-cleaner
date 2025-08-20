@@ -8,16 +8,16 @@ from the registry while preserving all actively used ones.
 
 import argparse
 import json
-import logging
 import os
 import sys
 import time
-from collections import defaultdict
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Dict, List, Optional, Set
 from kubernetes import client, config
 from config_manager import config_manager, SkopeoClient
+from logging_utils import setup_logging, get_logger
+from object_id_utils import read_object_ids_from_file
+from report_utils import save_json
 
 
 @dataclass
@@ -44,8 +44,8 @@ class IntelligentImageDeleter:
     
     def __init__(self, registry_url: str = None, namespace: str = None):
         self.registry_url = registry_url or config_manager.get_registry_url()
-        self.namespace = namespace or config_manager.get_kubernetes_namespace()
-        self.logger = self._setup_logging()
+        self.namespace = namespace or config_manager.get_platform_namespace()
+        self.logger = get_logger(__name__)
         
         # Initialize Kubernetes clients
         try:
@@ -59,14 +59,6 @@ class IntelligentImageDeleter:
         
         # Initialize standardized Skopeo client
         self.skopeo_client = SkopeoClient(config_manager, use_pod=True, namespace=self.namespace)
-    
-    def _setup_logging(self) -> logging.Logger:
-        """Setup logging configuration"""
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s'
-        )
-        return logging.getLogger(__name__)
     
     def load_workload_report(self, report_path: str = "workload-report.json") -> Dict:
         """Load workload analysis report from JSON file"""
@@ -100,10 +92,13 @@ class IntelligentImageDeleter:
         image_usage_stats = {}
         
         # Get used images from workload report
-        if 'image_tags' in workload_report:
-            for tag_info in workload_report['image_tags'].values():
-                if tag_info.get('count', 0) > 0:
-                    used_images.add(tag_info['tag'])
+        # Support both formats:
+        # - { "image_tags": { tag: {...} } }
+        # - { tag: {...} }
+        workload_map = workload_report.get('image_tags', workload_report)
+        for tag, tag_info in workload_map.items():
+            if tag_info.get('count', 0) > 0:
+                used_images.add(tag)
         
         # Filter by ObjectIDs if provided
         if object_ids:
@@ -118,50 +113,45 @@ class IntelligentImageDeleter:
             self.logger.info(f"Filtered used images: {len(used_images)}/{original_used_count} match ObjectIDs")
         
         # Analyze image layers from image analysis
-        if 'layers' in image_analysis:
-            for layer_id, layer_info in image_analysis['layers'].items():
-                layer_tags = layer_info.get('tags', [])
-                
-                # Filter tags by ObjectIDs if provided
-                if object_ids:
-                    original_tag_count = len(layer_tags)
-                    filtered_tags = []
-                    for tag in layer_tags:
-                        for obj_id in object_ids:
-                            if tag.startswith(obj_id):
-                                filtered_tags.append(tag)
-                                break
-                    layer_tags = filtered_tags
-                    if len(filtered_tags) < original_tag_count:
-                        self.logger.info(f"Filtered layer {layer_id}: {len(filtered_tags)}/{original_tag_count} tags match ObjectIDs")
-                
-                # Check if any tags in this layer are used
-                layer_used = any(tag in used_images for tag in layer_tags)
-                
-                if not layer_used and layer_tags:
-                    # This layer is unused
-                    unused_images.update(layer_tags)
-                    layer_size = layer_info.get('size', 0)
-                    total_size_saved += layer_size
-                    
-                    # Track usage stats
-                    for tag in layer_tags:
-                        image_usage_stats[tag] = {
-                            'size': layer_size,
-                            'layer_id': layer_id,
-                            'status': 'unused',
-                            'pods_using': []
-                        }
-                else:
-                    # This layer is used
-                    for tag in layer_tags:
-                        if tag in used_images:
-                            image_usage_stats[tag] = {
-                                'size': layer_info.get('size', 0),
-                                'layer_id': layer_id,
-                                'status': 'used',
-                                'pods_using': workload_report.get('image_tags', {}).get(tag, {}).get('pods', [])
-                            }
+        # Support format produced by image_data_analysis (mapping of layer_id -> { size, tags, environments })
+        all_tags = set()
+        freed_bytes = 0
+        for layer_id, layer_info in image_analysis.items():
+            layer_tags = layer_info.get('tags', [])
+            
+            # Filter tags by ObjectIDs if provided
+            if object_ids:
+                original_tag_count = len(layer_tags)
+                filtered_tags = []
+                for tag in layer_tags:
+                    for obj_id in object_ids:
+                        if tag.startswith(obj_id):
+                            filtered_tags.append(tag)
+                            break
+                layer_tags = filtered_tags
+                if len(filtered_tags) < original_tag_count:
+                    self.logger.info(f"Filtered layer {layer_id}: {len(filtered_tags)}/{original_tag_count} tags match ObjectIDs")
+            
+            # Track all observed tags
+            for tag in layer_tags:
+                all_tags.add(tag)
+            
+            # Freed space: sum sizes of layers that have no used tags
+            if layer_tags and not any(tag in used_images for tag in layer_tags):
+                freed_bytes += layer_info.get('size', 0)
+        
+        # Deletion candidates: all tags not referenced by workloads
+        unused_images = all_tags - used_images
+        total_size_saved = freed_bytes
+        
+        # Minimal per-tag stats (do not double-count layer sizes here)
+        for tag in all_tags:
+            image_usage_stats[tag] = {
+                'size': 0,
+                'layer_id': '',
+                'status': 'used' if tag in used_images else 'unused',
+                'pods_using': workload_map.get(tag, {}).get('pods', []) if tag in used_images and isinstance(workload_map, dict) else []
+            }
         
         return WorkloadAnalysis(
             used_images=used_images,
@@ -195,10 +185,8 @@ class IntelligentImageDeleter:
                 "pods_using": stats.get('pods_using', [])
             })
         
-        # Save report
         try:
-            with open(output_file, 'w') as f:
-                json.dump(report, f, indent=2)
+            save_json(output_file, report)
             self.logger.info(f"Deletion analysis report saved to: {output_file}")
         except Exception as e:
             self.logger.error(f"Failed to save deletion report: {e}")
@@ -429,43 +417,15 @@ class IntelligentImageDeleter:
         print(f"   {'Would save' if dry_run else 'Saved'}: {total_size_deleted / (1024**3):.2f} GB")
 
 
-def read_object_ids_from_file(file_path: str) -> List[str]:
-    """Read ObjectIDs from a file, extracting the first column"""
-    object_ids = []
-    try:
-        with open(file_path, 'r') as f:
-            for line_num, line in enumerate(f, 1):
-                line = line.strip()
-                if line and not line.startswith('#'):  # Skip empty lines and comments
-                    parts = line.split()
-                    if parts:
-                        obj_id = parts[0]  # First column is the ObjectID
-                        if len(obj_id) == 24:
-                            try:
-                                int(obj_id, 16)  # Validate hexadecimal
-                                object_ids.append(obj_id)
-                            except ValueError:
-                                print(f"Warning: Invalid ObjectID '{obj_id}' on line {line_num}")
-                        else:
-                            print(f"Warning: ObjectID '{obj_id}' on line {line_num} is not 24 characters")
-        return object_ids
-    except FileNotFoundError:
-        print(f"Error: File '{file_path}' not found")
-        return []
-    except Exception as e:
-        print(f"Error reading file '{file_path}': {e}")
-        return []
-
-
 def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="Intelligent Docker image deletion with workload analysis")
     parser.add_argument("password", nargs="?", help="Password for registry access")
     parser.add_argument("--apply", action="store_true", help="Actually apply changes and delete images (default is dry-run)")
     parser.add_argument("--force", action="store_true", help="Skip confirmation prompt when using --apply")
-    parser.add_argument("--workload-report", default="workload-report.json", help="Path to workload analysis report")
-    parser.add_argument("--image-analysis", default="final-report.json", help="Path to image analysis report")
-    parser.add_argument("--output-report", default="deletion-analysis.json", help="Path for deletion analysis report")
+    parser.add_argument("--workload-report", default=config_manager.get_workload_report_path(), help="Path to workload analysis report")
+    parser.add_argument("--image-analysis", default=config_manager.get_image_analysis_path(), help="Path to image analysis report")
+    parser.add_argument("--output-report", default=config_manager.get_deletion_analysis_path(), help="Path for deletion analysis report")
     parser.add_argument("--skip-analysis", action="store_true", help="Skip workload analysis and use traditional environments file")
     parser.add_argument("--file", help="File containing ObjectIDs (first column) to filter images")
     return parser.parse_args()
@@ -492,6 +452,7 @@ def confirm_deletion():
 
 def main():
     """Main function"""
+    setup_logging()
     args = parse_arguments()
     
     # Parse ObjectIDs from file if provided
@@ -503,11 +464,8 @@ def main():
             sys.exit(1)
         print(f"Filtering images by ObjectIDs from file '{args.file}': {object_ids}")
     
-    # Get password
-    password = args.password or os.environ.get('SKOPEO_PASSWORD')
-    if not password:
-        print("Error: No password provided. Use SKOPEO_PASSWORD environment variable or provide as argument.")
-        sys.exit(1)
+    # Get password if provided (optional). If absent, operations will attempt without auth.
+    password = args.password or os.environ.get('REGISTRY_PASSWORD')
     
     # Default to dry-run unless --apply is specified
     dry_run = not args.apply

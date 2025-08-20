@@ -1,6 +1,6 @@
 import json
-
-results_dir = "../results"
+import os
+from config_manager import config_manager
 
 
 def sizeof_fmt(num, suffix="B"):
@@ -12,11 +12,17 @@ def sizeof_fmt(num, suffix="B"):
 
 
 total_size = 0
-with open('tag-sums.json') as tag_sums:
+
+# Get file paths from config manager
+tag_sums_path = config_manager.get_tag_sums_path()
+workspace_usage_path = os.path.join(config_manager.get_output_dir(), "workspace_env_usage_output.json")
+model_usage_path = os.path.join(config_manager.get_output_dir(), "model_env_usage_output.json")
+
+with open(tag_sums_path) as tag_sums:
     tag_data = json.load(tag_sums)
 
-with open("{}/workspace_env_usage_output.json".format(results_dir), 'r') as wksp:
-    with open("{}/model_env_usage_output.json".format(results_dir), 'r') as model:
+with open(workspace_usage_path, 'r') as wksp:
+    with open(model_usage_path, 'r') as model:
         for key in tag_data.keys():
             if key in wksp.read():
                 print("{} is in use in a workspace".format(key))

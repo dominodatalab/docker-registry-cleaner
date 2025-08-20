@@ -15,10 +15,11 @@ This project provides a comprehensive solution for cleaning up Docker registries
 
 The project consists of several Python scripts that work together:
 
-- **`main.py`** - Unified entrypoint for all operations
-- **`python/inspect-workload.py`** - Analyzes Kubernetes workloads and running pods
-- **`python/image-data-analysis.py`** - Analyzes Docker registry contents and layer information
-- **`python/delete-image.py`** - Intelligently deletes unused images based on workload analysis
+- **`python/main.py`** - Unified entrypoint for all operations
+- **`python/inspect_workload.py`** - Analyzes Kubernetes workloads and running pods
+- **`python/image_data_analysis.py`** - Analyzes Docker registry contents and layer information
+- **`python/delete_image.py`** - Intelligently deletes unused images based on workload analysis
+- **`python/find_archived_env_tags.py`** - Finds Docker tags associated with archived environments in Mongo
 
 ## 🔍 ObjectID Filtering
 
@@ -56,7 +57,7 @@ Example file: `environments` - Contains ObjectIDs and revision numbers
 3. **Python Dependencies**: Install required packages
 
 ```bash
-pip install -r python/requirements.txt
+pip install -r requirements.txt
 ```
 
 ### Configuration Setup
@@ -64,44 +65,60 @@ pip install -r python/requirements.txt
 The tool uses `config.yaml` for default settings. Create or modify this file:
 
 ```yaml
-# config.yaml
+# config.yaml (key excerpts)
 registry:
   url: "docker-registry:5000"
-  repository_name: "dominodatalab"
+  repository: "dominodatalab"
 
 kubernetes:
-  namespace: "domino-platform"
+  platform_namespace: "domino-platform"
   compute_namespace: "domino-compute"
   pod_prefixes: ["model-", "run-"]
+
+analysis:
+  max_workers: 4
+  timeout: 300
+  output_dir: "reports"
+
+reports:
+  workload_report: "workload-report.json"
+  image_analysis: "final-report.json"
+  deletion_analysis: "deletion-analysis.json"
+  tags_per_layer: "tags-per-layer.json"
+  layers_and_sizes: "layers-and-sizes.json"
+  filtered_layers: "filtered-layers.json"
+  tag_sums: "tag-sums.json"
+  images_report: "images-report"
+  archived_tags: "archived-tags.json"
 ```
 
 ### Basic Workflow
 
 ```bash
 # 1. Analyze current workload (uses config.yaml defaults)
-python main.py inspect_workload
+python python/main.py inspect_workload
 
 # 2. Analyze registry contents (uses config.yaml defaults)
-python main.py image_data_analysis
+python python/main.py image_data_analysis
 
 # 3. Intelligent deletion (dry run first)
-python main.py delete_image mypassword
+python python/main.py delete_image mypassword
 
 # 4. Actually delete unused images
-python main.py delete_image mypassword --apply
+python python/main.py delete_image mypassword --apply
 ```
 
 ### ObjectID Filtering Examples
 
 ```bash
 # Filter by ObjectIDs from file (first column contains ObjectIDs)
-python main.py inspect_workload --file environments
-python main.py image_data_analysis --file environments
-python main.py delete_image mypassword --file environments
+python python/main.py inspect_workload --file environments
+python python/main.py image_data_analysis --file environments
+python python/main.py delete_image mypassword --file environments
 
 # Combine with other options
-python main.py inspect_workload --file environments --namespace my-namespace
-python main.py delete_image mypassword --file environments --apply --force
+python python/main.py inspect_workload --file environments --namespace my-namespace
+python python/main.py delete_image mypassword --file environments --apply --force
 ```
 
 ### Environment Variables
@@ -110,20 +127,21 @@ You can also override settings with environment variables:
 
 ```bash
 export REGISTRY_URL="registry.example.com"
-export REPOSITORY_NAME="my-repo"
-export SKOPEO_PASSWORD="your_password"
-export KUBERNETES_NAMESPACE="my-namespace"
+export REPOSITORY="my-repo"
+export REGISTRY_PASSWORD="your_password"
+export PLATFORM_NAMESPACE="domino-platform"
+export COMPUTE_NAMESPACE="domino-compute"
 ```
 
 ### Show Current Configuration
 
 ```bash
-python main.py --config
+python python/main.py --config
 ```
 
 ## 📊 How It Works
 
-### 1. Workload Analysis (`inspect-workload.py`)
+### 1. Workload Analysis (`inspect_workload.py`)
 
 Analyzes running Kubernetes pods to identify which images are currently in use:
 
@@ -133,9 +151,9 @@ Analyzes running Kubernetes pods to identify which images are currently in use:
 - **Generates workload report** with image usage statistics
 - **ObjectID filtering** - Only processes images matching provided ObjectIDs from file
 
-**Output**: `workload-report.json` - Maps image tags to pod usage information
+**Output**: `reports/workload-report.json` - Maps image tags to pod usage information
 
-### 2. Image Analysis (`image-data-analysis.py`)
+### 2. Image Analysis (`image_data_analysis.py`)
 
 Analyzes the Docker registry to understand image composition:
 
@@ -144,9 +162,9 @@ Analyzes the Docker registry to understand image composition:
 - **Maps tag distributions** across layers
 - **ObjectID filtering** - Only analyzes images matching provided ObjectIDs from file
 
-**Output**: `final-report.json` - Detailed layer analysis with size and tag information
+**Output**: `reports/final-report.json` - Detailed layer analysis with size and tag information
 
-### 3. Intelligent Deletion (`delete-image.py`)
+### 3. Intelligent Deletion (`delete_image.py`)
 
 Safely removes unused images based on comprehensive analysis:
 
@@ -157,7 +175,13 @@ Safely removes unused images based on comprehensive analysis:
 - **Dry-run by default** for safety
 - **Confirmation prompts** before actual deletion
 
-**Output**: `deletion-analysis.json` - Summary of what would be deleted and space saved
+**Output**: `reports/deletion-analysis.json` - Summary of what would be deleted and space saved
+
+### 4. Find Archived Environment Tags (`find_archived_env_tags.py`)
+
+Queries Mongo `environments_v2` for archived records and reports matching tags in the registry.
+
+**Output**: `reports/archived-tags.json`
 
 ## 🛡️ Safety Features
 
@@ -182,53 +206,70 @@ Safely removes unused images based on comprehensive analysis:
 ### Basic Analysis (All Images)
 ```bash
 # Analyze everything
-python main.py inspect_workload
-python main.py image_data_analysis
-python main.py delete_image mypassword
+python python/main.py inspect_workload
+python python/main.py image_data_analysis
+python python/main.py delete_image mypassword
 ```
 
 ### Targeted Analysis (Specific ObjectIDs from File)
 ```bash
 # Analyze only specific models/environments
-python main.py inspect_workload --file environments
-python main.py image_data_analysis --file environments
-python main.py delete_image mypassword --file environments
+python python/main.py inspect_workload --file environments
+python python/main.py image_data_analysis --file environments
+python python/main.py delete_image mypassword --file environments
 ```
 
 ### Custom Configuration
 ```bash
 # Override defaults
-python main.py inspect_workload --registry-url registry.example.com --prefix-to-remove registry.example.com/
-python main.py image_data_analysis --registry-url registry.example.com --repository-name my-repo
+python python/main.py inspect_workload --registry-url registry.example.com --prefix-to-remove registry.example.com/
+python python/main.py image_data_analysis --registry-url registry.example.com --repository my-repo
 ```
 
 ### Deletion Modes
 ```bash
 # Safe dry-run (default)
-python main.py delete_image mypassword
+python python/main.py delete_image mypassword
 
 # With confirmation
-python main.py delete_image mypassword --apply
+python python/main.py delete_image mypassword --apply
 
 # Force deletion (no confirmation)
-python main.py delete_image mypassword --apply --force
+python python/main.py delete_image mypassword --apply --force
 ```
+
+### Mongo Cleanup
+
+After deleting images, you can optionally clean up related Mongo records for environment revisions:
+
+```bash
+# Dry run (find matching records)
+python python/main.py mongo_cleanup find --file python/to_delete.txt
+
+# Delete matching records
+python python/main.py mongo_cleanup delete --file python/to_delete.txt
+```
+
+Requirements:
+- Set `MONGODB_PASSWORD` in the environment
+- The file should contain repo/image:tag or tags (one per line); only first token per line is read
 
 ## 📁 Project Structure
 
 ```
 docker-registry-cleaner/
-├── main.py                           # Unified entrypoint
+├── requirements.txt                  # Python dependencies
 ├── config.yaml                       # Configuration defaults
 ├── environments                      # ObjectID file (first column contains ObjectIDs)
 ├── python/
-│   ├── inspect-workload.py          # Kubernetes workload analysis
-│   ├── image-data-analysis.py       # Registry content analysis
-│   ├── delete-image.py              # Intelligent image deletion
+│   ├── main.py                      # Unified entrypoint
+│   ├── inspect_workload.py          # Kubernetes workload analysis
+│   ├── image_data_analysis.py       # Registry content analysis
+│   ├── delete_image.py              # Intelligent image deletion
+│   ├── find_archived_env_tags.py    # Archived env tag discovery
 │   ├── config_manager.py            # Configuration management
-│   └── requirements.txt             # Python dependencies
-├── environments-example              # Example environment configuration
-└── results/                         # Analysis output files
+│   └── report_utils.py              # Report helpers
+└── reports/                         # Analysis output files
 ```
 
 ## 🔧 Configuration
@@ -238,23 +279,28 @@ docker-registry-cleaner/
 # Docker Registry Cleaner Configuration
 registry:
   url: "docker-registry:5000"
-  repository_name: "dominodatalab"
-  password_env_var: "SKOPEO_PASSWORD"
+  repository: "dominodatalab"
 
 kubernetes:
-  namespace: "domino-platform"
+  platform_namespace: "domino-platform"
   compute_namespace: "domino-compute"
   pod_prefixes: ["model-", "run-"]
 
 analysis:
   max_workers: 4
   timeout: 300
-  output_dir: "."
+  output_dir: "reports"
 
 reports:
   workload_report: "workload-report.json"
   image_analysis: "final-report.json"
   deletion_analysis: "deletion-analysis.json"
+  tags_per_layer: "tags-per-layer.json"
+  layers_and_sizes: "layers-and-sizes.json"
+  filtered_layers: "filtered-layers.json"
+  tag_sums: "tag-sums.json"
+  images_report: "images-report"
+  archived_tags: "archived-tags.json"
 
 security:
   dry_run_by_default: true
@@ -263,9 +309,9 @@ security:
 
 ### Environment Variables
 - `REGISTRY_URL` - Docker registry URL
-- `REPOSITORY_NAME` - Repository name
-- `SKOPEO_PASSWORD` - Registry password (required for all Skopeo operations)
-- `KUBERNETES_NAMESPACE` - Kubernetes namespace
+- `REPOSITORY` - Repository name
+- `REGISTRY_PASSWORD` - Registry password (required for Skopeo operations)
+- `PLATFORM_NAMESPACE` - Domino platform namespace
 - `COMPUTE_NAMESPACE` - Compute namespace
 
 ### Skopeo Configuration
@@ -275,13 +321,13 @@ The tool uses a standardized `SkopeoClient` that provides consistent authenticat
 - **Authentication**: Uses `--creds domino-registry:{password}` for all operations
 - **TLS**: Disabled with `--tls-verify=false` for internal registries
 - **Execution modes**: 
-  - **Local mode**: Direct subprocess calls (used by `image-data-analysis.py`)
-  - **Pod mode**: Kubernetes pod execution (used by `delete-image.py`)
-- **Centralized config**: All Skopeo operations use the same credentials from `SKOPEO_PASSWORD`
+  - **Local mode**: Direct subprocess calls (used by `image_data_analysis.py`)
+  - **Pod mode**: Kubernetes pod execution (used by `delete_image.py`)
+- **Centralized config**: All Skopeo operations use the same credentials from `REGISTRY_PASSWORD`
 
 ### Registry Access Requirements
 
-- **Password**: Must be set via `SKOPEO_PASSWORD` environment variable
+- **Password**: Must be set via `REGISTRY_PASSWORD` environment variable
 - **Authentication**: Uses `domino-registry` username with provided password
 - **Permissions**: Requires read access for analysis, delete permissions for cleanup
 - **Network**: Must be accessible from both local machine and Kubernetes pods
@@ -353,7 +399,7 @@ kubectl get pods -n domino-compute
 **Registry authentication**
 ```bash
 # Verify registry access
-export SKOPEO_PASSWORD="your_password"
+export REGISTRY_PASSWORD="your_password"
 skopeo list-tags docker://registry.example.com/repository
 ```
 
@@ -375,7 +421,7 @@ kubectl apply -f pod.yaml -n domino-platform
 ```bash
 # Enable verbose logging
 export PYTHONPATH=python
-python main.py inspect_workload --max-workers 1
+python python/main.py inspect_workload --max-workers 1
 ```
 
 ## 📝 Requirements

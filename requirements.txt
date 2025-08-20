@@ -1,5 +1,6 @@
 tabulate
 tqdm
-pyclair
+#pyclair
 kubernetes
 PyYAML
+pymongo
