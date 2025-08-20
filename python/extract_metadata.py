@@ -7,6 +7,7 @@ from bson import json_util
 from logging_utils import setup_logging, get_logger
 from config_manager import config_manager
 from report_utils import save_json
+from mongo_utils import get_mongo_client, bson_to_jsonable
 
 logger = get_logger(__name__)
 
@@ -154,17 +155,17 @@ def run(target: str) -> None:
 	mongo_db = config_manager.get_mongo_db()
 	output_dir = config_manager.get_output_dir()
 
-	client = MongoClient(mongo_uri)
+	client = get_mongo_client()
 	try:
 		db = client[mongo_db]
 		if target in ("model", "both"):
 			logger.info("Running model environment usage aggregation...")
 			model_results = list(db.models.aggregate(model_env_usage_pipeline()))
-			save_json(os.path.join(output_dir, "model_env_usage_output.json"), json.loads(json_util.dumps(model_results)))
+			save_json(os.path.join(output_dir, "model_env_usage_output.json"), bson_to_jsonable(model_results))
 		if target in ("workspace", "both"):
 			logger.info("Running workspace environment usage aggregation...")
 			workspace_results = list(db.workspace.aggregate(workspace_env_usage_pipeline()))
-			save_json(os.path.join(output_dir, "workspace_env_usage_output.json"), json.loads(json_util.dumps(workspace_results)))
+			save_json(os.path.join(output_dir, "workspace_env_usage_output.json"), bson_to_jsonable(workspace_results))
 	finally:
 		client.close()
 

@@ -26,16 +26,7 @@ from typing import Iterator, Tuple
 
 import pymongo
 from config_manager import config_manager
-
-
-def get_mongo_primary() -> str:
-	conn = config_manager.get_mongo_connection_string()
-	client = pymongo.MongoClient(conn)
-	topology = client.admin.command("ismaster")
-	primary = topology.get("primary")
-	if not primary:
-		raise RuntimeError("Could not discover Mongo primary")
-	return primary
+from mongo_utils import get_mongo_client
 
 
 def iter_targets_from_file(path: str) -> Iterator[Tuple[str, str]]:
@@ -57,12 +48,11 @@ def iter_targets_from_file(path: str) -> Iterator[Tuple[str, str]]:
 			yield ("tag", first_token)
 
 
-def connect_and_execute(primary_host: str, op_mode: str, target_mode: str, value: str) -> None:
-	auth = config_manager.get_mongo_auth()
+
+def connect_and_execute(op_mode: str, target_mode: str, value: str) -> None:
 	db_name = config_manager.get_mongo_db()
 	collection_name = config_manager.get_mongo_collection()
-	connection_string = f"mongodb://{auth}@{primary_host}"
-	client = pymongo.MongoClient(connection_string)
+	client = get_mongo_client()
 	db = client[db_name]
 	collection = db[collection_name]
 	if target_mode == "objectId":
@@ -91,9 +81,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
 	args = parse_args()
-	primary = get_mongo_primary()
 	for target_mode, value in iter_targets_from_file(args.file):
-		connect_and_execute(primary, args.mode, target_mode, value)
+		connect_and_execute(args.mode, target_mode, value)
 
 
 if __name__ == "__main__":
