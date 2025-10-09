@@ -20,7 +20,7 @@ This project provides a comprehensive solution for cleaning up Docker registries
 
 The project consists of several Python scripts that work together:
 
-- **`python/main.py`** - Unified entrypoint for all operationsning pods (uses config defaults)
+- **`python/main.py`** - Unified entrypoint for all operations
 - **`python/config_manager.py`** - Centralized configuration and Skopeo client management
 - **`python/delete_archived_env_tags.py`** - Finds and deletes Docker tags associated with archived environments
 - **`python/delete_archived_model_tags.py`** - Finds and deletes Docker tags associated with archived models
@@ -135,20 +135,20 @@ security:
 ### Basic Workflow
 
 ```bash
-# 1. Analyze current workload (uses config.yaml defaults, all flags optional)
+# 1. Analyze current workload
 python python/main.py inspect_workload
 
-# 2. Analyze registry contents (uses config.yaml defaults, all flags optional)
+# 2. Analyze registry contents
 python python/main.py image_data_analysis
 
-# 3. Generate tag usage reports (auto-generates all required data)
+# 3. Generate tag usage reports
 python python/main.py reports
 
-# 4. Intelligent deletion (dry run first)
-python python/main.py delete_image mypassword
+# 4. Intelligent deletion (dry-run)
+python python/main.py delete_image
 
-# 5. Actually delete unused images
-python python/main.py delete_image mypassword --apply
+# 5. Delete unused images
+python python/main.py delete_image --apply
 ```
 
 ### Cleanup Commands
@@ -157,19 +157,19 @@ python python/main.py delete_image mypassword --apply
 # Find archived environment tags (dry-run)
 python python/main.py delete_archived_env_tags
 
-# Delete archived environment tags directly
+# Delete archived environment tags
 python python/main.py delete_archived_env_tags --apply
 
 # Find archived model tags (dry-run)
 python python/main.py delete_archived_model_tags
 
-# Delete archived model tags directly
+# Delete archived model tags
 python python/main.py delete_archived_model_tags --apply
 
 # Find unused MongoDB references (dry-run)
 python python/main.py delete_unused_references
 
-# Delete unused MongoDB references directly
+# Delete unused MongoDB references
 python python/main.py delete_unused_references --apply
 
 # Find private environments owned by deactivated users (dry-run)
@@ -197,11 +197,11 @@ python python/main.py delete_unused_environments --generate-reports --apply
 # Filter by ObjectIDs from file (supports typed format)
 python python/main.py inspect_workload --file environments
 python python/main.py image_data_analysis --file environments
-python python/main.py delete_image mypassword --file environments
+python python/main.py delete_image --file environments
 
 # Combine with other options
 python python/main.py inspect_workload --file environments --namespace my-namespace
-python python/main.py delete_image mypassword --file environments --apply --force
+python python/main.py delete_image --file environments --apply --force
 ```
 
 ### Environment Variables
@@ -431,10 +431,10 @@ Cleans up MongoDB records based on Docker tag information:
 
 ### Basic Analysis (All Images)
 ```bash
-# Analyze everything
+# Analyze everything (password optional - uses REGISTRY_PASSWORD env var if not provided)
 python python/main.py inspect_workload
 python python/main.py image_data_analysis
-python python/main.py delete_image mypassword
+python python/main.py delete_image
 ```
 
 ### Targeted Analysis (Specific ObjectIDs from File)
@@ -442,7 +442,7 @@ python python/main.py delete_image mypassword
 # Analyze only specific models/environments
 python python/main.py inspect_workload --file environments
 python python/main.py image_data_analysis --file environments
-python python/main.py delete_image mypassword --file environments
+python python/main.py delete_image --file environments
 ```
 
 ### Custom Configuration
@@ -454,14 +454,18 @@ python python/main.py image_data_analysis --registry-url registry.example.com --
 
 ### Deletion Modes
 ```bash
-# Safe dry-run (default)
-python python/main.py delete_image mypassword
+# Safe dry-run (default) - password optional
+python python/main.py delete_image
 
-# With confirmation
-python python/main.py delete_image mypassword --apply
+# With confirmation (password from environment variable)
+python python/main.py delete_image --apply
 
-# Force deletion (no confirmation)
-python python/main.py delete_image mypassword --apply --force
+# Force deletion (no confirmation) - explicit password
+python python/main.py delete_image <password> --apply --force
+
+# Using environment variable for password
+export REGISTRY_PASSWORD="your_password"
+python python/main.py delete_image --apply
 ```
 
 ### Archive Management
@@ -678,8 +682,12 @@ The tool uses a standardized `SkopeoClient` that provides consistent authenticat
 
 ### Registry Access Requirements
 
-- **Password**: Optional - can be set via `REGISTRY_PASSWORD` environment variable
-- **ECR**: Automatic authentication for AWS ECR registries
+- **Password**: Optional - can be provided via:
+  - Command-line argument: `python delete_image.py <password>`
+  - Environment variable: `export REGISTRY_PASSWORD="your_password"`
+  - Not required for ECR (automatic authentication)
+  - Not required for registries without authentication
+- **ECR**: Automatic authentication for AWS ECR registries using AWS CLI
 - **Authentication**: Uses `domino-registry` username with provided password
 - **Permissions**: Requires read access for analysis, delete permissions for cleanup
 - **Network**: Must be accessible from both local machine and Kubernetes pods
@@ -827,7 +835,6 @@ python python/main.py inspect_workload --max-workers 1
 - `PyYAML` - Configuration parsing
 - `requests` - HTTP client
 - `tabulate` - Pretty table formatting
-- `tqdm` - Progress bars
 
 ### System Requirements
 - **kubectl access** - For initial setup and pod management

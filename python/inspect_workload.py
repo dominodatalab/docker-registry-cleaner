@@ -72,7 +72,7 @@ class ImageTagInfo:
 class WorkloadInspector:
 	"""Main class for inspecting Kubernetes workloads"""
 	
-	def __init__(self, registry_url: str, prefix_to_remove: str, namespace: str = "domino-compute"):
+	def __init__(self, registry_url: str, prefix_to_remove: str, namespace: str):
 		self.registry_url = registry_url
 		self.prefix_to_remove = prefix_to_remove
 		self.namespace = namespace

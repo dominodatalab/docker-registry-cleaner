@@ -139,9 +139,11 @@ def validate_script_requirements(script_keyword, args):
         has_env_password = config_manager.get_registry_password() is not None
         
         if not has_password_arg and not has_env_password:
-            logging.warning("No password provided for delete_image. Use REGISTRY_PASSWORD environment variable or provide password as first argument.")
-            logging.warning("Example: main.py delete_image <password>")
-            logging.warning("Or: export REGISTRY_PASSWORD=<password> && main.py delete_image")
+            logging.warning("No password provided for delete_image.")
+            logging.warning("Options:")
+            logging.warning("  1. Set REGISTRY_PASSWORD environment variable: export REGISTRY_PASSWORD=<password>")
+            logging.warning("  2. Provide password as argument: main.py delete_image <password>")
+            logging.warning("  3. For ECR registries, authentication is automatic (no password needed)")
     
     # Validate ObjectID file if provided for supported scripts
     if script_keyword in ["image_data_analysis", "inspect_workload", "delete_image"]:
@@ -168,17 +170,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Available scripts:
-  delete_archived_env_tags  - Find and optionally delete Docker tags associated with archived environments
-  delete_archived_model_tags- Find and optionally delete Docker tags associated with archived models
-  delete_image            - Delete Docker images from registry (default: dry-run)
-  delete_unused_environments - Find and optionally delete environments not used in workspaces, models, or project defaults (auto-generates reports)
+  delete_archived_env_tags       - Find and optionally delete Docker tags associated with archived environments
+  delete_archived_model_tags     - Find and optionally delete Docker tags associated with archived models
+  delete_image                   - Delete Docker images from registry (default: dry-run)
+  delete_unused_environments     - Find and optionally delete environments not used in workspaces, models, or project defaults (auto-generates reports)
   delete_unused_private_env_tags - Find and optionally delete private environments owned by deactivated Keycloak users
-  delete_unused_references  - Find and optionally delete MongoDB references to non-existent Docker images
-  extract_metadata        - Extract metadata from MongoDB
-  image_data_analysis     - Analyze container images and generate reports
-  inspect_workload        - Inspect Kubernetes workload and pod information
-  mongo_cleanup           - Simple tag/ObjectID-based Mongo cleanup
-  reports                 - Generate tag usage reports from analysis data (auto-generates metadata)
+  delete_unused_references       - Find and optionally delete MongoDB references to non-existent Docker images
+  extract_metadata               - Extract metadata from MongoDB
+  image_data_analysis            - Analyze container images and generate reports
+  inspect_workload               - Inspect Kubernetes workload and pod information
+  mongo_cleanup                  - Simple tag/ObjectID-based Mongo cleanup
+  reports                        - Generate tag usage reports from analysis data (auto-generates metadata)
 
 Configuration:
   The tool uses config.yaml for default settings. You can also use environment variables:
@@ -192,26 +194,26 @@ Examples:
   # Basic usage (uses config.yaml defaults)
   python main.py image_data_analysis
   python main.py inspect_workload
-  python main.py delete_image mypassword
+  python main.py delete_image [password]  # password optional if REGISTRY_PASSWORD is set
   python main.py delete_archived_env_tags --output archived-tags.json
 
   # Override defaults
   python main.py image_data_analysis --registry-url registry.example.com --repository my-repo
   python main.py inspect_workload --registry-url registry.example.com
 
-  # Delete images (dry run - default, safe)
-  python main.py delete_image mypassword
+  # Delete images (dry run - default, safe) - password optional
+  python main.py delete_image
 
   # Delete images (actual deletion - requires confirmation)
-  python main.py delete_image mypassword --apply
+  python main.py delete_image --apply
 
-  # Delete images (force deletion - no confirmation)
-  python main.py delete_image mypassword --apply --force
+  # Delete images (force deletion - no confirmation) - explicit password
+  python main.py delete_image <password> --apply --force
 
   # Filter by ObjectIDs from file (first column contains ObjectIDs)
   python main.py image_data_analysis --file environments
   python main.py inspect_workload --file environments
-  python main.py delete_image mypassword --file environments
+  python main.py delete_image --file environments
 
   # Mongo cleanup
   python main.py mongo_cleanup --file environments
