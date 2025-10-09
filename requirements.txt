@@ -5,4 +5,3 @@ pymongo
 PyYAML
 python-keycloak
 tabulate
-tqdm

@@ -10,7 +10,6 @@ import argparse
 import concurrent.futures
 import json
 import sys
-import tqdm
 import os
 
 from dataclasses import dataclass
@@ -219,26 +218,28 @@ class WorkloadInspector:
 				for pod_name in all_pods
 			}
 			
-			# Process completed tasks with progress bar
-			with tqdm.tqdm(total=len(all_pods), desc="Analyzing pods") as pbar:
-				for future in concurrent.futures.as_completed(future_to_pod):
-					pod_name = future_to_pod[future]
-					try:
-						pod_info = future.result()
-						if pod_info:
-							# Filter images by ObjectIDs if provided
-							if object_ids:
-								original_count = len(pod_info.images)
-								pod_info.images = self.filter_images_by_object_ids(pod_info.images, object_ids)
-								filtered_count = len(pod_info.images)
-								if filtered_count < original_count:
-									self.logger.info(f"Filtered {pod_name}: {filtered_count}/{original_count} images match ObjectIDs")
-							
-							self._process_pod_info(pod_info, image_tags)
-					except Exception as e:
-						self.logger.error(f"Error processing pod {pod_name}: {e}")
-					finally:
-						pbar.update(1)
+			# Process completed tasks
+			completed = 0
+			for future in concurrent.futures.as_completed(future_to_pod):
+				pod_name = future_to_pod[future]
+				try:
+					pod_info = future.result()
+					if pod_info:
+						# Filter images by ObjectIDs if provided
+						if object_ids:
+							original_count = len(pod_info.images)
+							pod_info.images = self.filter_images_by_object_ids(pod_info.images, object_ids)
+							filtered_count = len(pod_info.images)
+							if filtered_count < original_count:
+								self.logger.info(f"Filtered {pod_name}: {filtered_count}/{original_count} images match ObjectIDs")
+						
+						self._process_pod_info(pod_info, image_tags)
+				except Exception as e:
+					self.logger.error(f"Error processing pod {pod_name}: {e}")
+				finally:
+					completed += 1
+					if completed % 10 == 0:
+						self.logger.info(f"Processed {completed}/{len(all_pods)} pods")
 		
 		return image_tags
 	
