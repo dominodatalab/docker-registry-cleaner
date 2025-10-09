@@ -539,15 +539,18 @@ After deleting images, you can optionally clean up related Mongo records:
 
 ```bash
 # Dry run (find matching records)
-python python/main.py mongo_cleanup find --file python/to_delete.txt
+python python/main.py mongo_cleanup --file environments
 
 # Delete matching records
-python python/main.py mongo_cleanup delete --file python/to_delete.txt
+python python/main.py mongo_cleanup --apply --file environments
+
+# Specify custom collection
+python python/main.py mongo_cleanup --apply --file environments --collection environment_revisions
 ```
 
 Requirements:
 - Set `MONGODB_PASSWORD` in the environment (or it will use Kubernetes secrets)
-- The file should contain repo/image:tag or tags (one per line); only first token per line is read
+- The file should contain ObjectIDs or full tags (one per line); only first token per line is read
 
 ### Metadata Extraction
 ```bash

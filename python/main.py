@@ -126,18 +126,11 @@ def validate_script_requirements(script_keyword, args):
     elif script_keyword == "mongo_cleanup":
         # Check if required arguments are provided
         has_file = any('--file' in arg for arg in args)
-        # Mode should be first positional argument (find or delete)
-        has_mode = any(arg in ['find', 'delete'] for arg in args)
-        
-        if not has_mode:
-            logging.error("mongo_cleanup requires a mode argument: 'find' or 'delete'")
-            logging.error("Example: main.py mongo_cleanup find --file tags.txt --collection environment_revisions")
-            logging.error("         main.py mongo_cleanup delete --file tags.txt --collection environment_revisions")
-            sys.exit(1)
         
         if not has_file:
             logging.error("mongo_cleanup requires --file argument with path to tags/ObjectIDs file")
-            logging.error("Example: main.py mongo_cleanup find --file tags.txt --collection environment_revisions")
+            logging.error("Example: main.py mongo_cleanup --file environments")
+            logging.error("         main.py mongo_cleanup --apply --file environments")
             sys.exit(1)
     
     elif script_keyword == "delete_image":
@@ -221,8 +214,8 @@ Examples:
   python main.py delete_image mypassword --file environments
 
   # Mongo cleanup
-  python main.py mongo_cleanup find --file scripts/to_delete.txt --collection environment_revisions
-  python main.py mongo_cleanup delete --file scripts/to_delete.txt --collection environment_revisions
+  python main.py mongo_cleanup --file environments
+  python main.py mongo_cleanup --apply --file environments --collection environment_revisions
   
   # Generate tag usage reports (auto-generates metadata if missing)
   python main.py reports
