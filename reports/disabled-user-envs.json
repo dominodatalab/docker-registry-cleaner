@@ -1,0 +1,38 @@
+{
+  "summary": {
+    "total_disabled_users": 0,
+    "total_environment_ids": 1,
+    "total_revision_ids": 2,
+    "total_matching_tags": 0,
+    "freed_space_bytes": 0,
+    "freed_space_mb": 0.0,
+    "freed_space_gb": 0.0,
+    "tags_by_image_type": {
+      "environment": 0,
+      "model": 0
+    }
+  },
+  "environment_ids": [
+    "68e65295caf3254005314ca0"
+  ],
+  "revision_ids": [
+    "68e65295caf3254005314ca2",
+    "68e65295caf3254005314ca5"
+  ],
+  "all_object_ids": [
+    "68e65295caf3254005314ca5",
+    "68e65295caf3254005314ca2",
+    "68e65295caf3254005314ca0"
+  ],
+  "tags": [],
+  "grouped_by_user": {},
+  "metadata": {
+    "registry_url": "docker-registry:5000",
+    "repository": "dominodatalab",
+    "image_types_scanned": [
+      "environment",
+      "model"
+    ],
+    "analysis_timestamp": "2025-10-09T09:30:39.661873"
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "summary": {
+    "total_deactivated_users": 1,
+    "total_environment_ids": 1,
+    "total_revision_ids": 2,
+    "total_matching_tags": 2,
+    "freed_space_bytes": 8961813097,
+    "freed_space_mb": 8546.65,
+    "freed_space_gb": 8.35,
+    "tags_by_image_type": {
+      "environment": 2,
+      "model": 0
+    }
+  },
+  "environment_ids": [
+    "68e65295caf3254005314ca0"
+  ],
+  "revision_ids": [
+    "68e65295caf3254005314ca2",
+    "68e65295caf3254005314ca5"
+  ],
+  "all_object_ids": [
+    "68e65295caf3254005314ca5",
+    "68e65295caf3254005314ca0",
+    "68e65295caf3254005314ca2"
+  ],
+  "tags": [
+    {
+      "object_id": "68e65295caf3254005314ca0",
+      "image_type": "environment",
+      "tag": "68e65295caf3254005314ca0-1",
+      "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-1",
+      "user_email": "elliott.whiting+test@dominodatalab.com",
+      "user_id": "68e65672e79bcd6ca2c07619",
+      "env_name": "private_env",
+      "context": {
+        "repository": "itgdock99244",
+        "image_type": "environment",
+        "tag": "68e65295caf3254005314ca0-1",
+        "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-1",
+        "user_email": "elliott.whiting+test@dominodatalab.com",
+        "user_id": "68e65672e79bcd6ca2c07619",
+        "env_name": "private_env"
+      }
+    },
+    {
+      "object_id": "68e65295caf3254005314ca0",
+      "image_type": "environment",
+      "tag": "68e65295caf3254005314ca0-2",
+      "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-2",
+      "user_email": "elliott.whiting+test@dominodatalab.com",
+      "user_id": "68e65672e79bcd6ca2c07619",
+      "env_name": "private_env",
+      "context": {
+        "repository": "itgdock99244",
+        "image_type": "environment",
+        "tag": "68e65295caf3254005314ca0-2",
+        "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-2",
+        "user_email": "elliott.whiting+test@dominodatalab.com",
+        "user_id": "68e65672e79bcd6ca2c07619",
+        "env_name": "private_env"
+      }
+    }
+  ],
+  "grouped_by_user": {
+    "elliott.whiting+test@dominodatalab.com": {
+      "user_id": "68e65672e79bcd6ca2c07619",
+      "tag_count": 2,
+      "environment_count": 1,
+      "environments": [
+        "68e65295caf3254005314ca0"
+      ],
+      "tags": [
+        {
+          "object_id": "68e65295caf3254005314ca0",
+          "image_type": "environment",
+          "tag": "68e65295caf3254005314ca0-1",
+          "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-1",
+          "user_email": "elliott.whiting+test@dominodatalab.com",
+          "user_id": "68e65672e79bcd6ca2c07619",
+          "env_name": "private_env",
+          "context": {
+            "repository": "itgdock99244",
+            "image_type": "environment",
+            "tag": "68e65295caf3254005314ca0-1",
+            "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-1",
+            "user_email": "elliott.whiting+test@dominodatalab.com",
+            "user_id": "68e65672e79bcd6ca2c07619",
+            "env_name": "private_env"
+          }
+        },
+        {
+          "object_id": "68e65295caf3254005314ca0",
+          "image_type": "environment",
+          "tag": "68e65295caf3254005314ca0-2",
+          "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-2",
+          "user_email": "elliott.whiting+test@dominodatalab.com",
+          "user_id": "68e65672e79bcd6ca2c07619",
+          "env_name": "private_env",
+          "context": {
+            "repository": "itgdock99244",
+            "image_type": "environment",
+            "tag": "68e65295caf3254005314ca0-2",
+            "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-2",
+            "user_email": "elliott.whiting+test@dominodatalab.com",
+            "user_id": "68e65672e79bcd6ca2c07619",
+            "env_name": "private_env"
+          }
+        }
+      ]
+    }
+  },
+  "metadata": {
+    "registry_url": "946429944765.dkr.ecr.eu-west-1.amazonaws.com",
+    "repository": "itgdock99244",
+    "image_types_scanned": [
+      "environment",
+      "model"
+    ],
+    "analysis_timestamp": "2025-10-09T15:25:30.295859"
+  }
+}

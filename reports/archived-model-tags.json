@@ -1,0 +1,31 @@
+{
+  "summary": {
+    "total_archived_object_ids": 0,
+    "archived_model_ids": 0,
+    "archived_version_ids": 0,
+    "total_matching_tags": 0,
+    "freed_space_bytes": 0,
+    "freed_space_mb": 0,
+    "freed_space_gb": 0,
+    "tags_by_image_type": {
+      "environment": 0,
+      "model": 0
+    },
+    "object_ids_with_tags": 0,
+    "object_ids_without_tags": 0
+  },
+  "archived_object_ids": [],
+  "archived_model_ids": [],
+  "archived_version_ids": [],
+  "archived_tags": [],
+  "grouped_by_object_id": {},
+  "metadata": {
+    "registry_url": "946429944765.dkr.ecr.eu-west-1.amazonaws.com",
+    "repository": "itgdock99244",
+    "image_types_scanned": [
+      "environment",
+      "model"
+    ],
+    "analysis_timestamp": "2025-10-09T15:24:57.659805"
+  }
+}

@@ -1,1 +1,56 @@
-{}
+{
+  "68e52daec2659d0a6fbc59b9-1": {
+    "size": 1610955710,
+    "environments": [
+      "68e52daec2659d0a6fbc59b9"
+    ]
+  },
+  "68e65295caf3254005314ca0-1": {
+    "size": 196586587,
+    "environments": [
+      "68e65295caf3254005314ca0"
+    ]
+  },
+  "68e64edfcaf3254005314c90-1": {
+    "size": 196881723,
+    "environments": [
+      "68e64edfcaf3254005314c90"
+    ]
+  },
+  "68e52daec2659d0a6fbc59b4-1": {
+    "size": 7226261875,
+    "environments": [
+      "68e52daec2659d0a6fbc59b4"
+    ]
+  },
+  "68e64edfcaf3254005314c90-2": {
+    "size": 196882087,
+    "environments": [
+      "68e64edfcaf3254005314c90"
+    ]
+  },
+  "68e52daec2659d0a6fbc59b3-1": {
+    "size": 2493781840,
+    "environments": [
+      "68e52daec2659d0a6fbc59b3"
+    ]
+  },
+  "68e65295caf3254005314ca0-2": {
+    "size": 196586181,
+    "environments": [
+      "68e65295caf3254005314ca0"
+    ]
+  },
+  "68e52daec2659d0a6fbc59b5-1": {
+    "size": 82195854,
+    "environments": [
+      "68e52daec2659d0a6fbc59b5"
+    ]
+  },
+  "68e663fbcaf3254005314cdc-v1-2025108131540_0fPPRse8": {
+    "size": 800059,
+    "environments": [
+      "68e663fbcaf3254005314cdc"
+    ]
+  }
+}

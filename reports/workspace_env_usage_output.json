@@ -1,13 +1,1 @@
-{
-	"_id" : ObjectId("659ecaf8e63dbc67d664a57a"),
-	"workspace_name" : "BEN MONGO TEST",
-	"workspace_last_change" : ISODate("2024-01-11T15:51:57.644Z"),
-	"project_name" : "test-ben",
-	"user_name" : "integration-test integration-test",
-	"environment_name" : "[Steve] Ubuntu:24",
-	"environment_docker_repo" : "stevel33582/environment",
-	"environment_docker_tag" : "659c7bce85f6381e675bb205-1",
-	"project_default_environment_name" : "[Steve] Ubuntu:24",
-	"project_default_environment_docker_repo" : "stevel33582/environment",
-	"project_default_environment_docker_tag" : "659c7bce85f6381e675bb205-1"
-}
+[]
