@@ -7,19 +7,21 @@ container images to generate workload reports.
 """
 
 import argparse
+import concurrent.futures
 import json
 import sys
-import os
-from pathlib import Path
-from typing import Dict, List, Optional, Set
-import concurrent.futures
-from dataclasses import dataclass
-from tabulate import tabulate
 import tqdm
+import os
+
+from dataclasses import dataclass
 from kubernetes import client, config
-from logging_utils import setup_logging, get_logger
-from object_id_utils import read_object_ids_from_file
+from pathlib import Path
+from tabulate import tabulate
+from typing import Dict, List, Optional, Set
+
 from config_manager import config_manager
+from logging_utils import setup_logging, get_logger
+from object_id_utils import read_typed_object_ids_from_file
 
 logger = get_logger(__name__)
 
@@ -333,64 +335,61 @@ def parse_arguments():
 		formatter_class=argparse.RawDescriptionHelpFormatter,
 		epilog="""
 Examples:
-  # Basic usage
-  python inspect_workload.py --registry-url registry.example.com --prefix-to-remove registry.example.com/
+  # Basic usage (uses config values)
+  python inspect_workload.py
+
+  # With custom registry URL
+  python inspect_workload.py --registry-url registry.example.com
 
   # Custom namespace and pod prefixes
-  python inspect_workload.py --registry-url registry.example.com --prefix-to-remove registry.example.com/ --namespace my-namespace --pod-prefixes app- job-
+  python inspect_workload.py --namespace my-namespace --pod-prefixes app- job-
 
   # Custom output file
-  python inspect_workload.py --registry-url registry.example.com --prefix-to-remove registry.example.com/ --output-file my-workload-report
+  python inspect_workload.py --output-file my-workload-report
 
   # Parallel processing
-  python inspect_workload.py --registry-url registry.example.com --prefix-to-remove registry.example.com/ --max-workers 8
+  python inspect_workload.py --max-workers 8
 
   # Filter by ObjectIDs from file
-  python inspect_workload.py --registry-url registry.example.com --prefix-to-remove registry.example.com/ --file environments
+  python inspect_workload.py --file environments
 		"""
 	)
 	
 	parser.add_argument(
 		'--registry-url', 
-		required=True,
-		help='Container registry URL'
+		help='Container registry URL (defaults to config value)'
 	)
 	
 	parser.add_argument(
 		'--prefix-to-remove', 
-		required=True,
-		help='Prefix to remove from image tags'
+		help='Prefix to remove from image tags (defaults to registry-url + /)'
 	)
 	
 	parser.add_argument(
 		'--namespace',
-		default='domino-compute',
-		help='Kubernetes namespace (default: domino-compute)'
+		help='Kubernetes namespace (defaults to config value)'
 	)
 	
 	parser.add_argument(
 		'--pod-prefixes',
 		nargs='+',
-		default=['model-', 'run-'],
-		help='Pod name prefixes to filter (default: model- run-)'
+		help='Pod name prefixes to filter (defaults to config value)'
 	)
 	
 	parser.add_argument(
 		'--output-file',
-		default='reports/workload-report',
-		help='Output file base path (default: reports/workload-report)'
+		help='Output file base path (defaults to config value)'
 	)
 	
 	parser.add_argument(
 		'--max-workers',
 		type=int,
-		default=4,
-		help='Maximum number of parallel workers (default: 4)'
+		help='Maximum number of parallel workers (defaults to config value)'
 	)
 	
 	parser.add_argument(
 		'--file',
-		help='File containing ObjectIDs (first column) to filter images'
+		help='File containing ObjectIDs (one per line) to filter images'
 	)
 	
 	return parser.parse_args()
@@ -401,34 +400,67 @@ def main():
 	setup_logging()
 	args = parse_arguments()
 	
-	# Parse ObjectIDs from file if provided
-	object_ids = None
+	# Get registry URL from args or config
+	registry_url = args.registry_url or config_manager.get_registry_url()
+	
+	# Get prefix to remove from args or derive from registry URL
+	prefix_to_remove = args.prefix_to_remove or f"{registry_url}/"
+	
+	# Get namespace from args or config
+	namespace = args.namespace or config_manager.get_compute_namespace()
+	
+	# Get pod prefixes from args or config
+	pod_prefixes = args.pod_prefixes or config_manager.get_pod_prefixes()
+	
+	# Get max workers from args or config
+	max_workers = args.max_workers or config_manager.get_max_workers()
+	
+	logger.info(f"Using registry URL: {registry_url}")
+	logger.info(f"Using prefix to remove: {prefix_to_remove}")
+	logger.info(f"Using namespace: {namespace}")
+	logger.info(f"Using pod prefixes: {pod_prefixes}")
+	logger.info(f"Using max workers: {max_workers}")
+	
+	# Parse ObjectIDs (typed) from file if provided
+	object_ids_map = None
 	if args.file:
-		object_ids = read_object_ids_from_file(args.file)
-		if not object_ids:
+		object_ids_map = read_typed_object_ids_from_file(args.file)
+		any_ids = set(object_ids_map.get('any', [])) if object_ids_map else set()
+		env_ids = list(any_ids.union(object_ids_map.get('environment', []))) if object_ids_map else []
+		model_ids = list(any_ids.union(object_ids_map.get('model', []))) if object_ids_map else []
+		if not (env_ids or model_ids):
 			logger.error(f"No valid ObjectIDs found in file '{args.file}'")
 			sys.exit(1)
-		logger.info(f"Filtering images by ObjectIDs from file '{args.file}': {object_ids}")
+		logger.info(f"Filtering by ObjectIDs from file '{args.file}' (environment={len(env_ids)}, model={len(model_ids)})")
 	
 	try:
 		# Create inspector
 		inspector = WorkloadInspector(
-			registry_url=args.registry_url,
-			prefix_to_remove=args.prefix_to_remove,
-			namespace=args.namespace
+			registry_url=registry_url,
+			prefix_to_remove=prefix_to_remove,
+			namespace=namespace
 		)
 		
 		logger.info("----------------------------------")
 		logger.info("   Kubernetes cluster scanning")
-		if object_ids:
-			logger.info(f"   Filtering by ObjectIDs: {', '.join(object_ids)}")
+		if object_ids_map:
+			total_ids = sum(len(ids) for ids in object_ids_map.values())
+			logger.info(f"   Filtering by {total_ids} ObjectIDs from file '{args.file}'")
 		logger.info("----------------------------------")
+		
+		# Combine environment and model IDs for filtering
+		combined_object_ids = None
+		if object_ids_map:
+			any_ids = set(object_ids_map.get('any', []))
+			env_ids = list(any_ids.union(object_ids_map.get('environment', [])))
+			model_ids = list(any_ids.union(object_ids_map.get('model', [])))
+			combined_object_ids = list(set(env_ids + model_ids))
 		
 		# Analyze pods
 		image_tags = inspector.analyze_pods_parallel(
-			pod_prefixes=args.pod_prefixes,
-			max_workers=args.max_workers,
-			object_ids=object_ids
+			pod_prefixes=pod_prefixes,
+			max_workers=max_workers,
+			object_ids=combined_object_ids
 		)
 		
 		if not image_tags:

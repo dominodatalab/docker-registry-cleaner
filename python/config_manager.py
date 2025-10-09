@@ -6,14 +6,49 @@ This module handles loading and managing configuration from config.yaml
 and environment variables.
 """
 
-import os
-import yaml
-import logging
-from typing import Dict, Any, Optional, List
-import subprocess
-import json
 import base64
-from kubernetes import client
+import json
+import logging
+import os
+import subprocess
+import yaml
+
+from typing import Dict, Any, Optional, List, Tuple
+
+
+def _load_kubernetes_config():
+    """Helper function to load Kubernetes configuration.
+    
+    Tries in-cluster config first, then falls back to local kubeconfig.
+    
+    Returns:
+        None
+    
+    Raises:
+        Exception if both methods fail
+    """
+    try:
+        from kubernetes.config import load_incluster_config
+        load_incluster_config()
+    except:
+        from kubernetes.config import load_kube_config
+        load_kube_config()
+
+
+def _get_kubernetes_clients() -> Tuple[Any, Any]:
+    """Helper function to get Kubernetes API clients.
+    
+    Returns:
+        Tuple of (CoreV1Api, AppsV1Api)
+    
+    Raises:
+        ImportError if kubernetes package is not available
+    """
+    from kubernetes import client as k8s_client
+    
+    _load_kubernetes_config()
+    
+    return k8s_client.CoreV1Api(), k8s_client.AppsV1Api()
 
 
 class ConfigManager:
@@ -39,8 +74,7 @@ class ConfigManager:
                 'host': 'mongodb-replicaset',
                 'port': 27017,
                 'replicaset': 'rs0',
-                'db': 'domino',
-                'collection': 'environment_revisions'
+                'db': 'domino'
             },
             'analysis': {
                 'max_workers': 4,
@@ -49,6 +83,7 @@ class ConfigManager:
             },
             'reports': {
                 'archived_tags': 'archived-tags.json',
+                'archived_model_tags': 'archived-model-tags.json',
                 'deletion_analysis': 'deletion-analysis.json',
                 'filtered_layers': 'filtered-layers.json',
                 'image_analysis': 'final-report.json',
@@ -56,6 +91,7 @@ class ConfigManager:
                 'layers_and_sizes': 'layers-and-sizes.json',
                 'tags_per_layer': 'tags-per-layer.json',
                 'tag_sums': 'tag-sums.json',
+                'unused_references': 'unused-references.json',
                 'workload_report': 'workload-report.json'
             },
             'security': {
@@ -228,6 +264,14 @@ class ConfigManager:
         """Get archived tags report path from config"""
         return self._resolve_report_path(self.config['reports']['archived_tags'])
     
+    def get_unused_references_report_path(self) -> str:
+        """Get unused references report path from config"""
+        return self._resolve_report_path(self.config['reports']['unused_references'])
+    
+    def get_archived_model_tags_report_path(self) -> str:
+        """Get archived model tags report path from config"""
+        return self._resolve_report_path(self.config['reports']['archived_model_tags'])
+    
     # Security configuration
     def is_dry_run_by_default(self) -> bool:
         """Get dry run default from config"""
@@ -250,8 +294,6 @@ class ConfigManager:
     def get_mongo_db(self) -> str:
         return self.config['mongo']['db']
 
-    def get_mongo_collection(self) -> str:
-        return self.config['mongo']['collection']
 
     def get_mongo_auth(self) -> str:
         username = os.environ.get('MONGODB_USERNAME', 'admin')
@@ -262,22 +304,9 @@ class ConfigManager:
 
         # Fallback: read credentials from Kubernetes secret mongodb-replicaset-admin
         try:
-            # Load kube config (in-cluster if available, else local)
-            try:
-                from kubernetes import config as k8s_config
-                # Detect in-cluster via env or SA token
-                if os.environ.get("KUBERNETES_SERVICE_HOST") or os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount/token"):
-                    k8s_config.load_incluster_config()
-                else:
-                    k8s_config.load_kube_config()
-            except Exception:
-                # Last attempt: try in-cluster
-                from kubernetes import config as k8s_config
-                k8s_config.load_incluster_config()
-
-            core = client.CoreV1Api()
+            core_v1, _ = _get_kubernetes_clients()
             namespace = self.get_platform_namespace()
-            secret = core.read_namespaced_secret(name="mongodb-replicaset-admin", namespace=namespace)
+            secret = core_v1.read_namespaced_secret(name="mongodb-replicaset-admin", namespace=namespace)
             data = secret.data or {}
             secret_user_b64 = data.get("user")
             secret_pass_b64 = data.get("password")
@@ -337,9 +366,7 @@ class SkopeoClient:
         if use_pod:
             # Initialize Kubernetes client for pod operations
             try:
-                from kubernetes import config
-                config.load_kube_config()
-                self.core_v1_client = client.CoreV1Api()
+                self.core_v1_client, _ = _get_kubernetes_clients()
             except Exception as e:
                 raise RuntimeError(f"Failed to initialize Kubernetes client: {e}")
         
@@ -449,6 +476,8 @@ class SkopeoClient:
     def _run_skopeo_in_pod(self, subcommand: str, args: List[str]) -> Optional[str]:
         """Run Skopeo command in Kubernetes pod"""
         try:
+            from kubernetes.client.rest import ApiException
+            
             cmd = self._build_skopeo_command(subcommand, args)
             
             response = self.core_v1_client.connect_get_namespaced_pod_exec(
@@ -468,7 +497,7 @@ class SkopeoClient:
                 logging.error(f"Empty response from skopeo command: {' '.join(cmd)}")
                 return None
                 
-        except client.exceptions.ApiException as e:
+        except ApiException as e:
             if e.status == 404:
                 logging.error(f"Skopeo pod not found in namespace {self.namespace}")
             else:
@@ -523,6 +552,276 @@ class SkopeoClient:
         
         output = self.run_skopeo_command("delete", args)
         return output is not None
+    
+    def is_registry_in_cluster(self) -> bool:
+        """Check if the registry service exists in the Kubernetes cluster.
+        
+        Parses the registry URL to extract the service name and checks if it exists
+        as a Service, StatefulSet, or Deployment in the cluster.
+        
+        Returns:
+            True if registry service/workload is found in the cluster, False otherwise.
+        """
+        try:
+            from kubernetes.client.rest import ApiException
+            
+            # Parse registry URL to extract service name and namespace
+            # Formats: "docker-registry:5000", "registry.namespace", "registry.namespace.svc.cluster.local:5000"
+            url = self.registry_url.split(':')[0]  # Remove port
+            parts = url.split('.')
+            
+            service_name = parts[0]
+            # If URL has namespace in it (service.namespace), use that; otherwise use config namespace
+            check_namespace = parts[1] if len(parts) > 1 and parts[1] != 'svc' else self.namespace
+            
+            # Initialize Kubernetes clients
+            try:
+                core_v1, apps_v1 = _get_kubernetes_clients()
+            except Exception as e:
+                logging.debug(f"Could not load Kubernetes config: {e}")
+                return False
+            
+            # Check 1: Try to find as a Service (most common)
+            try:
+                core_v1.read_namespaced_service(
+                    name=service_name,
+                    namespace=check_namespace
+                )
+                logging.debug(f"Found {service_name} Service in namespace {check_namespace}")
+                return True
+            except ApiException as e:
+                if e.status != 404:
+                    logging.debug(f"Error checking for Service: {e}")
+            
+            # Check 2: Try to find as a StatefulSet
+            try:
+                apps_v1.read_namespaced_stateful_set(
+                    name=service_name,
+                    namespace=check_namespace
+                )
+                logging.debug(f"Found {service_name} StatefulSet in namespace {check_namespace}")
+                return True
+            except ApiException as e:
+                if e.status != 404:
+                    logging.debug(f"Error checking for StatefulSet: {e}")
+            
+            # Check 3: Try to find as a Deployment
+            try:
+                apps_v1.read_namespaced_deployment(
+                    name=service_name,
+                    namespace=check_namespace
+                )
+                logging.debug(f"Found {service_name} Deployment in namespace {check_namespace}")
+                return True
+            except ApiException as e:
+                if e.status != 404:
+                    logging.debug(f"Error checking for Deployment: {e}")
+            
+            # Not found in any form
+            logging.debug(f"Registry '{service_name}' not found in namespace {check_namespace}")
+            return False
+                    
+        except ImportError:
+            logging.debug("Kubernetes client not available")
+            return False
+        except Exception as e:
+            logging.debug(f"Unexpected error checking registry in cluster: {e}")
+            return False
+    
+    def _parse_registry_name(self) -> tuple[str, str]:
+        """Parse registry URL to extract service name and namespace.
+        
+        Returns:
+            Tuple of (service_name, namespace)
+        """
+        url = self.registry_url.split(':')[0]  # Remove port
+        parts = url.split('.')
+        
+        service_name = parts[0]
+        # If URL has namespace in it (service.namespace), use that; otherwise use config namespace
+        check_namespace = parts[1] if len(parts) > 1 and parts[1] != 'svc' else self.namespace
+        
+        return service_name, check_namespace
+    
+    def enable_registry_deletion(self, namespace: str = None) -> bool:
+        """Enable deletion of Docker images in the registry by setting REGISTRY_STORAGE_DELETE_ENABLED=true
+        
+        Args:
+            namespace: Kubernetes namespace where registry workload is located
+                      (defaults to parsed namespace from URL or config namespace)
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        service_name, parsed_ns = self._parse_registry_name()
+        ns = namespace or parsed_ns
+        
+        try:
+            from kubernetes import client as k8s_client
+            from kubernetes.client.rest import ApiException
+            
+            # Initialize Kubernetes clients
+            try:
+                _, apps_v1 = _get_kubernetes_clients()
+            except Exception as e:
+                logging.error(f"Failed to load Kubernetes config: {e}")
+                return False
+            
+            # Try StatefulSet first (most common for registries)
+            try:
+                sts_data = apps_v1.read_namespaced_stateful_set(
+                    name=service_name, 
+                    namespace=ns
+                )
+                
+                # Check if the environment variable already exists
+                env_exists = False
+                for env in sts_data.spec.template.spec.containers[0].env or []:
+                    if env.name == "REGISTRY_STORAGE_DELETE_ENABLED":
+                        env.value = "true"
+                        env_exists = True
+                        break
+                
+                # Add the environment variable if it doesn't exist
+                if not env_exists:
+                    new_env = k8s_client.V1EnvVar(name="REGISTRY_STORAGE_DELETE_ENABLED", value="true")
+                    if sts_data.spec.template.spec.containers[0].env is None:
+                        sts_data.spec.template.spec.containers[0].env = []
+                    sts_data.spec.template.spec.containers[0].env.append(new_env)
+                
+                # Update the StatefulSet
+                apps_v1.patch_namespaced_stateful_set(
+                    name=service_name,
+                    namespace=ns,
+                    body=sts_data
+                )
+                logging.info(f"✓ Deletion enabled in {service_name} StatefulSet")
+                return True
+                
+            except ApiException as e:
+                if e.status == 404:
+                    # Try Deployment instead
+                    try:
+                        dep_data = apps_v1.read_namespaced_deployment(
+                            name=service_name,
+                            namespace=ns
+                        )
+                        
+                        # Check if the environment variable already exists
+                        env_exists = False
+                        for env in dep_data.spec.template.spec.containers[0].env or []:
+                            if env.name == "REGISTRY_STORAGE_DELETE_ENABLED":
+                                env.value = "true"
+                                env_exists = True
+                                break
+                        
+                        # Add the environment variable if it doesn't exist
+                        if not env_exists:
+                            new_env = k8s_client.V1EnvVar(name="REGISTRY_STORAGE_DELETE_ENABLED", value="true")
+                            if dep_data.spec.template.spec.containers[0].env is None:
+                                dep_data.spec.template.spec.containers[0].env = []
+                            dep_data.spec.template.spec.containers[0].env.append(new_env)
+                        
+                        # Update the Deployment
+                        apps_v1.patch_namespaced_deployment(
+                            name=service_name,
+                            namespace=ns,
+                            body=dep_data
+                        )
+                        logging.info(f"✓ Deletion enabled in {service_name} Deployment")
+                        return True
+                        
+                    except Exception as dep_error:
+                        logging.error(f"Failed to enable deletion - registry workload not found: {dep_error}")
+                        return False
+                else:
+                    raise
+            
+        except Exception as e:
+            logging.error(f"Failed to enable registry deletion: {e}")
+            return False
+    
+    def disable_registry_deletion(self, namespace: str = None) -> bool:
+        """Disable deletion of Docker images in the registry by removing REGISTRY_STORAGE_DELETE_ENABLED
+        
+        Args:
+            namespace: Kubernetes namespace where registry workload is located
+                      (defaults to parsed namespace from URL or config namespace)
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        service_name, parsed_ns = self._parse_registry_name()
+        ns = namespace or parsed_ns
+        
+        try:
+            from kubernetes import client as k8s_client
+            from kubernetes.client.rest import ApiException
+            
+            # Initialize Kubernetes clients
+            try:
+                _, apps_v1 = _get_kubernetes_clients()
+            except Exception as e:
+                logging.error(f"Failed to load Kubernetes config: {e}")
+                return False
+            
+            # Try StatefulSet first (most common for registries)
+            try:
+                sts_data = apps_v1.read_namespaced_stateful_set(
+                    name=service_name, 
+                    namespace=ns
+                )
+                
+                # Remove the environment variable if it exists
+                if sts_data.spec.template.spec.containers[0].env:
+                    sts_data.spec.template.spec.containers[0].env = [
+                        env for env in sts_data.spec.template.spec.containers[0].env
+                        if env.name != "REGISTRY_STORAGE_DELETE_ENABLED"
+                    ]
+                
+                # Update the StatefulSet
+                apps_v1.patch_namespaced_stateful_set(
+                    name=service_name,
+                    namespace=ns,
+                    body=sts_data
+                )
+                logging.info(f"✓ Deletion disabled in {service_name} StatefulSet")
+                return True
+                
+            except ApiException as e:
+                if e.status == 404:
+                    # Try Deployment instead
+                    try:
+                        dep_data = apps_v1.read_namespaced_deployment(
+                            name=service_name,
+                            namespace=ns
+                        )
+                        
+                        # Remove the environment variable if it exists
+                        if dep_data.spec.template.spec.containers[0].env:
+                            dep_data.spec.template.spec.containers[0].env = [
+                                env for env in dep_data.spec.template.spec.containers[0].env
+                                if env.name != "REGISTRY_STORAGE_DELETE_ENABLED"
+                            ]
+                        
+                        # Update the Deployment
+                        apps_v1.patch_namespaced_deployment(
+                            name=service_name,
+                            namespace=ns,
+                            body=dep_data
+                        )
+                        logging.info(f"✓ Deletion disabled in {service_name} Deployment")
+                        return True
+                        
+                    except Exception as dep_error:
+                        logging.error(f"Failed to disable deletion - registry workload not found: {dep_error}")
+                        return False
+                else:
+                    raise
+            
+        except Exception as e:
+            logging.error(f"Failed to disable registry deletion: {e}")
+            return False
 
 
 # Global config manager instance

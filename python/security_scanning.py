@@ -1,5 +1,5 @@
-from pyclair import Clair
 import json
+from pyclair import Clair
 
 def scan_image_layers(clair_url, image_layers_json):
     # Load image layers information from the JSON file

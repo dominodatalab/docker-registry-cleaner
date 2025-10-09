@@ -1,6 +1,8 @@
-tabulate
-tqdm
 #pyclair
 kubernetes
-PyYAML
+pandas
 pymongo
+PyYAML
+python-keycloak
+tabulate
+tqdm

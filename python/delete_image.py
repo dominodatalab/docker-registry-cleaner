@@ -9,14 +9,15 @@ from the registry while preserving all actively used ones.
 import argparse
 import json
 import os
+import subprocess
 import sys
-import time
+
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
-from kubernetes import client, config
+
 from config_manager import config_manager, SkopeoClient
 from logging_utils import setup_logging, get_logger
-from object_id_utils import read_object_ids_from_file
+from object_id_utils import read_typed_object_ids_from_file
 from report_utils import save_json
 
 
@@ -42,23 +43,15 @@ class LayerAnalysis:
 class IntelligentImageDeleter:
     """Main class for intelligent Docker image deletion"""
     
-    def __init__(self, registry_url: str = None, namespace: str = None):
+    def __init__(self, registry_url: str = None, repository: str = None, namespace: str = None):
         self.registry_url = registry_url or config_manager.get_registry_url()
+        self.repository = repository or config_manager.get_repository()
         self.namespace = namespace or config_manager.get_platform_namespace()
         self.logger = get_logger(__name__)
         
-        # Initialize Kubernetes clients
-        try:
-            config.load_kube_config()
-            self.apps_v1_client = client.AppsV1Api()
-            self.core_v1_client = client.CoreV1Api()
-            self.logger.info("Kubernetes clients initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Failed to initialize Kubernetes clients: {e}")
-            raise
-        
-        # Initialize standardized Skopeo client
-        self.skopeo_client = SkopeoClient(config_manager, use_pod=True, namespace=self.namespace)
+        # Initialize Skopeo client for local execution (same as other delete scripts)
+        # SkopeoClient now handles registry deletion enable/disable via enable_registry_deletion()
+        self.skopeo_client = SkopeoClient(config_manager, use_pod=False)
     
     def load_workload_report(self, report_path: str = "workload-report.json") -> Dict:
         """Load workload analysis report from JSON file"""
@@ -198,181 +191,36 @@ class IntelligentImageDeleter:
         print(f"   Images unused: {report['summary']['unused_images']}")
         print(f"   Potential space saved: {report['summary']['total_size_saved_gb']:.2f} GB")
 
-    def create_skopeo_pod(self):
-        """Create the Skopeo pod for Docker registry operations"""
-        print("Creating Skopeo pod")
-        
-        try:
-            # Check if pod already exists
-            try:
-                self.core_v1_client.read_namespaced_pod(
-                    name="skopeo",
-                    namespace=self.namespace
-                )
-                print("Pod skopeo already exists")
-                return
-            except client.exceptions.ApiException as e:
-                if e.status != 404:
-                    raise
-        
-        except Exception as e:
-            self.logger.error(f"Error checking existing pod: {e}")
-            return
-        
-        # Create the pod
-        try:
-            pod_manifest = {
-                "apiVersion": "v1",
-                "kind": "Pod",
-                "metadata": {
-                    "name": "skopeo",
-                    "namespace": self.namespace
-                },
-                "spec": {
-                    "containers": [{
-                        "name": "skopeo",
-                        "image": "quay.io/skopeo/stable:latest",
-                        "command": ["sleep", "infinity"]
-                    }]
-                }
-            }
-            
-            self.core_v1_client.create_namespaced_pod(
-                namespace=self.namespace,
-                body=pod_manifest
-            )
-            print(f"Created pod skopeo in namespace {self.namespace}")
-            
-        except Exception as e:
-            self.logger.error(f"Error creating Skopeo pod: {e}")
-            return
-        
-        # Wait for pod to be ready
-        print("Waiting for pod skopeo to be ready...")
-        self._wait_for_pod_ready(self.namespace, "skopeo")
-        print("Skopeo pod is ready")
-
-    def delete_skopeo_pod(self):
-        """Delete the Skopeo pod"""
-        print("Deleting Skopeo pod")
-        
-        try:
-            self.core_v1_client.delete_namespaced_pod(
-                name="skopeo",
-                namespace=self.namespace
-            )
-            print("Deleted pod skopeo")
-        except client.exceptions.ApiException as e:
-            if e.status == 404:
-                print("Pod skopeo not found")
-            else:
-                self.logger.error(f"Error deleting Skopeo pod: {e}")
-
-    def _wait_for_pod_ready(self, namespace: str, name: str, timeout: int = 300, interval: int = 10):
-        """Wait for a pod to be ready"""
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            try:
-                pod = self.core_v1_client.read_namespaced_pod(
-                    name=name,
-                    namespace=namespace
-                )
-                
-                if pod.status.phase == "Running":
-                    return
-                    
-            except client.exceptions.ApiException as e:
-                if e.status == 404:
-                    pass  # Pod not found yet
-                else:
-                    self.logger.error(f"Error checking pod status: {e}")
-            
-            time.sleep(interval)
-        
-        raise TimeoutError(f"Timeout waiting for pod {name} to be ready")
-
     def enable_deletion_of_docker_images(self):
-        """Enable deletion of Docker images"""
-        print("Enabling deletion of Docker images")
-        
-        try:
-            sts_data = self.apps_v1_client.read_namespaced_stateful_set(
-                name="docker-registry", 
-                namespace=self.namespace
-            )
-        except client.exceptions.ApiException as e:
-            self.logger.error(f"Error reading StatefulSet: {e}")
-            return
-        
-        # Check if the environment variable already exists
-        env_exists = False
-        for env in sts_data.spec.template.spec.containers[0].env or []:
-            if env.name == "REGISTRY_STORAGE_DELETE_ENABLED":
-                env.value = "true"
-                env_exists = True
-                break
-        
-        # Add the environment variable if it doesn't exist
-        if not env_exists:
-            new_env = client.V1EnvVar(name="REGISTRY_STORAGE_DELETE_ENABLED", value="true")
-            if sts_data.spec.template.spec.containers[0].env is None:
-                sts_data.spec.template.spec.containers[0].env = []
-            sts_data.spec.template.spec.containers[0].env.append(new_env)
-        
-        # Update the StatefulSet
-        try:
-            self.apps_v1_client.patch_namespaced_stateful_set(
-                name="docker-registry",
-                namespace=self.namespace,
-                body=sts_data
-            )
-            print("Enabled deletion of Docker images")
-        except Exception as e:
-            self.logger.error(f"Error enabling deletion: {e}")
+        """Enable deletion of Docker images in the registry"""
+        print("Enabling deletion of Docker images in registry...")
+        success = self.skopeo_client.enable_registry_deletion(namespace=self.namespace)
+        if success:
+            print("✓ Deletion enabled in registry")
+        else:
+            self.logger.warning("Failed to enable registry deletion - continuing anyway")
 
     def disable_deletion_of_docker_images(self):
-        """Disable deletion of Docker images"""
-        print("Disabling deletion of Docker images")
-        
-        try:
-            sts_data = self.apps_v1_client.read_namespaced_stateful_set(
-                name="docker-registry", 
-                namespace=self.namespace
-            )
-        except client.exceptions.ApiException as e:
-            self.logger.error(f"Error reading StatefulSet: {e}")
-            return
-        
-        # Remove the environment variable if it exists
-        if sts_data.spec.template.spec.containers[0].env:
-            sts_data.spec.template.spec.containers[0].env = [
-                env for env in sts_data.spec.template.spec.containers[0].env
-                if env.name != "REGISTRY_STORAGE_DELETE_ENABLED"
-            ]
-        
-        # Update the StatefulSet
-        try:
-            self.apps_v1_client.patch_namespaced_stateful_set(
-                name="docker-registry",
-                namespace=self.namespace,
-                body=sts_data
-            )
-            print("Disabled deletion of Docker images")
-        except Exception as e:
-            self.logger.error(f"Error disabling deletion: {e}")
+        """Disable deletion of Docker images in the registry"""
+        print("Disabling deletion of Docker images in registry...")
+        success = self.skopeo_client.disable_registry_deletion(namespace=self.namespace)
+        if success:
+            print("✓ Deletion disabled in registry")
+        else:
+            self.logger.warning("Failed to disable registry deletion - continuing anyway")
 
-    def delete_unused_images(self, analysis: WorkloadAnalysis, password: str, dry_run: bool = True) -> None:
-        """Delete unused images based on analysis"""
+    def delete_unused_images(self, analysis: WorkloadAnalysis, password: str, dry_run: bool = True) -> List[str]:
+        """Delete unused images based on analysis. Returns list of successfully deleted image tags."""
         if not analysis.unused_images:
             print("No unused images found to delete.")
-            return
+            return []
         
         print(f"\n🗑️  {'DRY RUN: ' if dry_run else ''}Deleting {len(analysis.unused_images)} unused images...")
         
         total_size_deleted = 0
         successful_deletions = 0
         failed_deletions = 0
+        deleted_tags = []
         
         for image_tag in analysis.unused_images:
             # Extract repository and tag from image tag
@@ -406,6 +254,7 @@ class IntelligentImageDeleter:
                     print(f"    ✅ Deleted successfully")
                     successful_deletions += 1
                     total_size_deleted += size
+                    deleted_tags.append(image_tag)
                 else:
                     print(f"    ❌ Failed to delete")
                     failed_deletions += 1
@@ -415,6 +264,51 @@ class IntelligentImageDeleter:
         if not dry_run:
             print(f"   Failed deletions: {failed_deletions} images")
         print(f"   {'Would save' if dry_run else 'Saved'}: {total_size_deleted / (1024**3):.2f} GB")
+        
+        return deleted_tags
+
+    def cleanup_mongo_references(self, deleted_tags: List[str], collection_name: str = "environment_revisions") -> None:
+        """Clean up Mongo references for deleted image tags by calling mongo_cleanup.py
+        
+        Args:
+            deleted_tags: List of Docker image tags that were deleted
+            collection_name: MongoDB collection to clean up (default: environment_revisions)
+        """
+        if not deleted_tags:
+            return
+        
+        print(f"\n🗄️  Cleaning up Mongo references for {len(deleted_tags)} deleted tags...")
+        
+        # Create temporary file with deleted tags
+        temp_file = os.path.join(config_manager.get_output_dir(), "deleted_tags_temp.txt")
+        try:
+            with open(temp_file, 'w') as f:
+                for tag in deleted_tags:
+                    f.write(f"{tag}\n")
+            
+            # Call mongo_cleanup.py to delete references
+            script_path = os.path.join(os.path.dirname(__file__), "mongo_cleanup.py")
+            cmd = [sys.executable, script_path, "delete", "--file", temp_file, "--collection", collection_name]
+            
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                print("✅ Mongo references cleaned up successfully")
+                if result.stdout:
+                    print(result.stdout)
+            except subprocess.CalledProcessError as e:
+                self.logger.error(f"Failed to clean up Mongo references: {e}")
+                if e.stdout:
+                    print(f"stdout: {e.stdout}")
+                if e.stderr:
+                    print(f"stderr: {e.stderr}")
+                print("⚠️  Mongo cleanup failed - you may need to clean up references manually")
+        
+        finally:
+            # Clean up temporary file
+            try:
+                os.remove(temp_file)
+            except OSError:
+                pass  # Ignore cleanup errors
 
 
 def parse_arguments():
@@ -427,7 +321,9 @@ def parse_arguments():
     parser.add_argument("--image-analysis", default=config_manager.get_image_analysis_path(), help="Path to image analysis report")
     parser.add_argument("--output-report", default=config_manager.get_deletion_analysis_path(), help="Path for deletion analysis report")
     parser.add_argument("--skip-analysis", action="store_true", help="Skip workload analysis and use traditional environments file")
-    parser.add_argument("--file", help="File containing ObjectIDs (first column) to filter images")
+    parser.add_argument("--file", help="File containing ObjectIDs (one per line) to filter images")
+    parser.add_argument("--skip-cleanup-mongo", action="store_true", help="Skip MongoDB cleanup after deleting images (cleanup is enabled by default)")
+    parser.add_argument("--mongo-collection", default="environment_revisions", help="MongoDB collection to clean up (default: environment_revisions)")
     return parser.parse_args()
 
 
@@ -455,14 +351,17 @@ def main():
     setup_logging()
     args = parse_arguments()
     
-    # Parse ObjectIDs from file if provided
-    object_ids = None
+    # Parse ObjectIDs (typed) from file if provided
+    object_ids_map = None
     if args.file:
-        object_ids = read_object_ids_from_file(args.file)
-        if not object_ids:
+        object_ids_map = read_typed_object_ids_from_file(args.file)
+        any_ids = set(object_ids_map.get('any', [])) if object_ids_map else set()
+        env_ids = list(any_ids.union(object_ids_map.get('environment', []))) if object_ids_map else []
+        model_ids = list(any_ids.union(object_ids_map.get('model', []))) if object_ids_map else []
+        if not (env_ids or model_ids):
             print(f"Error: No valid ObjectIDs found in file '{args.file}'")
             sys.exit(1)
-        print(f"Filtering images by ObjectIDs from file '{args.file}': {object_ids}")
+        print(f"Filtering images by ObjectIDs from file '{args.file}': environment={len(env_ids)}, model={len(model_ids)}")
     
     # Get password if provided (optional). If absent, operations will attempt without auth.
     password = args.password or os.environ.get('REGISTRY_PASSWORD')
@@ -502,24 +401,34 @@ def main():
             
             # Analyze image usage
             print("🔍 Analyzing image usage patterns...")
-            if object_ids:
-                print(f"   Filtering by ObjectIDs: {', '.join(object_ids)}")
-            analysis = deleter.analyze_image_usage(workload_report, image_analysis, object_ids)
+            # For deletion, merge all typed IDs to a single set since we evaluate tags after registry prefix removal
+            merged_ids = None
+            if object_ids_map:
+                merged = set()
+                merged.update(object_ids_map.get('any', []))
+                merged.update(object_ids_map.get('environment', []))
+                merged.update(object_ids_map.get('model', []))
+                merged_ids = sorted(merged)
+                print(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
+            analysis = deleter.analyze_image_usage(workload_report, image_analysis, merged_ids)
             
             # Generate deletion report
             deleter.generate_deletion_report(analysis, args.output_report)
             
-            # Create Skopeo pod
-            deleter.create_skopeo_pod()
+            # Enable deletion in registry (if running in Kubernetes)
+            if not dry_run:
+                deleter.enable_deletion_of_docker_images()
             
-            # Enable deletion
-            deleter.enable_deletion_of_docker_images()
+            # Delete unused images using SkopeoClient (same as other delete scripts)
+            deleted_tags = deleter.delete_unused_images(analysis, password, dry_run=dry_run)
             
-            # Delete unused images
-            deleter.delete_unused_images(analysis, password, dry_run=dry_run)
+            # Disable deletion in registry (if running in Kubernetes)
+            if not dry_run:
+                deleter.disable_deletion_of_docker_images()
             
-            # Disable deletion
-            deleter.disable_deletion_of_docker_images()
+            # Clean up Mongo references for deleted tags (enabled by default, can be skipped with --skip-cleanup-mongo)
+            if deleted_tags and not dry_run and not args.skip_cleanup_mongo:
+                deleter.cleanup_mongo_references(deleted_tags, args.mongo_collection)
             
         else:
             # Use traditional environments file method
@@ -542,12 +451,6 @@ def main():
     except Exception as e:
         print(f"\n❌ Deletion failed: {e}")
         sys.exit(1)
-    finally:
-        # Clean up Skopeo pod
-        try:
-            deleter.delete_skopeo_pod()
-        except Exception as e:
-            print(f"Warning: Failed to clean up Skopeo pod: {e}")
 
 
 if __name__ == '__main__':

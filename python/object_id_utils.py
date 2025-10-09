@@ -1,24 +1,30 @@
-from typing import List
 from logging_utils import get_logger
+from typing import List, Dict
 
 logger = get_logger(__name__)
 
 
 def read_object_ids_from_file(file_path: str) -> List[str]:
-	"""Read 24-char hex ObjectIDs from the first column of each non-comment line.
-	Returns a list of valid IDs; logs warnings for invalid rows and errors for I/O issues.
+	"""Read 24-char hex ObjectIDs from a file.
+
+	Accepted formats per non-comment line:
+	- "<ObjectID>" (one per line)
+	- "environment:<ObjectID>" or "model:<ObjectID>" (typed); the type is ignored here
+
+	Returns a flat list of valid IDs.
 	"""
 	object_ids: List[str] = []
 	try:
 		with open(file_path, 'r') as f:
-			for line_num, line in enumerate(f, 1):
-				line = line.strip()
+			for line_num, raw in enumerate(f, 1):
+				line = raw.strip()
 				if not line or line.startswith('#'):
 					continue
-				parts = line.split()
-				if not parts:
-					continue
-				obj_id = parts[0]
+				if ':' in line:
+					prefix, _, rest = line.partition(':')
+					obj_id = rest.strip()
+				else:
+					obj_id = line
 				if len(obj_id) != 24:
 					logger.warning(f"ObjectID '{obj_id}' on line {line_num} is not 24 characters")
 					continue
@@ -34,6 +40,52 @@ def read_object_ids_from_file(file_path: str) -> List[str]:
 	except Exception as e:
 		logger.error(f"Error reading file '{file_path}': {e}")
 		return []
+
+
+def read_typed_object_ids_from_file(file_path: str) -> Dict[str, List[str]]:
+	"""Read typed ObjectIDs from file.
+
+	Accepted formats per non-comment line:
+	- "environment:<ObjectID>"
+	- "model:<ObjectID>"
+	- "<ObjectID>" (placed under 'any')
+
+	Returns a dict like { 'environment': [...], 'model': [...], 'any': [...] }
+	Only includes keys that have values.
+	"""
+	result: Dict[str, List[str]] = {"environment": [], "model": [], "any": []}
+	try:
+		with open(file_path, 'r') as f:
+			for line_num, raw in enumerate(f, 1):
+				line = raw.strip()
+				if not line or line.startswith('#'):
+					continue
+				kind = 'any'
+				value = line
+				if ':' in line:
+					prefix, _, rest = line.partition(':')
+					pref = prefix.lower().strip()
+					if pref in ('environment', 'env'):
+						kind = 'environment'
+					elif pref in ('model',):
+						kind = 'model'
+					value = rest.strip()
+				if len(value) != 24:
+					logger.warning(f"ObjectID '{value}' on line {line_num} is not 24 characters")
+					continue
+				try:
+					int(value, 16)
+					result[kind].append(value)
+				except ValueError:
+					logger.warning(f"Invalid ObjectID '{value}' on line {line_num}")
+		# Remove empty keys
+		return {k: v for k, v in result.items() if v}
+	except FileNotFoundError:
+		logger.error(f"File '{file_path}' not found")
+		return {}
+	except Exception as e:
+		logger.error(f"Error reading file '{file_path}': {e}")
+		return {}
 
 
 def filter_values_by_object_ids(values: List[str], object_ids: List[str]) -> List[str]:

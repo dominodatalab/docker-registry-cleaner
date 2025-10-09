@@ -1,35 +1,43 @@
 import argparse
-import subprocess
-import sys
 import logging
 import os
+import subprocess
+import sys
+
 from typing import List
+
 from config_manager import config_manager
 from logging_utils import setup_logging
 
 
 def load_script_paths():
     return {
+        "delete_archived_env_tags": "delete_archived_env_tags.py",
+        "delete_archived_model_tags": "delete_archived_model_tags.py",
         "delete_image": "delete_image.py",
+        "delete_unused_environments": "delete_unused_environments.py",
+        "delete_unused_private_env_tags": "delete_unused_private_env_tags.py",
+        "delete_unused_references": "delete_unused_references.py",
         "extract_metadata": "extract_metadata.py",
-        "find_archived_env_tags": "find_archived_env_tags.py",
         "image_data_analysis": "image_data_analysis.py",
         "inspect_workload": "inspect_workload.py",
         "mongo_cleanup": "mongo_cleanup.py",
         "reports": "reports.py",
-        "security_scanning": "security_scanning.py",
     }
 
 def get_script_descriptions():
     return {
+        "delete_archived_env_tags": "Find and optionally delete Docker tags associated with archived environments in Mongo",
+        "delete_archived_model_tags": "Find and optionally delete Docker tags associated with archived models in Mongo",
         "delete_image": "Delete Docker images from registry (default: dry-run)",
+        "delete_unused_environments": "Find and optionally delete environments not used in workspaces, models, or project defaults (auto-generates reports)",
+        "delete_unused_private_env_tags": "Find and optionally delete private environments owned by deactivated Keycloak users",
+        "delete_unused_references": "Find and optionally delete MongoDB references to non-existent Docker images",
         "extract_metadata": "Extract metadata from MongoDB",
-        "find_archived_env_tags": "Find Docker tags associated with archived environments in Mongo",
         "image_data_analysis": "Analyze container images and generate reports",
         "inspect_workload": "Inspect Kubernetes workload and pod information",
-        "mongo_cleanup": "Find or delete environment revision records in Mongo by Docker tag",
-        "reports": "Generate reports from analysis data",
-        "security_scanning": "Scan container images for security vulnerabilities using Clair",
+        "mongo_cleanup": "Simple tag/ObjectID-based Mongo cleanup (consider using delete_unused_references for advanced features)",
+        "reports": "Generate tag usage reports from analysis data (auto-generates metadata)",
     }
 
 def run_script(script_path, args, dry_run=True):
@@ -66,24 +74,22 @@ def run_script(script_path, args, dry_run=True):
         sys.exit(1)
 
 def read_object_ids_from_file(file_path: str) -> List[str]:
-    """Read ObjectIDs from a file, extracting the first column"""
+    """Read ObjectIDs from a file, one per line (comments starting with # are ignored)."""
     object_ids = []
     try:
         with open(file_path, 'r') as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if line and not line.startswith('#'):  # Skip empty lines and comments
-                    parts = line.split()
-                    if parts:
-                        obj_id = parts[0]  # First column is the ObjectID
-                        if len(obj_id) == 24:
-                            try:
-                                int(obj_id, 16)  # Validate hexadecimal
-                                object_ids.append(obj_id)
-                            except ValueError:
-                                logging.warning(f"Invalid ObjectID '{obj_id}' on line {line_num}")
-                        else:
-                            logging.warning(f"ObjectID '{obj_id}' on line {line_num} is not 24 characters")
+                    obj_id = line
+                    if len(obj_id) == 24:
+                        try:
+                            int(obj_id, 16)  # Validate hexadecimal
+                            object_ids.append(obj_id)
+                        except ValueError:
+                            logging.warning(f"Invalid ObjectID '{obj_id}' on line {line_num}")
+                    else:
+                        logging.warning(f"ObjectID '{obj_id}' on line {line_num} is not 24 characters")
         return object_ids
     except FileNotFoundError:
         logging.error(f"File '{file_path}' not found")
@@ -113,19 +119,25 @@ def validate_script_requirements(script_keyword, args):
             sys.exit(1)
     
     elif script_keyword == "inspect_workload":
-        # Check if registry URL and prefix are provided, otherwise use config defaults
-        has_registry_url = any('--registry-url' in arg for arg in args)
-        has_prefix_to_remove = any('--prefix-to-remove' in arg for arg in args)
+        # inspect_workload.py now handles config defaults internally
+        # No validation needed - it will use config values if args not provided
+        pass
+    
+    elif script_keyword == "mongo_cleanup":
+        # Check if required arguments are provided
+        has_file = any('--file' in arg for arg in args)
+        # Mode should be first positional argument (find or delete)
+        has_mode = any(arg in ['find', 'delete'] for arg in args)
         
-        if not has_registry_url and not has_prefix_to_remove:
-            # Use config defaults
-            registry_url = config_manager.get_registry_url()
-            args.extend(['--registry-url', registry_url, '--prefix-to-remove', f"{registry_url}/"])
-            logging.info(f"Using config defaults: registry-url={registry_url}")
-        elif not has_registry_url or not has_prefix_to_remove:
-            logging.error("Both --registry-url and --prefix-to-remove are required for inspect_workload.")
-            logging.error("Example: main.py inspect_workload --registry-url <url> --prefix-to-remove <prefix>")
-            logging.error("Or configure defaults in config.yaml")
+        if not has_mode:
+            logging.error("mongo_cleanup requires a mode argument: 'find' or 'delete'")
+            logging.error("Example: main.py mongo_cleanup find --file tags.txt --collection environment_revisions")
+            logging.error("         main.py mongo_cleanup delete --file tags.txt --collection environment_revisions")
+            sys.exit(1)
+        
+        if not has_file:
+            logging.error("mongo_cleanup requires --file argument with path to tags/ObjectIDs file")
+            logging.error("Example: main.py mongo_cleanup find --file tags.txt --collection environment_revisions")
             sys.exit(1)
     
     elif script_keyword == "delete_image":
@@ -163,14 +175,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Available scripts:
-  extract_metadata      - Extract metadata from MongoDB
-  image_data_analysis   - Analyze container images and generate reports
-  inspect_workload      - Inspect Kubernetes workload and pod information
-  security_scanning     - Scan container images for security vulnerabilities
-  delete_image          - Delete Docker images from registry (default: dry-run)
-  mongo_cleanup         - Clean up environment revision records in MongoDB
-  reports               - Generate reports from analysis data
-  find_archived_env_tags- Find Docker tags associated with archived environments
+  delete_archived_env_tags  - Find and optionally delete Docker tags associated with archived environments
+  delete_archived_model_tags- Find and optionally delete Docker tags associated with archived models
+  delete_image            - Delete Docker images from registry (default: dry-run)
+  delete_unused_environments - Find and optionally delete environments not used in workspaces, models, or project defaults (auto-generates reports)
+  delete_unused_private_env_tags - Find and optionally delete private environments owned by deactivated Keycloak users
+  delete_unused_references  - Find and optionally delete MongoDB references to non-existent Docker images
+  extract_metadata        - Extract metadata from MongoDB
+  image_data_analysis     - Analyze container images and generate reports
+  inspect_workload        - Inspect Kubernetes workload and pod information
+  mongo_cleanup           - Simple tag/ObjectID-based Mongo cleanup
+  reports                 - Generate tag usage reports from analysis data (auto-generates metadata)
 
 Configuration:
   The tool uses config.yaml for default settings. You can also use environment variables:
@@ -185,13 +200,11 @@ Examples:
   python main.py image_data_analysis
   python main.py inspect_workload
   python main.py delete_image mypassword
-  python main.py find_archived_env_tags --output archived-tags.json
+  python main.py delete_archived_env_tags --output archived-tags.json
 
   # Override defaults
-  python main.py image_data_analysis --registry-url registry.example.com --repository-name my-repo
-
-  # Inspect workload with custom settings
-  python main.py inspect_workload --registry-url registry.example.com --prefix-to-remove registry.example.com/
+  python main.py image_data_analysis --registry-url registry.example.com --repository my-repo
+  python main.py inspect_workload --registry-url registry.example.com
 
   # Delete images (dry run - default, safe)
   python main.py delete_image mypassword
@@ -208,14 +221,65 @@ Examples:
   python main.py delete_image mypassword --file environments
 
   # Mongo cleanup
-  python main.py mongo_cleanup find --file scripts/to_delete.txt
-  python main.py mongo_cleanup delete --file scripts/to_delete.txt
-
-  # Security scanning
-  python main.py security_scanning --clair-url http://clair:6060 --layers-file layers.json
+  python main.py mongo_cleanup find --file scripts/to_delete.txt --collection environment_revisions
+  python main.py mongo_cleanup delete --file scripts/to_delete.txt --collection environment_revisions
   
-  # Find archived environment tags
-   python main.py find_archived_env_tags --images environment model --output archived-tags.json
+  # Generate tag usage reports (auto-generates metadata if missing)
+  python main.py reports
+  
+  # Force regeneration of metadata before generating reports
+  python main.py reports --generate-reports
+  
+  # Find archived environment tags (dry-run)
+   python main.py delete_archived_env_tags --output archived-tags.json
+
+  # Delete archived environment tags directly
+   python main.py delete_archived_env_tags --apply
+
+  # Delete archived environment tags from pre-generated file
+   python main.py delete_archived_env_tags --apply --input archived-tags.json
+
+  # Find unused references (MongoDB references to non-existent Docker images)
+   python main.py delete_unused_references --output unused-refs.json
+
+  # Delete unused references (requires --apply flag)
+   python main.py delete_unused_references --apply
+
+  # Delete unused references from pre-generated file
+   python main.py delete_unused_references --apply --input unused-refs.json
+
+  # Find archived model tags (dry-run)
+   python main.py delete_archived_model_tags --output archived-model-tags.json
+
+  # Delete archived model tags directly
+   python main.py delete_archived_model_tags --apply
+
+  # Delete archived model tags from pre-generated file
+   python main.py delete_archived_model_tags --apply --input archived-model-tags.json
+
+  # Find private environments owned by deactivated Keycloak users (dry-run)
+   python main.py delete_unused_private_env_tags --output deactivated-user-envs.json
+
+  # Delete private environments owned by deactivated Keycloak users
+   python main.py delete_unused_private_env_tags --apply
+
+  # Delete from pre-generated file
+   python main.py delete_unused_private_env_tags --apply --input deactivated-user-envs.json
+
+  # Find unused environments (auto-generates required reports if missing)
+   python main.py delete_unused_environments
+   
+  # Force regeneration of metadata reports before analysis
+   python main.py delete_unused_environments --generate-reports
+
+  # Delete unused environments (with confirmation)
+   python main.py delete_unused_environments --apply
+
+  # Full workflow: generate reports and delete
+   python main.py delete_unused_environments --generate-reports --apply
+   
+  # Delete from pre-generated file
+   python main.py delete_unused_environments --apply --input unused-envs.json
 
 Safety Notes:
   - delete_image runs in dry-run mode by default for safety
@@ -228,6 +292,7 @@ Safety Notes:
     
     parser.add_argument(
         'script_keyword', 
+        nargs='?',
         choices=script_paths.keys(), 
         help="Script to run"
     )
@@ -246,13 +311,50 @@ Safety Notes:
     
     parser.add_argument(
         '--file',
-        help="File containing ObjectIDs (first column) to filter images (for image_data_analysis, inspect_workload, delete_image)"
+        help="File containing ObjectIDs (one per line) to filter images (for image_data_analysis, inspect_workload, delete_image)"
     )
     
     parser.add_argument(
         '--config', 
         action='store_true',
         help="Show current configuration and exit"
+    )
+
+    # Convenience flag to run archived env tag finder
+    parser.add_argument(
+        '--find-archived-env-tags',
+        action='store_true',
+        help='Find archived environment tags in the Docker registry and Mongo (deprecated, use --delete-archived-env-tags instead)'
+    )
+
+    parser.add_argument(
+        '--delete-archived-env-tags',
+        action='store_true',
+        help='Find and optionally delete archived environment tags in the Docker registry and Mongo'
+    )
+
+    parser.add_argument(
+        '--delete-unused-references',
+        action='store_true',
+        help='Find and optionally delete MongoDB references to non-existent Docker images'
+    )
+
+    parser.add_argument(
+        '--delete-archived-model-tags',
+        action='store_true',
+        help='Find and optionally delete Docker tags associated with archived models in Mongo'
+    )
+
+    parser.add_argument(
+        '--delete-unused-private-env-tags',
+        action='store_true',
+        help='Find and optionally delete private environments owned by deactivated Keycloak users'
+    )
+
+    parser.add_argument(
+        '--delete-unused-environments',
+        action='store_true',
+        help='Find and optionally delete environments not used in workspaces, models, or as project defaults'
     )
     
     parser.add_argument(
@@ -268,16 +370,51 @@ Safety Notes:
         config_manager.print_config()
         sys.exit(0)
 
+    # If convenience flag provided, choose corresponding script
+    if args.find_archived_env_tags or args.delete_archived_env_tags:
+        args.script_keyword = 'delete_archived_env_tags'
+        # Both flags now use the same script with --apply for deletion
+        if args.delete_archived_env_tags:
+            # Signal delete_archived_env_tags.py to delete after analysis
+            if '--apply' not in args.additional_args:
+                args.additional_args.append('--apply')
+    elif args.delete_unused_references:
+        args.script_keyword = 'delete_unused_references'
+    elif args.delete_archived_model_tags:
+        args.script_keyword = 'delete_archived_model_tags'
+        # Signal delete_archived_model_tags.py to delete after analysis
+        if '--apply' not in args.additional_args:
+            args.additional_args.append('--apply')
+    elif args.delete_unused_private_env_tags:
+        args.script_keyword = 'delete_unused_private_env_tags'
+        # Signal delete_unused_private_env_tags.py to delete after analysis
+        if '--apply' not in args.additional_args:
+            args.additional_args.append('--apply')
+    elif args.delete_unused_environments:
+        args.script_keyword = 'delete_unused_environments'
+        # Signal delete_unused_environments.py to delete after analysis
+        if '--apply' not in args.additional_args:
+            args.additional_args.append('--apply')
+
+    # If no script determined, show help
+    if not args.script_keyword:
+        parser.print_help()
+        sys.exit(1)
+
     # Validate script requirements
     validate_script_requirements(args.script_keyword, args.additional_args)
     
     # Get script path
-    script_path = script_paths.get(args.script_keyword)
+    script_filename = script_paths.get(args.script_keyword)
     
-    if not script_path:
+    if not script_filename:
         logging.error(f"Unknown script: {args.script_keyword}")
         logging.error(f"Available scripts: {list(script_paths.keys())}")
         sys.exit(1)
+    
+    # Build full path to script (in same directory as main.py)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_path = os.path.join(script_dir, script_filename)
     
     # Determine if we're in dry-run mode for delete_image
     dry_run = True  # Default to dry-run for safety

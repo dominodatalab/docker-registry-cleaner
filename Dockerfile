@@ -1,9 +1,11 @@
 FROM python:alpine3.22
 
+RUN apk add skopeo
+
 COPY requirements.txt .
-COPY config.yaml config.yaml
+COPY config-example.yaml config.yaml
 COPY python python
 
 RUN pip install -r requirements.txt
 
-ENTRYPOINT ["sleep", "3600"]
+ENTRYPOINT ["/bin/sh", "-c", "sleep 3600"]

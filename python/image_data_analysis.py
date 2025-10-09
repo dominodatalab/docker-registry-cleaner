@@ -1,172 +1,324 @@
-import subprocess
-import json
+#!/usr/bin/env python3
+"""
+Docker Image and Layer Analysis Tool
+
+This script analyzes Docker registry images and extracts layer information,
+using pandas DataFrames for efficient data management and analysis.
+
+Data Model:
+- Layers DataFrame: layer_id, size_bytes, ref_count
+- Images DataFrame: image_id, repository, tag, digest
+- Image-to-Layer Mapping: image_id, layer_id, order_index
+"""
+
 import argparse
+import pandas as pd
 import sys
-import time
-import os
-from collections import defaultdict
-from tabulate import tabulate
-from typing import List, Optional
+
+from typing import List, Optional, Dict
+
 from config_manager import config_manager, SkopeoClient
 from logging_utils import setup_logging, get_logger
-from object_id_utils import read_object_ids_from_file
-from report_utils import save_table_and_json, save_json
+from object_id_utils import read_typed_object_ids_from_file
+from report_utils import save_json
 
 logger = get_logger(__name__)
 
-def print_help():
-    print("Usage: python image_data_analysis.py [options] [image1 image2 ...]")
-    print("Get layer information for Container images in the specified repository.")
-    print("Options:")
-    print("  --registry-url URL     Container registry URL")
-    print("  --repository NAME      Container repository name")
-    print("  --file FILE            File containing ObjectIDs (first column) to filter images")
-    print("  -h, --help             Display this help message")
-    print("If no images are provided, the default images will be used.")
-    print("Example: python image_data_analysis.py --registry-url <registry_url> --repository <repository> --file environments environment model")
 
-def add_environments(original_json):
-    transformed_json = {}
-
-    for sha256, data in original_json.items():
-        transformed_json[sha256] = {
-            "size": data["size"],
-            "tags": data["tags"],
-            "environments": [tag.split('-')[0] for tag in data["tags"]]
-        }
-
-    return transformed_json
-
-def filter_tags_by_object_ids(tags: List[str], object_ids: Optional[List[str]] = None) -> List[str]:
-    """Filter tags to only include those that start with one of the provided ObjectIDs"""
-    if not object_ids:
-        return tags
+class ImageAnalyzer:
+    """Analyzes Docker images and their layers using pandas DataFrames"""
     
-    filtered_tags = []
-    for tag in tags:
-        # Check if the tag starts with any of the provided ObjectIDs
-        for obj_id in object_ids:
-            if tag.startswith(obj_id):
-                filtered_tags.append(tag)
-                break
+    def __init__(self, registry_url: str, repository: str):
+        self.registry_url = registry_url
+        self.repository = repository
+        self.skopeo_client = SkopeoClient(config_manager, use_pod=False)
+        
+        # Initialize DataFrames
+        self.layers_df = pd.DataFrame(columns=["layer_id", "size_bytes", "ref_count"])
+        self.images_df = pd.DataFrame(columns=["image_id", "repository", "tag", "digest"])
+        self.image_layers_df = pd.DataFrame(columns=["image_id", "layer_id", "order_index"])
+        
+        self.logger = get_logger(__name__)
     
-    return filtered_tags
-
-def inspect_workload(registry_url, prefix_to_remove, target_namespace, pod_name_prefixes, output_file):
-    command = [
-        "python3.10",
-        "inspect_workload.py",
-        "--registry-url",
-        registry_url,
-        "--prefix-to-remove",
-        prefix_to_remove,
-        "--target-namespace",
-        target_namespace,
-        "--pod-name-prefixes",
-        *pod_name_prefixes,
-        "--output-file",
-        output_file
-    ]
-    subprocess.run(command)
-
-def get_image_info(repository, image, object_ids: Optional[List[str]] = None):
-    layers_info = defaultdict(lambda: {'size': 0, 'tags': set()})
-
-    try:
-        # Use standardized SkopeoClient
-        skopeo_client = SkopeoClient(config_manager, use_pod=False)
+    def filter_tags_by_object_ids(self, tags: List[str], object_ids: Optional[List[str]] = None) -> List[str]:
+        """Filter tags to only include those that start with one of the provided ObjectIDs"""
+        if not object_ids:
+            return tags
         
-        # Get tags using standardized client
-        tags = skopeo_client.list_tags(f"{repository}/{image}")
-        
-        # Filter tags by ObjectIDs if provided
-        if object_ids:
-            original_count = len(tags)
-            tags = filter_tags_by_object_ids(tags, object_ids)
-            filtered_count = len(tags)
-            logger.info(f"Filtered tags: {filtered_count}/{original_count} tags match the provided ObjectIDs")
-            
-            if filtered_count == 0:
-                logger.warning(f"No tags found matching the provided ObjectIDs for image: {image}")
-                return None
-
+        filtered_tags = []
         for tag in tags:
-            logger.info(f"Analyzing Tag {tag}...")
-            show_spinner()
+            # Check if the tag starts with any of the provided ObjectIDs
+            for obj_id in object_ids:
+                if tag.startswith(obj_id):
+                    filtered_tags.append(tag)
+                    break
+        
+        return filtered_tags
+    
+    def analyze_image(self, image_type: str, object_ids: Optional[List[str]] = None) -> bool:
+        """Analyze a single image type (e.g., 'environment', 'model')
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Get tags using standardized client
+            tags = self.skopeo_client.list_tags(f"{self.repository}/{image_type}")
             
-            # Inspect image using standardized client
-            image_info = skopeo_client.inspect_image(f"{repository}/{image}", tag)
-            if not image_info:
-                logger.error(f"Failed to inspect image {image}:{tag}")
-                continue
+            # Filter tags by ObjectIDs if provided
+            if object_ids:
+                original_count = len(tags)
+                tags = self.filter_tags_by_object_ids(tags, object_ids)
+                filtered_count = len(tags)
+                self.logger.info(f"Filtered tags for {image_type}: {filtered_count}/{original_count} tags match the provided ObjectIDs")
                 
-            layers_data = image_info['LayersData']
+                if filtered_count == 0:
+                    self.logger.warning(f"No tags found matching the provided ObjectIDs for image: {image_type}")
+                    return False
+            
+            self.logger.info(f"Analyzing {len(tags)} tags for {image_type}...")
+            
+            for tag in tags:
+                self.logger.info(f"  Processing tag: {tag}...")
+                
+                # Inspect image using standardized client
+                image_info = self.skopeo_client.inspect_image(f"{self.repository}/{image_type}", tag)
+                if not image_info:
+                    self.logger.error(f"Failed to inspect image {image_type}:{tag}")
+                    continue
+                
+                # Extract image metadata
+                digest = image_info.get('Digest', '')
+                image_id = f"{image_type}:{tag}"
+                
+                # Add image to images DataFrame
+                new_image = pd.DataFrame([{
+                    'image_id': image_id,
+                    'repository': f"{self.repository}/{image_type}",
+                    'tag': tag,
+                    'digest': digest
+                }])
+                self.images_df = pd.concat([self.images_df, new_image], ignore_index=True)
+                
+                # Extract layers
+                layers_data = image_info.get('LayersData', [])
+                
+                for order_index, layer in enumerate(layers_data):
+                    layer_id = layer['Digest']
+                    layer_size = layer['Size']
+                    
+                    # Add or update layer in layers DataFrame
+                    if layer_id in self.layers_df['layer_id'].values:
+                        # Layer exists, increment ref_count
+                        self.layers_df.loc[self.layers_df['layer_id'] == layer_id, 'ref_count'] += 1
+                    else:
+                        # New layer
+                        new_layer = pd.DataFrame([{
+                            'layer_id': layer_id,
+                            'size_bytes': layer_size,
+                            'ref_count': 1
+                        }])
+                        self.layers_df = pd.concat([self.layers_df, new_layer], ignore_index=True)
+                    
+                    # Add image-to-layer mapping
+                    new_mapping = pd.DataFrame([{
+                        'image_id': image_id,
+                        'layer_id': layer_id,
+                        'order_index': order_index
+                    }])
+                    self.image_layers_df = pd.concat([self.image_layers_df, new_mapping], ignore_index=True)
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to retrieve information for image: {image_type}")
+            self.logger.error(f"Error: {e}")
+            return False
+    
+    def freed_space_if_deleted(self, image_ids: List[str]) -> int:
+        """Calculate space that would be freed by deleting one or more images.
+        
+        Args:
+            image_ids: List of image_ids to simulate deletion
+        
+        Returns:
+            Total bytes that would be freed
+        """
+        # Count how many of the to-be-deleted images use each layer
+        layers_to_delete = self.image_layers_df[
+            self.image_layers_df['image_id'].isin(image_ids)
+        ]['layer_id'].value_counts()
+        
+        total_freed = 0
+        for layer_id, delete_count in layers_to_delete.items():
+            # Get current ref_count for this layer
+            current_ref = self.layers_df[self.layers_df['layer_id'] == layer_id]['ref_count'].values[0]
+            
+            # If this layer would have 0 references after deletion, it will be freed
+            if current_ref == delete_count:
+                layer_size = self.layers_df[self.layers_df['layer_id'] == layer_id]['size_bytes'].values[0]
+                total_freed += layer_size
+        
+        return int(total_freed)
+    
+    def get_unused_images(self, used_tags: List[str]) -> pd.DataFrame:
+        """Get images that are not in the used_tags list.
+        
+        Args:
+            used_tags: List of tags that are currently in use
+        
+        Returns:
+            DataFrame of unused images
+        """
+        return self.images_df[~self.images_df['tag'].isin(used_tags)]
+    
+    def generate_summary_stats(self) -> Dict:
+        """Generate summary statistics about the analyzed images and layers"""
+        total_images = len(self.images_df)
+        total_layers = len(self.layers_df)
+        total_size = int(self.layers_df['size_bytes'].sum())
+        
+        # Layers used by only one image
+        single_use_layers = self.layers_df[self.layers_df['ref_count'] == 1]
+        single_use_size = int(single_use_layers['size_bytes'].sum())
+        
+        # Shared layers (used by multiple images)
+        shared_layers = self.layers_df[self.layers_df['ref_count'] > 1]
+        shared_size = int(shared_layers['size_bytes'].sum())
+        
+        return {
+            'total_images': total_images,
+            'total_layers': total_layers,
+            'total_size_bytes': total_size,
+            'total_size_gb': round(total_size / (1024**3), 2),
+            'single_use_layers': len(single_use_layers),
+            'single_use_size_bytes': single_use_size,
+            'single_use_size_gb': round(single_use_size / (1024**3), 2),
+            'shared_layers': len(shared_layers),
+            'shared_size_bytes': shared_size,
+            'shared_size_gb': round(shared_size / (1024**3), 2),
+            'avg_layers_per_image': round(len(self.image_layers_df) / total_images, 2) if total_images > 0 else 0,
+            'avg_ref_count': round(self.layers_df['ref_count'].mean(), 2) if total_layers > 0 else 0
+        }
+    
+    def get_images_by_tag_prefix(self, prefix: str) -> pd.DataFrame:
+        """Get all images whose tags start with the given prefix (e.g., ObjectID)"""
+        return self.images_df[self.images_df['tag'].str.startswith(prefix)]
+    
+    def export_to_legacy_format(self) -> Dict:
+        """Export data in the legacy format for backward compatibility.
+        
+        Returns a dict mapping layer_id to {'size': int, 'tags': [str], 'environments': [str]}
+        """
+        legacy_data = {}
+        
+        for _, layer in self.layers_df.iterrows():
+            layer_id = layer['layer_id']
+            
+            # Get all image-layer mappings for this layer
+            mappings = self.image_layers_df[self.image_layers_df['layer_id'] == layer_id]
+            
+            # Get the tags for these images
+            image_ids = mappings['image_id'].tolist()
+            tags = []
+            environments = []
+            
+            for image_id in image_ids:
+                image_row = self.images_df[self.images_df['image_id'] == image_id]
+                if not image_row.empty:
+                    tag = image_row.iloc[0]['tag']
+                    tags.append(tag)
+                    # Extract environment ID (first part before '-')
+                    env_id = tag.split('-')[0] if '-' in tag else tag
+                    environments.append(env_id)
+            
+            legacy_data[layer_id] = {
+                'size': int(layer['size_bytes']),
+                'tags': tags,
+                'environments': environments
+            }
+        
+        return legacy_data
+    
+    def save_reports(self):
+        """Save analysis reports to files"""
+        # Get output paths from config
+        final_output_file = config_manager.get_image_analysis_path()
+        tags_per_layer_output_file = config_manager.get_tags_per_layer_path()
+        layers_and_sizes_output_file = config_manager.get_layers_and_sizes_path()
+        filtered_layers_output_file = config_manager.get_filtered_layers_path()
+        tag_sums_output_file = config_manager.get_tag_sums_path()
+        images_report_output_file = config_manager.get_images_report_path()
+        
+        # Export to legacy format (for backward compatibility)
+        legacy_data = self.export_to_legacy_format()
+        save_json(final_output_file, legacy_data)
+        self.logger.info(f"Image analysis saved to: {final_output_file}")
+        
+        # Tags per layer
+        tags_per_layer = {
+            layer_id: data['ref_count'] 
+            for layer_id, data in self.layers_df.set_index('layer_id').to_dict('index').items()
+        }
+        save_json(tags_per_layer_output_file, tags_per_layer)
+        self.logger.info(f"Tags per layer count saved to: {tags_per_layer_output_file}")
+        
+        # Layers and sizes
+        layers_and_sizes = {
+            layer_id: int(data['size_bytes'])
+            for layer_id, data in self.layers_df.set_index('layer_id').to_dict('index').items()
+        }
+        save_json(layers_and_sizes_output_file, layers_and_sizes)
+        self.logger.info(f"Layers and sizes saved to: {layers_and_sizes_output_file}")
+        
+        # Filtered layers (ref_count == 1)
+        single_use_layers = self.layers_df[self.layers_df['ref_count'] == 1]
+        filtered_legacy = {}
+        for _, layer in single_use_layers.iterrows():
+            layer_id = layer['layer_id']
+            if layer_id in legacy_data:
+                filtered_legacy[layer_id] = legacy_data[layer_id]
+        save_json(filtered_layers_output_file, filtered_legacy)
+        self.logger.info(f"Filtered layers saved to: {filtered_layers_output_file}")
+        
+        # Tag sums (sum of single-use layer sizes per tag)
+        tag_sums = {}
+        for layer_id, data in filtered_legacy.items():
+            for tag in data['tags']:
+                if tag not in tag_sums:
+                    tag_sums[tag] = {
+                        'size': 0,
+                        'environments': data['environments']
+                    }
+                tag_sums[tag]['size'] += data['size']
+        save_json(tag_sums_output_file, tag_sums)
+        self.logger.info(f"Tag sums saved to: {tag_sums_output_file}")
+        
+        # Images report (comprehensive)
+        images_report = {
+            'summary': self.generate_summary_stats(),
+            'layers': legacy_data
+        }
+        save_json(f"{images_report_output_file}.json", images_report)
+        
+        # Also save a text summary
+        summary = images_report['summary']
+        with open(f"{images_report_output_file}.txt", 'w') as f:
+            f.write("=" * 60 + "\n")
+            f.write("Docker Image Analysis Summary\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(f"Total Images: {summary['total_images']}\n")
+            f.write(f"Total Layers: {summary['total_layers']}\n")
+            f.write(f"Total Size: {summary['total_size_gb']} GB ({summary['total_size_bytes']} bytes)\n\n")
+            f.write(f"Single-Use Layers: {summary['single_use_layers']}\n")
+            f.write(f"Single-Use Size: {summary['single_use_size_gb']} GB ({summary['single_use_size_bytes']} bytes)\n\n")
+            f.write(f"Shared Layers: {summary['shared_layers']}\n")
+            f.write(f"Shared Size: {summary['shared_size_gb']} GB ({summary['shared_size_bytes']} bytes)\n\n")
+            f.write(f"Average Layers per Image: {summary['avg_layers_per_image']}\n")
+            f.write(f"Average Reference Count: {summary['avg_ref_count']}\n")
+        
+        self.logger.info(f"Images report saved to: {images_report_output_file}.txt and .json")
 
-            for layer in layers_data:
-                layer_id = layer['Digest']
-                layer_size = layer['Size']
-                layers_info[layer_id]['size'] += layer_size
-                layers_info[layer_id]['tags'].add(tag)
-
-        return layers_info
-
-    except Exception as e:
-        logger.error(f"Failed to retrieve information for image: {image}")
-        logger.error(f"Error: {e}")
-        logger.error("----------------------------------")
-        return None
-
-def count_tags_per_layer(original_json):
-    tags_per_layer = {}
-
-    for sha256, data in original_json.items():
-        tags_per_layer[sha256] = len(data["tags"])
-
-    return tags_per_layer
-
-def extract_layers_and_sizes(original_json):
-    layers_and_sizes = {}
-
-    for sha256, data in original_json.items():
-        layers_and_sizes[sha256] = int(data["size"])
-
-    return layers_and_sizes
-
-def filter_layers_by_single_tag(original_json):
-    filtered_layers = {sha256: data for sha256, data in original_json.items() if len(data["tags"]) == 1}
-    return filtered_layers
-
-def sum_layers_by_tag(filtered_layers):
-    tag_sum_dict = {}
-    for sha256, data in filtered_layers.items():
-        for tag in data["tags"]:
-            if tag in tag_sum_dict:
-                tag_sum_dict[tag]["size"] += int(data["size"])
-            else:
-                tag_sum_dict[tag] = {"size": int(data["size"]), "environments": data["environments"]}
-
-    return tag_sum_dict
-
-def show_spinner():
-    spinner = "|/-\\"
-    for _ in range(10): 
-        for char in spinner:
-            sys.stdout.write("\rProcessing... " + char)
-            sys.stdout.flush()
-            time.sleep(0.1)
-    sys.stdout.write("\rProcessing... Done!\n")
-    sys.stdout.flush()
-
-def merge_tables(image_tables):
-    # Merge tables based on layer ID
-    merged_table = defaultdict(lambda: {'size': 0, 'tags': set()})
-
-    for table in image_tables:
-        for layer_id, info in table.items():
-            merged_table[layer_id]['size'] += info['size']
-            merged_table[layer_id]['tags'].update(info['tags'])
-
-    return merged_table
 
 def main():
     setup_logging()
@@ -177,26 +329,45 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python image_data_analysis.py --registry-url docker-registry:5000 --repository dominodatalab environment model
-  python image_data_analysis.py --registry-url docker-registry:5000 --repository dominodatalab --file environments environment model
+  # Use config_manager defaults
+  python image_data_analysis.py
+  
+  # Override registry and repository
+  python image_data_analysis.py --registry-url docker-registry:5000 --repository dominodatalab
+  
+  # Filter by ObjectIDs from file
+  python image_data_analysis.py --file environments environment model
         """
     )
     
-    parser.add_argument("--registry-url", required=True, help="Container registry URL")
-    parser.add_argument("--repository", required=True, help="Container repository name")
+    parser.add_argument("--registry-url", help=f"Container registry URL (default: from config)")
+    parser.add_argument("--repository", help=f"Container repository name (default: from config)")
     parser.add_argument("--file", help="File containing ObjectIDs (first column) to filter images")
     parser.add_argument("images", nargs="*", help="Images to analyze (default: environment, model)")
     
     args = parser.parse_args()
     
-    # Parse ObjectIDs from file if provided
-    object_ids = None
+    # Use config_manager defaults if not provided
+    registry_url = args.registry_url or config_manager.get_registry_url()
+    repository = args.repository or config_manager.get_repository()
+    
+    # Parse ObjectIDs (typed) from file if provided
+    object_ids_map = None
     if args.file:
-        object_ids = read_object_ids_from_file(args.file)
-        if not object_ids:
+        object_ids_map = read_typed_object_ids_from_file(args.file)
+        # Build per-image lists, including 'any'
+        any_ids = set(object_ids_map.get('any', []))
+        env_ids = list(any_ids.union(object_ids_map.get('environment', []))) if object_ids_map else None
+        model_ids = list(any_ids.union(object_ids_map.get('model', []))) if object_ids_map else None
+        # Store back into a map keyed by image name
+        object_ids_map = {
+            'environment': env_ids or [],
+            'model': model_ids or [],
+        }
+        if not any(object_ids_map.values()):
             logger.error(f"No valid ObjectIDs found in file '{args.file}'")
             sys.exit(1)
-        logger.info(f"Filtering images by ObjectIDs from file '{args.file}': {object_ids}")
+        logger.info(f"Filtering images by ObjectIDs from file '{args.file}': {object_ids_map}")
     
     # Get a list of images from the command line arguments or use default images
     if args.images:
@@ -205,99 +376,59 @@ Examples:
         logger.info("No images provided for registry scanning, scanning default Domino images...")
         images = ["environment", "model"]
     
-    registry_url = args.registry_url
-    repository = args.repository
+    logger.info("=" * 60)
+    logger.info("   Container Registry Scanning")
+    logger.info("=" * 60)
+    logger.info(f"Registry: {registry_url}")
+    logger.info(f"Repository: {repository}")
+    logger.info(f"Images: {', '.join(images)}")
+    if object_ids_map:
+        logger.info(f"Filtering by ObjectIDs from file: {args.file}")
+    logger.info("=" * 60)
     
-    # Get output file paths from ConfigManager
-    final_output_file = config_manager.get_image_analysis_path()
-    tags_per_layer_output_file = config_manager.get_tags_per_layer_path()
-    layers_and_sizes_output_file = config_manager.get_layers_and_sizes_path()
-    filtered_layers_output_file = config_manager.get_filtered_layers_path()
-    tag_sums_output_file = config_manager.get_tag_sums_path()
-    images_report_output_file = config_manager.get_images_report_path()
-    output_dir = config_manager.get_output_dir()
+    # Create analyzer
+    analyzer = ImageAnalyzer(registry_url, repository)
     
-    logger.info("----------------------------------")
-    logger.info(f"   Container registry  scanning")
-    if object_ids:
-        logger.info(f"   Filtering by ObjectIDs: {', '.join(object_ids)}")
-    logger.info("----------------------------------")
-    
-    # Loop through each image and get its information
-    image_tables = []
+    # Analyze each image type
+    success_count = 0
     for image in images:
-        image_info = get_image_info(repository, image, object_ids)
-        if image_info:
-            image_tables.append(image_info)
+        # Pick typed IDs if provided
+        per_image_oids = None
+        if object_ids_map is not None:
+            per_image_oids = object_ids_map.get(image, [])
+        
+        logger.info(f"\nAnalyzing image type: {image}")
+        if analyzer.analyze_image(image, per_image_oids):
+            success_count += 1
         logger.info("")
     
-    if not image_tables:
+    if success_count == 0:
         logger.error("No image data found. Check your ObjectID filters or registry access.")
         sys.exit(1)
     
-    # Merge tables based on layer ID
-    merged_table = merge_tables(image_tables)
+    # Generate and save reports
+    logger.info("\n" + "=" * 60)
+    logger.info("   Generating Reports")
+    logger.info("=" * 60)
     
-    # Sort the merged table based on layer size
-    sorted_table = dict(sorted(merged_table.items(), key=lambda x: x[1]['size'], reverse=True))
+    analyzer.save_reports()
     
-    # Convert sets to lists for JSON serialization
-    json_serializable_table = {}
-    for layer_id, info in sorted_table.items():
-        json_serializable_table[layer_id] = {
-            'size': info['size'],
-            'tags': list(info['tags'])  # Convert set to list for JSON serialization
-        }
+    # Print summary
+    summary = analyzer.generate_summary_stats()
+    logger.info("\n" + "=" * 60)
+    logger.info("   Analysis Summary")
+    logger.info("=" * 60)
+    logger.info(f"Total Images: {summary['total_images']}")
+    logger.info(f"Total Layers: {summary['total_layers']}")
+    logger.info(f"Total Size: {summary['total_size_gb']} GB")
+    logger.info(f"Single-Use Layers: {summary['single_use_layers']} ({summary['single_use_size_gb']} GB)")
+    logger.info(f"Shared Layers: {summary['shared_layers']} ({summary['shared_size_gb']} GB)")
+    logger.info(f"Average Layers per Image: {summary['avg_layers_per_image']}")
+    logger.info(f"Average Reference Count: {summary['avg_ref_count']}")
+    logger.info("=" * 60)
     
-    # Prepare sorted table for tabulate
-    headers = ["Layer ID", "Layer size (bytes)", "Total Size (bytes)", "Tag Count", "Tags"]
-    rows = []
-    
-    for layer_id, info in sorted_table.items():
-        tag_count = len(info['tags'])
-        ind_layer_size = '{:.0f}'.format(info['size'] / tag_count if tag_count > 0 else 0)
-        rows.append((layer_id, ind_layer_size, info['size'], tag_count, ', '.join(info['tags'])))
-    
-    # Print sorted table
-    table = tabulate(rows, headers=headers, tablefmt="grid")
-    #logger.info(table)
-    
-    # Save sorted table to a file
-    output_file = images_report_output_file
-    save_table_and_json(output_file, table, json_serializable_table)
-    logger.info(f"Merged and sorted results saved to {output_file}.txt and {output_file}.json")
+    logger.info("\n✅ Analysis complete!")
 
-    # Read JSON data from the final output file
-    with open(f"{output_file}.json", 'r') as final_file:
-        final_json_data = json.load(final_file)
-
-    transformed_json = add_environments(final_json_data)
-
-    # Save the updated JSON with environments to the output file
-    save_json(final_output_file, transformed_json)
-    logger.info(f"Updated JSON data saved to: {final_output_file}")
-
-    # Get number of tags per layer
-    tags_per_layer = count_tags_per_layer(transformed_json)
-    save_json(tags_per_layer_output_file, tags_per_layer)
-    logger.info(f"Tags per layer count saved to: {tags_per_layer_output_file}")
-
-    # Get size per layer
-    layers_and_sizes = extract_layers_and_sizes(transformed_json)
-    save_json(layers_and_sizes_output_file, layers_and_sizes)
-    logger.info(f"Layers and sizes saved to: {layers_and_sizes_output_file}")
-
-    # Get filtered layers by single tag
-    filtered_layers = filter_layers_by_single_tag(transformed_json)
-    save_json(filtered_layers_output_file, filtered_layers)
-    logger.info(f"Filtered layers saved to: {filtered_layers_output_file}")
-
-    # Get tag sums
-    tag_sums = sum_layers_by_tag(filtered_layers)
-    save_json(tag_sums_output_file, tag_sums)
-    logger.info(f"Tag sums saved to: {tag_sums_output_file}")
-
-    logger.info("Analysis complete!")
 
 if __name__ == "__main__":
     main()

@@ -2,10 +2,12 @@
 MongoDB utility helpers shared across scripts.
 """
 
-from typing import Optional, Any
 import json
-from pymongo import MongoClient
+
 from bson import json_util
+from pymongo import MongoClient
+from typing import Optional, Any
+
 from config_manager import config_manager
 
 
@@ -34,11 +36,10 @@ def get_db(client: Optional[MongoClient] = None):
             pass
 
 
-def get_collection(collection_name: Optional[str] = None, client: Optional[MongoClient] = None):
-    """Return a collection from the configured DB. Defaults to configured collection name."""
+def get_collection(collection_name: str, client: Optional[MongoClient] = None):
+    """Return a collection from the configured DB. Collection name must be provided."""
     db = get_db(client)
-    name = collection_name or config_manager.get_mongo_collection()
-    return db[name]
+    return db[collection_name]
 
 
 def bson_to_jsonable(data: Any) -> Any:
