@@ -1,0 +1,94 @@
+{
+  "summary": {
+    "total_archived_object_ids": 3,
+    "archived_environment_ids": 1,
+    "archived_revision_ids": 2,
+    "total_matching_tags": 2,
+    "freed_space_bytes": 3264114991,
+    "freed_space_mb": 3112.9,
+    "freed_space_gb": 3.04,
+    "tags_by_image_type": {
+      "environment": 2,
+      "model": 0
+    },
+    "object_ids_with_tags": 1,
+    "object_ids_without_tags": 2
+  },
+  "archived_object_ids": [
+    "68e64edfcaf3254005314c90",
+    "68e64ee0caf3254005314c95",
+    "68e64ee0caf3254005314c92"
+  ],
+  "archived_environment_ids": [
+    "68e64edfcaf3254005314c90"
+  ],
+  "archived_revision_ids": [
+    "68e64ee0caf3254005314c95",
+    "68e64ee0caf3254005314c92"
+  ],
+  "archived_tags": [
+    {
+      "object_id": "68e64edfcaf3254005314c90",
+      "image_type": "environment",
+      "tag": "68e64edfcaf3254005314c90-1",
+      "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e64edfcaf3254005314c90-1",
+      "context": {
+        "repository": "itgdock99244",
+        "image_type": "environment",
+        "tag": "68e64edfcaf3254005314c90-1",
+        "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e64edfcaf3254005314c90-1"
+      }
+    },
+    {
+      "object_id": "68e64edfcaf3254005314c90",
+      "image_type": "environment",
+      "tag": "68e64edfcaf3254005314c90-2",
+      "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e64edfcaf3254005314c90-2",
+      "context": {
+        "repository": "itgdock99244",
+        "image_type": "environment",
+        "tag": "68e64edfcaf3254005314c90-2",
+        "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e64edfcaf3254005314c90-2"
+      }
+    }
+  ],
+  "grouped_by_object_id": {
+    "68e64edfcaf3254005314c90": [
+      {
+        "object_id": "68e64edfcaf3254005314c90",
+        "image_type": "environment",
+        "tag": "68e64edfcaf3254005314c90-1",
+        "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e64edfcaf3254005314c90-1",
+        "size_bytes": 0,
+        "context": {
+          "repository": "itgdock99244",
+          "image_type": "environment",
+          "tag": "68e64edfcaf3254005314c90-1",
+          "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e64edfcaf3254005314c90-1"
+        }
+      },
+      {
+        "object_id": "68e64edfcaf3254005314c90",
+        "image_type": "environment",
+        "tag": "68e64edfcaf3254005314c90-2",
+        "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e64edfcaf3254005314c90-2",
+        "size_bytes": 0,
+        "context": {
+          "repository": "itgdock99244",
+          "image_type": "environment",
+          "tag": "68e64edfcaf3254005314c90-2",
+          "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e64edfcaf3254005314c90-2"
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "registry_url": "946429944765.dkr.ecr.eu-west-1.amazonaws.com",
+    "repository": "itgdock99244",
+    "image_types_scanned": [
+      "environment",
+      "model"
+    ],
+    "analysis_timestamp": "2025-10-09T15:25:06.183732"
+  }
+}

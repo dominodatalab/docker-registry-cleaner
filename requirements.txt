@@ -1,0 +1,7 @@
+#pyclair
+kubernetes
+pandas
+pymongo
+PyYAML
+python-keycloak
+tabulate

@@ -1,3 +1,14 @@
-62798b9bee0eb12322fc97e8 31 30
-6286a3c76d4fd0362f8ba3ec 13 12 9
-627d94043035a63be6140e93 10
+# One ObjectID per line. Lines starting with # are ignored.
+# You can optionally prefix with a type to disambiguate:
+#   environment:<ObjectID>
+#   model:<ObjectID>
+# If no prefix is provided, the ID applies to both ("any").
+
+# Applies to both
+62798b9bee0eb12322fc97e8
+
+# Explicitly environment-only
+environment:6286a3c76d4fd0362f8ba3ec
+
+# Explicitly model-only
+model:627d94043035a63be6140e93
