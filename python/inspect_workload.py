@@ -15,7 +15,6 @@ import os
 from dataclasses import dataclass
 from kubernetes import client, config
 from pathlib import Path
-from tabulate import tabulate
 from typing import Dict, List, Optional, Set
 
 from config_manager import config_manager
@@ -284,39 +283,18 @@ class WorkloadInspector:
 		"""Generate workload report"""
 		self.logger.info("Generating workload report...")
 		
-		# Prepare table data
-		headers = ["Tag", "Num of Pods", "Workload Count", "Pods Info"]
-		rows = []
-		
-		for tag, info in image_tags.items():
-			pod_names = ', '.join(sorted(info.pods))
-			count = info.count
-			workload_count = info.workload_count
-			labels_str = json.dumps(info.labels, indent=2)
-			
-			rows.append([tag, count, workload_count, labels_str])
-		
-		# Sort by number of pods (descending)
-		rows.sort(key=lambda x: x[1], reverse=True)
-		
-		# Generate table
-		table = tabulate(rows, headers=headers, tablefmt="grid")
-		
-		# Save files
+		# Save JSON report
 		output_path = Path(output_file)
 		
 		# Ensure parent directory exists and save outputs
 		output_path.parent.mkdir(parents=True, exist_ok=True)
-		# Save table format
-		with open(f"{output_path}.txt", "w") as f:
-			f.write(table)
 		
 		# Save JSON format
 		json_data = {tag: info.to_dict() for tag, info in image_tags.items()}
 		with open(f"{output_path}.json", "w") as f:
 			json.dump(json_data, f, indent=2)
 		
-		self.logger.info(f"Workload report saved to {output_path}.txt and {output_path}.json")
+		self.logger.info(f"Workload report saved to {output_path}.json")
 		
 		# Print summary
 		total_pods = sum(info.count for info in image_tags.values())
@@ -326,7 +304,7 @@ class WorkloadInspector:
 		self.logger.info(f"   Total unique images: {total_images}")
 		self.logger.info(f"   Total pods analyzed: {total_pods}")
 		self.logger.info(f"   Total workloads: {total_workloads}")
-		self.logger.info(f"   Reports saved to: {output_path}.txt and {output_path}.json")
+		self.logger.info(f"   Report saved to: {output_path}.json")
 
 
 def parse_arguments():
@@ -338,9 +316,6 @@ def parse_arguments():
 Examples:
   # Basic usage (uses config values)
   python inspect_workload.py
-
-  # With custom registry URL
-  python inspect_workload.py --registry-url registry.example.com
 
   # Custom namespace and pod prefixes
   python inspect_workload.py --namespace my-namespace --pod-prefixes app- job-
@@ -356,10 +331,6 @@ Examples:
 		"""
 	)
 	
-	parser.add_argument(
-		'--registry-url', 
-		help='Container registry URL (defaults to config value)'
-	)
 	
 	parser.add_argument(
 		'--prefix-to-remove', 
@@ -401,8 +372,8 @@ def main():
 	setup_logging()
 	args = parse_arguments()
 	
-	# Get registry URL from args or config
-	registry_url = args.registry_url or config_manager.get_registry_url()
+	# Get registry URL from config
+	registry_url = config_manager.get_registry_url()
 	
 	# Get prefix to remove from args or derive from registry URL
 	prefix_to_remove = args.prefix_to_remove or f"{registry_url}/"

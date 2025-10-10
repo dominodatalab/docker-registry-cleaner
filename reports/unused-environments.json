@@ -2,142 +2,10 @@
   "summary": {
     "total_unused_environment_ids": 13,
     "total_matching_tags": 5,
-    "freed_space_bytes": 18794492220,
-    "freed_space_mb": 17923.82,
     "freed_space_gb": 17.5,
-    "tags_by_image_type": {
-      "environment": 5,
-      "model": 0
-    },
     "object_ids_with_tags": 4,
     "object_ids_without_tags": 9
   },
-  "unused_environments": [
-    {
-      "object_id": "68e52daec2659d0a6fbc59b3",
-      "environment_name": "6.1 Spark Cluster Environment"
-    },
-    {
-      "object_id": "68e52daec2659d0a6fbc59b4",
-      "environment_name": "6.1 Spark Compute Environment"
-    },
-    {
-      "object_id": "68e52daec2659d0a6fbc59b5",
-      "environment_name": "6.1 Snowflake Model Export Environment (Domino Internal)"
-    },
-    {
-      "object_id": "68e65295caf3254005314ca0",
-      "environment_name": "private_env"
-    },
-    {
-      "object_id": "68e52daec2659d0a6fbc59b7",
-      "environment_name": "6.1 Spark Compute Environment"
-    },
-    {
-      "object_id": "68e52daec2659d0a6fbc59b6",
-      "environment_name": "Domino Standard Environment Py3.10 R4.5"
-    },
-    {
-      "object_id": "68e52daec2659d0a6fbc59ba",
-      "environment_name": "6.1 Snowflake Model Export Environment (Domino Internal)"
-    },
-    {
-      "object_id": "68e52daec2659d0a6fbc59b8",
-      "environment_name": "6.1 Spark Cluster Environment"
-    },
-    {
-      "object_id": "68e52daec2659d0a6fbc59bf",
-      "environment_name": "Domino Core Environment"
-    },
-    {
-      "object_id": "68e64ee0caf3254005314c92",
-      "environment_name": ""
-    },
-    {
-      "object_id": "68e64ee0caf3254005314c95",
-      "environment_name": ""
-    },
-    {
-      "object_id": "68e65295caf3254005314ca2",
-      "environment_name": "private_env"
-    },
-    {
-      "object_id": "68e65295caf3254005314ca5",
-      "environment_name": "private_env"
-    }
-  ],
-  "unused_tags": [
-    {
-      "object_id": "68e65295caf3254005314ca0",
-      "environment_name": "private_env",
-      "image_type": "environment",
-      "tag": "68e65295caf3254005314ca0-1",
-      "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-1",
-      "context": {
-        "repository": "itgdock99244",
-        "image_type": "environment",
-        "tag": "68e65295caf3254005314ca0-1",
-        "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-1",
-        "environment_name": "private_env"
-      }
-    },
-    {
-      "object_id": "68e52daec2659d0a6fbc59b4",
-      "environment_name": "6.1 Spark Compute Environment",
-      "image_type": "environment",
-      "tag": "68e52daec2659d0a6fbc59b4-1",
-      "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e52daec2659d0a6fbc59b4-1",
-      "context": {
-        "repository": "itgdock99244",
-        "image_type": "environment",
-        "tag": "68e52daec2659d0a6fbc59b4-1",
-        "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e52daec2659d0a6fbc59b4-1",
-        "environment_name": "6.1 Spark Compute Environment"
-      }
-    },
-    {
-      "object_id": "68e52daec2659d0a6fbc59b3",
-      "environment_name": "6.1 Spark Cluster Environment",
-      "image_type": "environment",
-      "tag": "68e52daec2659d0a6fbc59b3-1",
-      "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e52daec2659d0a6fbc59b3-1",
-      "context": {
-        "repository": "itgdock99244",
-        "image_type": "environment",
-        "tag": "68e52daec2659d0a6fbc59b3-1",
-        "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e52daec2659d0a6fbc59b3-1",
-        "environment_name": "6.1 Spark Cluster Environment"
-      }
-    },
-    {
-      "object_id": "68e65295caf3254005314ca0",
-      "environment_name": "private_env",
-      "image_type": "environment",
-      "tag": "68e65295caf3254005314ca0-2",
-      "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-2",
-      "context": {
-        "repository": "itgdock99244",
-        "image_type": "environment",
-        "tag": "68e65295caf3254005314ca0-2",
-        "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-2",
-        "environment_name": "private_env"
-      }
-    },
-    {
-      "object_id": "68e52daec2659d0a6fbc59b5",
-      "environment_name": "6.1 Snowflake Model Export Environment (Domino Internal)",
-      "image_type": "environment",
-      "tag": "68e52daec2659d0a6fbc59b5-1",
-      "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e52daec2659d0a6fbc59b5-1",
-      "context": {
-        "repository": "itgdock99244",
-        "image_type": "environment",
-        "tag": "68e52daec2659d0a6fbc59b5-1",
-        "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e52daec2659d0a6fbc59b5-1",
-        "environment_name": "6.1 Snowflake Model Export Environment (Domino Internal)"
-      }
-    }
-  ],
   "grouped_by_object_id": {
     "68e65295caf3254005314ca0": [
       {
@@ -146,14 +14,7 @@
         "image_type": "environment",
         "tag": "68e65295caf3254005314ca0-1",
         "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-1",
-        "size_bytes": 0,
-        "context": {
-          "repository": "itgdock99244",
-          "image_type": "environment",
-          "tag": "68e65295caf3254005314ca0-1",
-          "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-1",
-          "environment_name": "private_env"
-        }
+        "size_bytes": 196586587
       },
       {
         "object_id": "68e65295caf3254005314ca0",
@@ -161,14 +22,7 @@
         "image_type": "environment",
         "tag": "68e65295caf3254005314ca0-2",
         "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-2",
-        "size_bytes": 0,
-        "context": {
-          "repository": "itgdock99244",
-          "image_type": "environment",
-          "tag": "68e65295caf3254005314ca0-2",
-          "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-2",
-          "environment_name": "private_env"
-        }
+        "size_bytes": 196586181
       }
     ],
     "68e52daec2659d0a6fbc59b4": [
@@ -178,14 +32,7 @@
         "image_type": "environment",
         "tag": "68e52daec2659d0a6fbc59b4-1",
         "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e52daec2659d0a6fbc59b4-1",
-        "size_bytes": 0,
-        "context": {
-          "repository": "itgdock99244",
-          "image_type": "environment",
-          "tag": "68e52daec2659d0a6fbc59b4-1",
-          "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e52daec2659d0a6fbc59b4-1",
-          "environment_name": "6.1 Spark Compute Environment"
-        }
+        "size_bytes": 7256701429
       }
     ],
     "68e52daec2659d0a6fbc59b3": [
@@ -195,14 +42,7 @@
         "image_type": "environment",
         "tag": "68e52daec2659d0a6fbc59b3-1",
         "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e52daec2659d0a6fbc59b3-1",
-        "size_bytes": 0,
-        "context": {
-          "repository": "itgdock99244",
-          "image_type": "environment",
-          "tag": "68e52daec2659d0a6fbc59b3-1",
-          "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e52daec2659d0a6fbc59b3-1",
-          "environment_name": "6.1 Spark Cluster Environment"
-        }
+        "size_bytes": 2493781840
       }
     ],
     "68e52daec2659d0a6fbc59b5": [
@@ -212,14 +52,7 @@
         "image_type": "environment",
         "tag": "68e52daec2659d0a6fbc59b5-1",
         "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e52daec2659d0a6fbc59b5-1",
-        "size_bytes": 0,
-        "context": {
-          "repository": "itgdock99244",
-          "image_type": "environment",
-          "tag": "68e52daec2659d0a6fbc59b5-1",
-          "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e52daec2659d0a6fbc59b5-1",
-          "environment_name": "6.1 Snowflake Model Export Environment (Domino Internal)"
-        }
+        "size_bytes": 82195854
       }
     ]
   },
@@ -227,9 +60,8 @@
     "registry_url": "946429944765.dkr.ecr.eu-west-1.amazonaws.com",
     "repository": "itgdock99244",
     "image_types_scanned": [
-      "environment",
-      "model"
+      "environment"
     ],
-    "analysis_timestamp": "2025-10-09T15:25:17.391602"
+    "analysis_timestamp": "2025-10-10T12:45:01.452584"
   }
 }

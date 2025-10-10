@@ -81,9 +81,15 @@ class ConfigManager:
                 'timeout': 300,
                 'output_dir': 'reports'
             },
+            's3': {
+                'bucket': '',
+                'region': 'us-west-2'
+            },
+            'skopeo': {
+                'use_pod': False
+            },
             'reports': {
                 'archived_tags': 'archived-tags.json',
-                'archived_model_tags': 'archived-model-tags.json',
                 'deletion_analysis': 'deletion-analysis.json',
                 'filtered_layers': 'filtered-layers.json',
                 'image_analysis': 'final-report.json',
@@ -212,6 +218,33 @@ class ConfigManager:
     def get_output_dir(self) -> str:
         """Get output directory from config"""
         return self.config['analysis']['output_dir']
+    
+    # S3 Configuration
+    def get_s3_bucket(self) -> Optional[str]:
+        """Get S3 bucket from environment or config
+        
+        Returns empty string if not configured, which evaluates to falsy
+        """
+        bucket = os.environ.get('S3_BUCKET') or self.config.get('s3', {}).get('bucket', '')
+        return bucket if bucket else None
+    
+    def get_s3_region(self) -> str:
+        """Get S3 region from environment or config"""
+        return os.environ.get('S3_REGION') or self.config.get('s3', {}).get('region', 'us-west-2')
+    
+    # Skopeo configuration
+    def get_skopeo_use_pod(self) -> bool:
+        """Get Skopeo pod mode setting from environment or config
+        
+        Returns:
+            True if Skopeo should run in pod mode, False for local subprocess mode
+        """
+        env_value = os.environ.get('SKOPEO_USE_POD', '').lower()
+        if env_value in ('true', '1', 'yes'):
+            return True
+        elif env_value in ('false', '0', 'no'):
+            return False
+        return self.config.get('skopeo', {}).get('use_pod', False)
     
     # Report configuration
     def _resolve_report_path(self, path: str) -> str:
@@ -343,6 +376,16 @@ class ConfigManager:
         print(f"  Output Directory: {self.get_output_dir()}")
         print(f"  Dry Run Default: {self.is_dry_run_by_default()}")
         print(f"  Require Confirmation: {self.requires_confirmation()}")
+        
+        # S3 Configuration
+        s3_bucket = self.get_s3_bucket()
+        s3_region = self.get_s3_region()
+        print(f"  S3 Bucket: {s3_bucket or 'Not configured'}")
+        print(f"  S3 Region: {s3_region}")
+        
+        # Skopeo Configuration
+        skopeo_use_pod = self.get_skopeo_use_pod()
+        print(f"  Skopeo Mode: {'Pod' if skopeo_use_pod else 'Local'}")
         
         password = self.get_registry_password()
         if password:
