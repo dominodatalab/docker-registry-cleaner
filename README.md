@@ -13,7 +13,7 @@ This project provides a comprehensive solution for cleaning up Docker registries
 5. **MongoDB integration** - Find and clean up archived environments, models, and orphaned records
 6. **Unused reference detection** - Identify and remove MongoDB records referencing non-existent Docker images
 7. **Deactivated user cleanup** - Find and delete private environments owned by deactivated Keycloak users
-8. **Unused environment detection** - Find and delete environments not used in workspaces, models, or as project defaults
+8. **Unused environment detection** - Find and delete environments not used in workspaces, models, project defaults, scheduled jobs, or app versions
 9. **Transaction safety** - Only deletes MongoDB records for successfully deleted Docker images
 
 ## 🏗️ Architecture
@@ -21,12 +21,12 @@ This project provides a comprehensive solution for cleaning up Docker registries
 The project consists of several Python scripts that work together:
 
 - **`python/main.py`** - Unified entrypoint for all operations
+- **`python/backup_restore.py`** - Backup and restore Docker images to/from S3 (used by all delete scripts)
 - **`python/config_manager.py`** - Centralized configuration and Skopeo client management
-- **`python/delete_archived_env_tags.py`** - Finds and deletes Docker tags associated with archived environments
-- **`python/delete_archived_model_tags.py`** - Finds and deletes Docker tags associated with archived models
+- **`python/delete_archived_tags.py`** - Finds and deletes Docker tags associated with archived environments and/or models (unified script)
 - **`python/delete_image.py`** - Intelligently deletes unused images based on workload analysis
 - **`python/delete_unused_environments.py`** - Finds and deletes environments not used in workspaces, models, or as project defaults (auto-generates reports)
-- **`python/delete_unused_private_env_tags.py`** - Finds and deletes private environments owned by deactivated Keycloak users
+- **`python/delete_unused_private_environments.py`** - Finds and deletes private environments owned by deactivated Keycloak users
 - **`python/delete_unused_references.py`** - Finds and deletes MongoDB references to non-existent Docker images
 - **`python/extract_metadata.py`** - Extracts metadata from MongoDB collections
 - **`python/image_data_analysis.py`** - Analyzes Docker registry contents and layer information with shared layer detection
@@ -114,6 +114,10 @@ analysis:
   timeout: 300
   output_dir: "reports"
 
+s3:
+  bucket: ""  # S3 bucket for image backups (optional)
+  region: "us-west-2"  # AWS region for S3 and ECR
+
 reports:
   workload_report: "workload-report.json"
   image_analysis: "final-report.json"
@@ -124,7 +128,6 @@ reports:
   tag_sums: "tag-sums.json"
   images_report: "images-report"
   archived_tags: "archived-tags.json"
-  archived_model_tags: "archived-model-tags.json"
   unused_references: "unused-references.json"
 
 security:
@@ -151,20 +154,53 @@ python python/main.py delete_image
 python python/main.py delete_image --apply
 ```
 
+### Backup and Restore
+
+All delete scripts support backing up images to S3 before deletion:
+
+```bash
+# Backup images to S3 before deletion (all delete scripts)
+python python/main.py delete_archived_tags --environment --apply --backup --s3-bucket my-backup-bucket
+python python/main.py delete_archived_tags --model --apply --backup --s3-bucket my-backup-bucket
+python python/main.py delete_archived_tags --environment --model --apply --backup --s3-bucket my-backup-bucket
+python python/main.py delete_unused_environments --apply --backup --s3-bucket my-backup-bucket
+python python/main.py delete_unused_private_environments --apply --backup --s3-bucket my-backup-bucket
+python python/main.py delete_unused_references --apply --backup --s3-bucket my-backup-bucket
+python python/main.py delete_image --apply --backup --s3-bucket my-backup-bucket
+
+# Specify custom AWS region (default: us-west-2)
+python python/main.py delete_archived_tags --environment --apply --backup --s3-bucket my-backup-bucket --region us-east-1
+
+# Restore images from S3 backup
+python python/backup_restore.py restore --repo REGISTRY/REPO --s3-bucket my-backup-bucket --tags tag1 tag2
+
+# Backup behavior:
+# - Images are backed up to S3 BEFORE deletion
+# - If backup fails, deletion is ABORTED to prevent data loss
+# - Backup includes all image layers and metadata
+# - Images can be restored to any compatible registry
+```
+
 ### Cleanup Commands
 
 ```bash
 # Find archived environment tags (dry-run)
-python python/main.py delete_archived_env_tags
-
-# Delete archived environment tags
-python python/main.py delete_archived_env_tags --apply
+python python/main.py delete_archived_tags --environment
 
 # Find archived model tags (dry-run)
-python python/main.py delete_archived_model_tags
+python python/main.py delete_archived_tags --model
+
+# Find both archived environments and models (dry-run)
+python python/main.py delete_archived_tags --environment --model
+
+# Delete archived environment tags
+python python/main.py delete_archived_tags --environment --apply
 
 # Delete archived model tags
-python python/main.py delete_archived_model_tags --apply
+python python/main.py delete_archived_tags --model --apply
+
+# Delete both with backup (recommended)
+python python/main.py delete_archived_tags --environment --model --apply --backup --s3-bucket my-backup-bucket
 
 # Find unused MongoDB references (dry-run)
 python python/main.py delete_unused_references
@@ -173,10 +209,10 @@ python python/main.py delete_unused_references
 python python/main.py delete_unused_references --apply
 
 # Find private environments owned by deactivated users (dry-run)
-python python/main.py delete_unused_private_env_tags
+python python/main.py delete_unused_private_environments
 
 # Delete private environments owned by deactivated users
-python python/main.py delete_unused_private_env_tags --apply
+python python/main.py delete_unused_private_environments --apply
 
 # Find unused environments (auto-generates required reports if missing)
 python python/main.py delete_unused_environments
@@ -189,6 +225,12 @@ python python/main.py delete_unused_environments --apply
 
 # Full workflow: generate reports and delete
 python python/main.py delete_unused_environments --generate-reports --apply
+
+# Comprehensive unused environment cleanup - analyze (dry-run, runs both scripts)
+python python/main.py --delete-all-unused-environments
+
+# Comprehensive unused environment cleanup - delete (requires --apply)
+python python/main.py --delete-all-unused-environments --apply
 ```
 
 ### ObjectID Filtering Examples
@@ -226,6 +268,10 @@ export MONGODB_PASSWORD="mongo_password"  # Optional - uses K8s secrets if not s
 export KEYCLOAK_HOST="https://keycloak.example.com/auth/"
 export KEYCLOAK_USERNAME="admin"
 export KEYCLOAK_PASSWORD="keycloak_password"
+
+# S3 Backup (optional - can also use --s3-bucket flag)
+export S3_BUCKET="my-backup-bucket"
+export S3_REGION="us-west-2"
 ```
 
 ### Show Current Configuration
@@ -277,36 +323,27 @@ Safely removes unused images based on comprehensive analysis:
 
 **Output**: `reports/deletion-analysis.json` - Summary of what would be deleted and space saved
 
-### 4. Archived Environment Tags (`delete_archived_env_tags.py`)
+### 4. Archived Tags (`delete_archived_tags.py`)
 
-Finds and optionally deletes Docker tags associated with archived environments:
+Unified script that finds and optionally deletes Docker tags associated with archived environments and/or models:
 
-- **Queries MongoDB** `environments_v2` collection for archived environments (`isArchived == true`)
-- **Finds related revisions** in `environment_revisions` collection
+- **Flexible type selection** - Process environments (`--environment`), models (`--model`), or both
+- **Queries MongoDB** for archived records:
+  - `environments_v2` collection for archived environments (`isArchived == true`)
+  - `environment_revisions` collection for related revisions
+  - `models` collection for archived models (`isArchived == true`)
+  - `model_versions` collection for related versions
 - **Scans Docker registry** for tags containing archived ObjectIDs
+- **Type-aware processing** - Automatically categorizes ObjectIDs by type (environment, revision, model, version)
 - **Calculates freed space** with shared layer awareness
 - **Direct deletion** - Uses skopeo client directly (no subprocess overhead)
+- **Smart MongoDB cleanup** - Cleans correct collections based on record type
 - **Transaction safety** - Only deletes MongoDB records for successfully deleted Docker images
 - **Two-phase workflow** - Generate report first, then delete from report or directly
 
 **Output**: `reports/archived-tags.json` - Detailed report with freed space calculation
 
-### 5. Archived Model Tags (`delete_archived_model_tags.py`)
-
-Finds and optionally deletes Docker tags associated with archived models:
-
-- **Queries MongoDB** `models` collection for archived models (`isArchived == true`)
-- **Finds related versions** in `model_versions` collection
-- **Scans Docker registry** for tags containing archived ObjectIDs
-- **Calculates freed space** with shared layer awareness
-- **Direct deletion** - Uses skopeo client directly (no subprocess overhead)
-- **Transaction safety** - Only deletes MongoDB records for successfully deleted Docker images
-- **Separate collection cleanup** - Handles both `models` and `model_versions` collections
-- **Two-phase workflow** - Generate report first, then delete from report or directly
-
-**Output**: `reports/archived-model-tags.json` - Detailed report with freed space calculation
-
-### 6. Unused References (`delete_unused_references.py`)
+### 5. Unused References (`delete_unused_references.py`)
 
 Finds and optionally deletes MongoDB records referencing non-existent Docker images:
 
@@ -319,7 +356,7 @@ Finds and optionally deletes MongoDB records referencing non-existent Docker ima
 
 **Output**: `reports/unused-references.json` - Detailed report of unused MongoDB references
 
-### 7. Deactivated User Private Environments (`delete_unused_private_env_tags.py`)
+### 6. Deactivated User Private Environments (`delete_unused_private_environments.py`)
 
 Finds and optionally deletes private environments owned by deactivated Keycloak users:
 
@@ -336,19 +373,21 @@ Finds and optionally deletes private environments owned by deactivated Keycloak 
 
 **Output**: `reports/deactivated-user-envs.json` - Detailed report grouped by deactivated user
 
-### 8. Unused Environments (`delete_unused_environments.py`)
+### 7. Unused Environments (`delete_unused_environments.py`)
 
 Finds and optionally deletes environments that are not being used anywhere:
 
 - **Auto-generates required reports** - Automatically runs `extract_metadata.py` and `inspect_workload.py` if needed
 - **Loads metadata** from auto-generated outputs (model and workspace environment usage)
 - **Loads workload data** from Kubernetes pod inspection (running containers)
-- **Queries MongoDB** for all non-archived environments and project defaults
+- **Queries MongoDB** for all non-archived environments, project defaults, scheduled jobs, and app versions
 - **Identifies unused environments** - Environments NOT in:
   - Model environment usage
   - Workspace environment usage  
   - Running workload pods
   - Project default environments
+  - Scheduled job environments (`scheduler_jobs` collection)
+  - App version environments (from `app_versions` that reference unarchived `model_products`)
 - **Scans Docker registry** for tags containing these unused environment ObjectIDs
 - **Calculates freed space** with shared layer awareness
 - **Direct deletion** - Uses skopeo client directly
@@ -360,7 +399,7 @@ Finds and optionally deletes environments that are not being used anywhere:
 
 **Output**: `reports/unused-environments.json` - Detailed report of unused environments
 
-### 9. Tag Usage Reports (`reports.py`)
+### 8. Tag Usage Reports (`reports.py`)
 
 Generates comprehensive tag usage reports by comparing registry contents against workspace/model usage:
 
@@ -401,6 +440,19 @@ Cleans up MongoDB records based on Docker tag information:
 - **Dry-run by default** - No images are deleted unless `--apply` is specified
 - **Confirmation prompts** - User must confirm before actual deletion (unless `--force`)
 - **Force mode** - Skip confirmation with `--force` flag
+- **S3 Backup** - Optionally backup images to S3 before deletion with `--backup` flag
+
+### Backup to S3 (New!)
+- **Pre-deletion backup** - All delete scripts support `--backup` and `--s3-bucket` flags
+- **Automatic abort** - If backup fails, deletion is aborted to prevent data loss
+- **Region support** - Specify AWS region with `--region` (default: us-west-2)
+- **Restore capability** - Use `backup_restore.py restore` to restore backed up images
+- **Supported scripts**: 
+  - `delete_archived_tags.py` (supports `--environment` and/or `--model`)
+  - `delete_unused_environments.py`
+  - `delete_unused_private_environments.py`
+  - `delete_unused_references.py`
+  - `delete_image.py`
 
 ### Transaction Safety
 - **Docker-first deletion** - Always deletes Docker images before MongoDB records
@@ -460,6 +512,9 @@ python python/main.py delete_image
 # With confirmation (password from environment variable)
 python python/main.py delete_image --apply
 
+# Delete with S3 backup (recommended)
+python python/main.py delete_image --apply --backup --s3-bucket my-backup-bucket
+
 # Force deletion (no confirmation) - explicit password
 python python/main.py delete_image <password> --apply --force
 
@@ -471,19 +526,28 @@ python python/main.py delete_image --apply
 ### Archive Management
 ```bash
 # Find archived environment tags (dry-run with space calculation)
-python python/main.py delete_archived_env_tags --output archived-env-tags.json
-
-# Delete archived environment tags directly
-python python/main.py delete_archived_env_tags --apply
-
-# Delete from pre-generated file
-python python/main.py delete_archived_env_tags --apply --input archived-env-tags.json
+python python/main.py delete_archived_tags --environment --output archived-env-tags.json
 
 # Find archived model tags (dry-run with space calculation)
-python python/main.py delete_archived_model_tags --output archived-model-tags.json
+python python/main.py delete_archived_tags --model --output archived-model-tags.json
+
+# Find both archived environments and models
+python python/main.py delete_archived_tags --environment --model --output archived-tags.json
+
+# Delete archived environment tags directly
+python python/main.py delete_archived_tags --environment --apply
 
 # Delete archived model tags directly
-python python/main.py delete_archived_model_tags --apply
+python python/main.py delete_archived_tags --model --apply
+
+# Delete from pre-generated file
+python python/main.py delete_archived_tags --environment --apply --input archived-env-tags.json
+
+# Delete with S3 backup (recommended for safety)
+python python/main.py delete_archived_tags --environment --apply --backup --s3-bucket my-backup-bucket
+
+# Delete both types with S3 backup and custom region
+python python/main.py delete_archived_tags --environment --model --apply --backup --s3-bucket my-backup-bucket --region us-east-1
 ```
 
 ### Unused References Cleanup
@@ -501,16 +565,16 @@ python python/main.py delete_unused_references --apply --input unused-refs.json
 ### Deactivated User Cleanup
 ```bash
 # Find private environments owned by deactivated Keycloak users (dry-run)
-python python/main.py delete_unused_private_env_tags --output deactivated-user-envs.json
+python python/main.py delete_unused_private_environments --output deactivated-user-envs.json
 
 # Delete private environments owned by deactivated users
-python python/main.py delete_unused_private_env_tags --apply
+python python/main.py delete_unused_private_environments --apply
 
 # Delete from pre-generated file
-python python/main.py delete_unused_private_env_tags --apply --input deactivated-user-envs.json
+python python/main.py delete_unused_private_environments --apply --input deactivated-user-envs.json
 
 # Force deletion without confirmation
-python python/main.py delete_unused_private_env_tags --apply --force
+python python/main.py delete_unused_private_environments --apply --force
 ```
 
 ### Unused Environment Cleanup
@@ -527,6 +591,9 @@ python python/main.py delete_unused_environments --output unused-envs.json
 # Delete unused environments (with confirmation)
 python python/main.py delete_unused_environments --apply
 
+# Delete with S3 backup for safety
+python python/main.py delete_unused_environments --apply --backup --s3-bucket my-backup-bucket
+
 # Full workflow: generate reports and delete
 python python/main.py delete_unused_environments --generate-reports --apply
 
@@ -536,6 +603,37 @@ python python/main.py delete_unused_environments --apply --input unused-envs.jso
 # Force deletion without confirmation
 python python/main.py delete_unused_environments --apply --force
 ```
+
+### Comprehensive Unused Environment Cleanup
+
+Run both unused environment cleanup scripts in a single command:
+
+```bash
+# Analyze (dry-run) - find unused environments from both sources
+python python/main.py --delete-all-unused-environments
+
+# Delete after analysis (requires --apply)
+python python/main.py --delete-all-unused-environments --apply
+
+# With S3 backup for safety
+python python/main.py --delete-all-unused-environments --apply --backup --s3-bucket my-backup-bucket
+
+# With custom region
+python python/main.py --delete-all-unused-environments --apply --backup --s3-bucket my-backup-bucket --region us-east-1
+
+# Force without confirmation
+python python/main.py --delete-all-unused-environments --apply --force
+
+# Generate reports before analysis (dry-run)
+python python/main.py --delete-all-unused-environments --generate-reports
+
+# Generate reports and delete
+python python/main.py --delete-all-unused-environments --generate-reports --apply
+```
+
+This runs two cleanup operations sequentially:
+1. **Delete unused environments** - Environments not used in workspaces, models, or as project defaults
+2. **Delete deactivated user private envs** - Private environments owned by deactivated Keycloak users
 
 ### Mongo Cleanup
 
@@ -572,30 +670,30 @@ python python/main.py extract_metadata --target workspace
 
 ```
 docker-registry-cleaner/
-├── config.yaml                          # Configuration defaults
+├── config.yaml                           # Configuration defaults
 ├── environments                          # ObjectID file (typed format)
 ├── environments-example                  # Example ObjectID file format
-├── requirements.txt                     # Python dependencies
-├── mongo_queries/                       # Legacy MongoDB query files
+├── requirements.txt                      # Python dependencies
+├── mongo_queries/                        # Legacy MongoDB query files
 ├── python/
-│   ├── main.py                          # Unified entrypoint
-│   ├── config_manager.py                # Configuration and Skopeo client management
-│   ├── delete_archived_env_tags.py      # Archived env tag discovery & deletion
-│   ├── delete_archived_model_tags.py    # Archived model tag discovery & deletion
-│   ├── delete_image.py                  # Intelligent image deletion
-│   ├── delete_unused_environments.py    # Unused environment cleanup (auto-generates reports)
-│   ├── delete_unused_private_env_tags.py # Deactivated user private env cleanup
-│   ├── delete_unused_references.py      # Unused MongoDB reference cleanup
-│   ├── extract_metadata.py              # MongoDB metadata extraction
-│   ├── image_data_analysis.py           # Registry content analysis with shared layer detection
-│   ├── inspect_workload.py              # Kubernetes workload analysis
-│   ├── logging_utils.py                 # Logging configuration
-│   ├── mongo_cleanup.py                 # MongoDB record cleanup
-│   ├── mongo_utils.py                   # MongoDB utilities
-│   ├── object_id_utils.py               # ObjectID handling utilities
-│   ├── report_utils.py                  # Report helpers
-│   └── reports.py                       # Tag usage report generator (auto-generates metadata)
-└── reports/                             # Analysis output files
+│   ├── main.py                               # Unified entrypoint
+│   ├── backup_restore.py                     # S3 backup/restore for Docker images
+│   ├── config_manager.py                     # Configuration and Skopeo client management
+│   ├── delete_archived_tags.py               # Archived tag discovery & deletion (environments and/or models)
+│   ├── delete_image.py                       # Intelligent image deletion
+│   ├── delete_unused_environments.py         # Unused environment cleanup (auto-generates reports)
+│   ├── delete_unused_private_environments.py # Deactivated user private env cleanup
+│   ├── delete_unused_references.py           # Unused MongoDB reference cleanup
+│   ├── extract_metadata.py                   # MongoDB metadata extraction
+│   ├── image_data_analysis.py                # Registry content analysis with shared layer detection
+│   ├── inspect_workload.py                   # Kubernetes workload analysis
+│   ├── logging_utils.py                      # Logging configuration
+│   ├── mongo_cleanup.py                      # MongoDB record cleanup
+│   ├── mongo_utils.py                        # MongoDB utilities
+│   ├── object_id_utils.py                    # ObjectID handling utilities
+│   ├── report_utils.py                       # Report helpers
+│   └── reports.py                            # Tag usage report generator (auto-generates metadata)
+└── reports/                              # Analysis output files
 ```
 
 ## 🔧 Configuration
@@ -623,6 +721,10 @@ analysis:
   timeout: 300
   output_dir: "reports"
 
+s3:
+  bucket: ""  # S3 bucket for image backups (optional)
+  region: "us-west-2"  # AWS region for S3 and ECR
+
 reports:
   workload_report: "workload-report.json"
   image_analysis: "final-report.json"
@@ -632,7 +734,7 @@ reports:
   filtered_layers: "filtered-layers.json"
   tag_sums: "tag-sums.json"
   images_report: "images-report"
-  archived_tags: "archived-tags.json"
+  archived_tags: "archived-env-tags.json"
   archived_model_tags: "archived-model-tags.json"
   unused_references: "unused-references.json"
 
@@ -660,6 +762,10 @@ security:
 - `KEYCLOAK_HOST` - Keycloak server URL (e.g., `https://keycloak.example.com/auth/`)
 - `KEYCLOAK_USERNAME` - Keycloak admin username
 - `KEYCLOAK_PASSWORD` - Keycloak admin password
+
+**S3 Backup:**
+- `S3_BUCKET` - S3 bucket name for image backups (optional)
+- `S3_REGION` - AWS region for S3 and ECR operations (default: us-west-2)
 
 ### Skopeo Configuration
 
@@ -828,13 +934,13 @@ python python/main.py inspect_workload --max-workers 1
 ## 📝 Requirements
 
 ### Python Dependencies
+- `boto3` - AWS SDK for S3 backup/restore functionality
 - `kubernetes` - Kubernetes API client
 - `pandas` - Data analysis and manipulation
 - `pymongo` - MongoDB client
 - `python-keycloak` - Keycloak admin client
 - `PyYAML` - Configuration parsing
 - `requests` - HTTP client
-- `tabulate` - Pretty table formatting
 
 ### System Requirements
 - **kubectl access** - For initial setup and pod management
@@ -855,3 +961,4 @@ python python/main.py inspect_workload --max-workers 1
 ## 📄 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+

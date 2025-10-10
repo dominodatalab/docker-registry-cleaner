@@ -25,6 +25,11 @@ analysis:
   timeout: 300
   output_dir: "../reports"
 
+# S3 Backup Configuration
+s3:
+  bucket: ""  # S3 bucket for image backups (optional, can be set via --s3-bucket flag)
+  region: "us-west-2"  # AWS region for S3 and ECR operations
+
 # Default Report Paths
 reports:
   deletion_analysis: "deletion-analysis.json"

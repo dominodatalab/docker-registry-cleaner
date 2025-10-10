@@ -189,13 +189,10 @@ class ImageAnalyzer:
         return {
             'total_images': total_images,
             'total_layers': total_layers,
-            'total_size_bytes': total_size,
             'total_size_gb': round(total_size / (1024**3), 2),
             'single_use_layers': len(single_use_layers),
-            'single_use_size_bytes': single_use_size,
             'single_use_size_gb': round(single_use_size / (1024**3), 2),
             'shared_layers': len(shared_layers),
-            'shared_size_bytes': shared_size,
             'shared_size_gb': round(shared_size / (1024**3), 2),
             'avg_layers_per_image': round(len(self.image_layers_df) / total_images, 2) if total_images > 0 else 0,
             'avg_ref_count': round(self.layers_df['ref_count'].mean(), 2) if total_layers > 0 else 0
@@ -218,24 +215,24 @@ class ImageAnalyzer:
             # Get all image-layer mappings for this layer
             mappings = self.image_layers_df[self.image_layers_df['layer_id'] == layer_id]
             
-            # Get the tags for these images
+            # Get the tags for these images (use sets for deduplication)
             image_ids = mappings['image_id'].tolist()
-            tags = []
-            environments = []
+            tag_set = set()
+            env_set = set()
             
             for image_id in image_ids:
                 image_row = self.images_df[self.images_df['image_id'] == image_id]
                 if not image_row.empty:
                     tag = image_row.iloc[0]['tag']
-                    tags.append(tag)
+                    tag_set.add(tag)
                     # Extract environment ID (first part before '-')
                     env_id = tag.split('-')[0] if '-' in tag else tag
-                    environments.append(env_id)
+                    env_set.add(env_id)
             
             legacy_data[layer_id] = {
                 'size': int(layer['size_bytes']),
-                'tags': tags,
-                'environments': environments
+                'tags': list(tag_set),
+                'environments': list(env_set)
             }
         
         return legacy_data
@@ -301,23 +298,7 @@ class ImageAnalyzer:
         }
         save_json(f"{images_report_output_file}.json", images_report)
         
-        # Also save a text summary
-        summary = images_report['summary']
-        with open(f"{images_report_output_file}.txt", 'w') as f:
-            f.write("=" * 60 + "\n")
-            f.write("Docker Image Analysis Summary\n")
-            f.write("=" * 60 + "\n\n")
-            f.write(f"Total Images: {summary['total_images']}\n")
-            f.write(f"Total Layers: {summary['total_layers']}\n")
-            f.write(f"Total Size: {summary['total_size_gb']} GB ({summary['total_size_bytes']} bytes)\n\n")
-            f.write(f"Single-Use Layers: {summary['single_use_layers']}\n")
-            f.write(f"Single-Use Size: {summary['single_use_size_gb']} GB ({summary['single_use_size_bytes']} bytes)\n\n")
-            f.write(f"Shared Layers: {summary['shared_layers']}\n")
-            f.write(f"Shared Size: {summary['shared_size_gb']} GB ({summary['shared_size_bytes']} bytes)\n\n")
-            f.write(f"Average Layers per Image: {summary['avg_layers_per_image']}\n")
-            f.write(f"Average Reference Count: {summary['avg_ref_count']}\n")
-        
-        self.logger.info(f"Images report saved to: {images_report_output_file}.txt and .json")
+        self.logger.info(f"Images report saved to: {images_report_output_file}.json")
 
 
 def main():

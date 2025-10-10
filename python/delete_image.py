@@ -4,6 +4,43 @@ Intelligent Docker Image Deletion Tool
 
 This script analyzes workload usage patterns and safely deletes unused Docker images
 from the registry while preserving all actively used ones.
+
+Configuration:
+  Registry password is sourced from (in priority order):
+  1. Command-line argument (highest priority)
+  2. REGISTRY_PASSWORD environment variable
+  3. config.yaml registry.password field (lowest priority)
+
+Usage examples:
+  # Analyze unused images (dry-run)
+  python delete_image.py
+
+  # Delete unused images directly
+  python delete_image.py --apply
+
+  # Force deletion without confirmation
+  python delete_image.py --apply --force
+
+  # Provide Docker Registry password manually (overrides env and config)
+  python delete_image.py --apply mypassword
+
+  # Back up images to S3 before deletion
+  python delete_image.py --apply --backup
+
+  # Optional: Back up images to S3 with custom bucket and region
+  python delete_image.py --apply --backup --s3-bucket my-backup-bucket --region us-east-1
+
+  # Optional: Filter by ObjectIDs from file
+  python delete_image.py --apply --file object_ids.txt
+
+  # Optional: Custom report paths
+  python delete_image.py --workload-report reports/workload.json --image-analysis reports/analysis.json
+
+  # Optional: Skip MongoDB cleanup after deletion
+  python delete_image.py --apply --skip-cleanup-mongo
+
+  # Optional: Specify MongoDB collection for cleanup
+  python delete_image.py --apply --mongo-collection environments_v2
 """
 
 import argparse
@@ -15,7 +52,8 @@ import sys
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
 
-from config_manager import config_manager, SkopeoClient
+from backup_restore import process_backup
+from config_manager import config_manager, SkopeoClient, ConfigManager
 from logging_utils import setup_logging, get_logger
 from object_id_utils import read_typed_object_ids_from_file
 from report_utils import save_json
@@ -209,11 +247,59 @@ class IntelligentImageDeleter:
         else:
             self.logger.warning("Failed to disable registry deletion - continuing anyway")
 
-    def delete_unused_images(self, analysis: WorkloadAnalysis, password: str, dry_run: bool = True) -> List[str]:
-        """Delete unused images based on analysis. Returns list of successfully deleted image tags."""
+    def delete_unused_images(self, analysis: WorkloadAnalysis, password: str, dry_run: bool = True, backup: bool = False, s3_bucket: str = None, region: str = 'us-west-2') -> List[str]:
+        """Delete unused images based on analysis. Returns list of successfully deleted image tags.
+        
+        Args:
+            analysis: WorkloadAnalysis object containing used/unused image information
+            password: Registry password (optional)
+            dry_run: If True, only simulate deletion without actually deleting
+            backup: Whether to backup images to S3 before deletion
+            s3_bucket: S3 bucket name for backups
+            region: AWS region for S3 and ECR operations
+        """
         if not analysis.unused_images:
             print("No unused images found to delete.")
             return []
+        
+        # Backup images to S3 if requested (only in non-dry-run mode)
+        if not dry_run and backup and s3_bucket:
+            print(f"\n📦 Backing up {len(analysis.unused_images)} images to S3 bucket: {s3_bucket}")
+            
+            # Extract tags from unused images
+            # Unused images are in format: repository/image:tag
+            tags_to_backup = []
+            for image_tag in analysis.unused_images:
+                parts = image_tag.split(':')
+                if len(parts) == 2:
+                    tags_to_backup.append(parts[1])
+            
+            full_repo = f"{self.registry_url}/{self.repository}"
+            
+            # Initialize ConfigManager and SkopeoClient for backup
+            cfg_mgr = ConfigManager()
+            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=False)
+            
+            # Call process_backup from backup_restore
+            try:
+                process_backup(
+                    skopeo_client=backup_skopeo_client,
+                    full_repo=full_repo,
+                    tags=tags_to_backup,
+                    s3_bucket=s3_bucket,
+                    region=region,
+                    dry_run=False,
+                    delete=False,  # Don't delete yet, we'll do that below
+                    min_age_days=None,
+                    workers=1,
+                    tmpdir=None,
+                    failed_tags_file=None
+                )
+                print(f"✅ Successfully backed up {len(tags_to_backup)} images to S3")
+            except Exception as backup_err:
+                print(f"❌ Backup failed: {backup_err}")
+                print("Aborting deletion to prevent data loss")
+                raise
         
         print(f"\n🗑️  {'DRY RUN: ' if dry_run else ''}Deleting {len(analysis.unused_images)} unused images...")
         
@@ -314,7 +400,7 @@ class IntelligentImageDeleter:
 def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="Intelligent Docker image deletion with workload analysis")
-    parser.add_argument("password", nargs="?", help="Password for registry access")
+    parser.add_argument("password", nargs="?", help="Password for registry access (optional; defaults to REGISTRY_PASSWORD env var or config.yaml)")
     parser.add_argument("--apply", action="store_true", help="Actually apply changes and delete images (default is dry-run)")
     parser.add_argument("--force", action="store_true", help="Skip confirmation prompt when using --apply")
     parser.add_argument("--workload-report", default=config_manager.get_workload_report_path(), help="Path to workload analysis report")
@@ -324,6 +410,19 @@ def parse_arguments():
     parser.add_argument("--file", help="File containing ObjectIDs (one per line) to filter images")
     parser.add_argument("--skip-cleanup-mongo", action="store_true", help="Skip MongoDB cleanup after deleting images (cleanup is enabled by default)")
     parser.add_argument("--mongo-collection", default="environment_revisions", help="MongoDB collection to clean up (default: environment_revisions)")
+    parser.add_argument(
+        '--backup',
+        action='store_true',
+        help='Backup images to S3 before deletion (requires --s3-bucket)'
+    )
+    parser.add_argument(
+        '--s3-bucket',
+        help='S3 bucket for backups (optional if configured in config.yaml or S3_BUCKET env var)'
+    )
+    parser.add_argument(
+        '--region',
+        help='AWS region for S3 and ECR (default: from config or us-west-2)'
+    )
     return parser.parse_args()
 
 
@@ -351,6 +450,16 @@ def main():
     setup_logging()
     args = parse_arguments()
     
+    # Get S3 configuration from args or config
+    s3_bucket = args.s3_bucket or config_manager.get_s3_bucket()
+    s3_region = args.region or config_manager.get_s3_region()
+    
+    # Validate backup arguments
+    if args.backup and not s3_bucket:
+        print("❌ Error: --s3-bucket is required when --backup is set")
+        print("   You can provide it via --s3-bucket flag, S3_BUCKET env var, or config.yaml")
+        sys.exit(1)
+    
     # Parse ObjectIDs (typed) from file if provided
     object_ids_map = None
     if args.file:
@@ -363,8 +472,8 @@ def main():
             sys.exit(1)
         print(f"Filtering images by ObjectIDs from file '{args.file}': environment={len(env_ids)}, model={len(model_ids)}")
     
-    # Get password if provided (optional). If absent, operations will attempt without auth.
-    password = args.password or os.environ.get('REGISTRY_PASSWORD')
+    # Get password with priority: CLI arg > env var > config
+    password = args.password or os.environ.get('REGISTRY_PASSWORD') or config_manager.get_registry_password()
     
     # Default to dry-run unless --apply is specified
     dry_run = not args.apply
@@ -420,7 +529,14 @@ def main():
                 deleter.enable_deletion_of_docker_images()
             
             # Delete unused images using SkopeoClient (same as other delete scripts)
-            deleted_tags = deleter.delete_unused_images(analysis, password, dry_run=dry_run)
+            deleted_tags = deleter.delete_unused_images(
+                analysis, 
+                password, 
+                dry_run=dry_run,
+                backup=args.backup,
+                s3_bucket=s3_bucket,
+                region=s3_region
+            )
             
             # Disable deletion in registry (if running in Kubernetes)
             if not dry_run:
@@ -440,7 +556,7 @@ def main():
             print("\n✅ DRY RUN COMPLETED")
             print("No images were deleted.")
             print("To actually delete images, run with --apply flag:")
-            print("  python delete-image.py --apply [password]")
+            print("  python delete_image.py --apply")
         else:
             print("\n✅ DELETION COMPLETED")
             print("Images have been deleted from the registry.")

@@ -17,13 +17,28 @@ Workflow:
 
 Usage examples:
   # Find private environments owned by deactivated users (dry-run)
-  python delete_unused_private_env_tags.py
+  python delete_unused_private_environments.py
   
   # Delete private environments owned by deactivated users
-  python delete_unused_private_env_tags.py --apply
+  python delete_unused_private_environments.py --apply
+
+  # Force deletion without confirmation
+  python delete_unused_private_environments.py --apply --force
+
+  # Optional: Back up images to S3 before deletion
+  python delete_unused_private_environments.py --apply --backup
+
+  # Optional: Back up images to S3 with custom bucket and region
+  python delete_unused_private_environments.py --apply --backup --s3-bucket my-backup-bucket --region us-east-1
+  
+  # Optional: Override registry settings
+  python delete_unused_private_environments.py --registry-url registry.example.com --repository my-repo
+
+  # Optional: Custom output file
+  python delete_unused_private_environments.py --output deactivated-user-envs.json
   
   # Delete from pre-generated file
-  python delete_unused_private_env_tags.py --apply --input deactivated-user-envs.json
+  python delete_unused_private_environments.py --apply --input deactivated-user-envs.json
 """
 
 import argparse
@@ -34,12 +49,13 @@ import sys
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from keycloak import KeycloakAdmin
 from bson import ObjectId
 
-from config_manager import config_manager, SkopeoClient
+from backup_restore import process_backup
+from config_manager import config_manager, SkopeoClient, ConfigManager
 from image_data_analysis import ImageAnalyzer
 from logging_utils import setup_logging, get_logger
 from mongo_utils import get_mongo_client
@@ -61,11 +77,7 @@ class DeactivatedUserEnvInfo:
     user_email: str
     user_id: str
     env_name: str = ""
-    context: Dict = None
-
-    def __post_init__(self):
-        if self.context is None:
-            self.context = {}
+    size_bytes: int = 0
 
 
 class DeactivatedUserEnvFinder:
@@ -77,8 +89,8 @@ class DeactivatedUserEnvFinder:
         self.skopeo_client = SkopeoClient(config_manager, use_pod=False)
         self.logger = get_logger(__name__)
         
-        # Image types to scan
-        self.image_types = ['environment', 'model']
+        # Image types to scan (only environment images contain environment ObjectIDs)
+        self.image_types = ['environment']
     
     def get_keycloak_client(self) -> KeycloakAdmin:
         """Initialize Keycloak client"""
@@ -259,16 +271,7 @@ class DeactivatedUserEnvFinder:
                             full_image=full_image,
                             user_email=user_info['email'],
                             user_id=user_info['user_id'],
-                            env_name=user_info.get('env_name', ''),
-                            context={
-                                'repository': self.repository,
-                                'image_type': image_type,
-                                'tag': tag,
-                                'full_image': full_image,
-                                'user_email': user_info['email'],
-                                'user_id': user_info['user_id'],
-                                'env_name': user_info.get('env_name', '')
-                            }
+                            env_name=user_info.get('env_name', '')
                         )
                         matching_tags.append(tag_info)
         
@@ -299,7 +302,7 @@ class DeactivatedUserEnvFinder:
             # Get unique ObjectIDs from tags
             unique_ids = list(set(tag.object_id for tag in deactivated_user_tags))
             
-            # Analyze both environment and model images filtered by ObjectIDs
+            # Analyze environment images filtered by ObjectIDs
             for image_type in self.image_types:
                 self.logger.info(f"Analyzing {image_type} images...")
                 success = analyzer.analyze_image(image_type, object_ids=unique_ids)
@@ -309,6 +312,13 @@ class DeactivatedUserEnvFinder:
             # Build list of image_ids from tags
             # ImageAnalyzer uses format "image_type:tag" as image_id
             image_ids = [f"{tag.image_type}:{tag.tag}" for tag in deactivated_user_tags]
+            
+            # Calculate individual size for each tag (layers unique to that image)
+            self.logger.info("Calculating individual image sizes...")
+            for tag in deactivated_user_tags:
+                image_id = f"{tag.image_type}:{tag.tag}"
+                # Calculate what would be freed if only this image was deleted
+                tag.size_bytes = analyzer.freed_space_if_deleted([image_id])
             
             # Calculate freed space using ImageAnalyzer's method
             # This properly accounts for shared layers
@@ -325,18 +335,60 @@ class DeactivatedUserEnvFinder:
             return 0
     
     def delete_deactivated_user_envs(self, deactivated_user_tags: List[DeactivatedUserEnvInfo],
-                                   environment_ids: List[str], revision_ids: List[str]) -> Dict[str, int]:
-        """Delete Docker images and clean up MongoDB records for deactivated user environments"""
+                                   environment_ids: List[str], revision_ids: List[str], backup: bool = False, 
+                                   s3_bucket: str = None, region: str = 'us-west-2') -> Dict[str, int]:
+        """Delete Docker images and clean up MongoDB records for deactivated user environments
+        
+        Args:
+            deactivated_user_tags: List of deactivated user tags to delete
+            environment_ids: List of environment IDs to clean up
+            revision_ids: List of revision IDs to clean up
+            backup: Whether to backup images to S3 before deletion
+            s3_bucket: S3 bucket name for backups
+            region: AWS region for S3 and ECR operations
+        """
         if not deactivated_user_tags:
             self.logger.info("No tags to delete")
-            return {'docker_images_deleted': 0, 'mongo_records_cleaned': 0}
+            return {'docker_images_deleted': 0, 'mongo_records_cleaned': 0, 'images_backed_up': 0}
         
         deletion_results = {
             'docker_images_deleted': 0,
-            'mongo_records_cleaned': 0
+            'mongo_records_cleaned': 0,
+            'images_backed_up': 0
         }
         
         try:
+            # Backup images to S3 if requested
+            if backup and s3_bucket:
+                self.logger.info(f"📦 Backing up {len(deactivated_user_tags)} images to S3 bucket: {s3_bucket}")
+                
+                tags_to_backup = [tag.tag for tag in deactivated_user_tags]
+                full_repo = f"{self.registry_url}/{self.repository}"
+                
+                cfg_mgr = ConfigManager()
+                backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=False)
+                
+                try:
+                    process_backup(
+                        skopeo_client=backup_skopeo_client,
+                        full_repo=full_repo,
+                        tags=tags_to_backup,
+                        s3_bucket=s3_bucket,
+                        region=region,
+                        dry_run=False,
+                        delete=False,
+                        min_age_days=None,
+                        workers=1,
+                        tmpdir=None,
+                        failed_tags_file=None
+                    )
+                    deletion_results['images_backed_up'] = len(tags_to_backup)
+                    self.logger.info(f"✅ Successfully backed up {len(tags_to_backup)} images to S3")
+                except Exception as backup_err:
+                    self.logger.error(f"❌ Backup failed: {backup_err}")
+                    self.logger.error("Aborting deletion to prevent data loss")
+                    raise
+            
             # Enable deletion in registry if it's in the same Kubernetes cluster
             registry_in_cluster = self.skopeo_client.is_registry_in_cluster()
             if registry_in_cluster:
@@ -468,53 +520,41 @@ class DeactivatedUserEnvFinder:
             by_user[email]['environments'] = list(by_user[email]['environments'])
             by_user[email]['environment_count'] = len(by_user[email]['environments'])
         
-        # Group by image type
-        by_image_type = {'environment': 0, 'model': 0}
-        for tag in deactivated_user_tags:
-            by_image_type[tag.image_type] += 1
-        
         # Create summary statistics
         summary = {
             'total_deactivated_users': len(by_user),
             'total_environment_ids': len(environment_ids),
             'total_revision_ids': len(revision_ids),
             'total_matching_tags': len(deactivated_user_tags),
-            'freed_space_bytes': freed_space_bytes,
-            'freed_space_mb': round(freed_space_bytes / (1024 * 1024), 2),
-            'freed_space_gb': round(freed_space_bytes / (1024 * 1024 * 1024), 2),
-            'tags_by_image_type': by_image_type
+            'freed_space_gb': round(freed_space_bytes / (1024 * 1024 * 1024), 2)
         }
         
-        # Prepare detailed data
-        detailed_tags = []
-        for tag in deactivated_user_tags:
-            detailed_tags.append({
-                'object_id': tag.object_id,
-                'image_type': tag.image_type,
-                'tag': tag.tag,
-                'full_image': tag.full_image,
-                'user_email': tag.user_email,
-                'user_id': tag.user_id,
-                'env_name': tag.env_name,
-                'context': tag.context
-            })
+        # Prepare grouped data by user
+        grouped_data = {}
+        for email, info in by_user.items():
+            grouped_data[email] = {
+                'user_id': info['user_id'],
+                'tag_count': info['tag_count'],
+                'environment_count': info['environment_count'],
+                'environments': info['environments'],
+                'tags': [
+                    {
+                        'object_id': t.object_id,
+                        'image_type': t.image_type,
+                        'tag': t.tag,
+                        'full_image': t.full_image,
+                        'user_email': t.user_email,
+                        'user_id': t.user_id,
+                        'env_name': t.env_name,
+                        'size_bytes': t.size_bytes
+                    }
+                    for t in info['tags']
+                ]
+            }
         
         report = {
             'summary': summary,
-            'environment_ids': environment_ids,
-            'revision_ids': revision_ids,
-            'all_object_ids': list(set(environment_ids + revision_ids)),
-            'tags': detailed_tags,
-            'grouped_by_user': {
-                email: {
-                    'user_id': info['user_id'],
-                    'tag_count': info['tag_count'],
-                    'environment_count': info['environment_count'],
-                    'environments': info['environments'],
-                    'tags': [t.__dict__ for t in info['tags']]
-                }
-                for email, info in by_user.items()
-            },
+            'grouped_by_user': grouped_data,
             'metadata': {
                 'registry_url': self.registry_url,
                 'repository': self.repository,
@@ -525,28 +565,34 @@ class DeactivatedUserEnvFinder:
         
         return report
     
-    def load_report_from_file(self, file_path: str) -> tuple[List[str], List[str], List[DeactivatedUserEnvInfo]]:
+    def load_report_from_file(self, file_path: str) -> Tuple[List[str], List[str], List[DeactivatedUserEnvInfo]]:
         """Load deactivated user environments from a pre-generated report file"""
         try:
             with open(file_path, 'r') as f:
                 report = json.load(f)
             
-            environment_ids = report.get('environment_ids', [])
-            revision_ids = report.get('revision_ids', [])
+            summary = report.get('summary', {})
+            # For backwards compatibility, we can derive environment_ids and revision_ids if needed
+            environment_ids = []
+            revision_ids = []
             
             tags = []
-            for tag_data in report.get('tags', []):
-                tag = DeactivatedUserEnvInfo(
-                    object_id=tag_data['object_id'],
-                    image_type=tag_data['image_type'],
-                    tag=tag_data['tag'],
-                    full_image=tag_data['full_image'],
-                    user_email=tag_data.get('user_email', 'unknown'),
-                    user_id=tag_data.get('user_id', 'unknown'),
-                    env_name=tag_data.get('env_name', ''),
-                    context=tag_data.get('context', {})
-                )
-                tags.append(tag)
+            
+            # Load from grouped_by_user
+            grouped_data = report.get('grouped_by_user', {})
+            for email, user_data in grouped_data.items():
+                for tag_data in user_data.get('tags', []):
+                    tag = DeactivatedUserEnvInfo(
+                        object_id=tag_data['object_id'],
+                        image_type=tag_data['image_type'],
+                        tag=tag_data['tag'],
+                        full_image=tag_data['full_image'],
+                        user_email=tag_data.get('user_email', email),
+                        user_id=tag_data.get('user_id', user_data.get('user_id', 'unknown')),
+                        env_name=tag_data.get('env_name', ''),
+                        size_bytes=tag_data.get('size_bytes', 0)
+                    )
+                    tags.append(tag)
             
             self.logger.info(f"Loaded {len(tags)} tags from {file_path}")
             return environment_ids, revision_ids, tags
@@ -564,22 +610,22 @@ def parse_arguments():
         epilog="""
 Examples:
   # Find private environments owned by deactivated users (dry-run)
-  python delete_unused_private_env_tags.py
+  python delete_unused_private_environments.py
 
   # Override registry settings
-  python delete_unused_private_env_tags.py --registry-url registry.example.com --repository my-repo
+  python delete_unused_private_environments.py --registry-url registry.example.com --repository my-repo
 
   # Custom output file
-  python delete_unused_private_env_tags.py --output deactivated-user-envs.json
+  python delete_unused_private_environments.py --output deactivated-user-envs.json
 
   # Delete private environments owned by deactivated users (requires confirmation)
-  python delete_unused_private_env_tags.py --apply
+  python delete_unused_private_environments.py --apply
 
   # Delete from pre-generated file
-  python delete_unused_private_env_tags.py --apply --input deactivated-user-envs.json
+  python delete_unused_private_environments.py --apply --input deactivated-user-envs.json
 
   # Force deletion without confirmation
-  python delete_unused_private_env_tags.py --apply --force
+  python delete_unused_private_environments.py --apply --force
 
 Environment Variables Required:
   KEYCLOAK_HOST or (KEYCLOAK_HTTP_PORT_8443_TCP_ADDR and KEYCLOAK_HTTP_PORT_8443_TCP_PORT)
@@ -620,6 +666,22 @@ Environment Variables Required:
         help='Skip confirmation prompt when using --apply'
     )
     
+    parser.add_argument(
+        '--backup',
+        action='store_true',
+        help='Backup images to S3 before deletion (requires --s3-bucket)'
+    )
+    
+    parser.add_argument(
+        '--s3-bucket',
+        help='S3 bucket for backups (optional if configured in config.yaml or S3_BUCKET env var)'
+    )
+    
+    parser.add_argument(
+        '--region',
+        help='AWS region for S3 and ECR (default: from config or us-west-2)'
+    )
+    
     return parser.parse_args()
 
 
@@ -627,6 +689,16 @@ def main():
     """Main function"""
     setup_logging()
     args = parse_arguments()
+    
+    # Get S3 configuration from args or config
+    s3_bucket = args.s3_bucket or config_manager.get_s3_bucket()
+    s3_region = args.region or config_manager.get_s3_region()
+    
+    # Validate backup arguments
+    if args.backup and not s3_bucket:
+        logger.error("❌ Error: --s3-bucket is required when --backup is set")
+        logger.error("   You can provide it via --s3-bucket flag, S3_BUCKET env var, or config.yaml")
+        sys.exit(1)
     
     # Get configuration
     registry_url = args.registry_url or config_manager.get_registry_url()
@@ -679,20 +751,13 @@ def main():
                         'total_environment_ids': 0,
                         'total_revision_ids': 0,
                         'total_matching_tags': 0,
-                        'freed_space_bytes': 0,
-                        'freed_space_mb': 0,
-                        'freed_space_gb': 0,
-                        'tags_by_image_type': {'environment': 0, 'model': 0}
+                        'freed_space_gb': 0
                     },
-                    'environment_ids': [],
-                    'revision_ids': [],
-                    'all_object_ids': [],
-                    'tags': [],
                     'grouped_by_user': {},
                     'metadata': {
                         'registry_url': registry_url,
                         'repository': repository,
-                        'image_types_scanned': ['environment', 'model'],
+                        'image_types_scanned': finder.image_types,
                         'analysis_timestamp': datetime.now().isoformat()
                     }
                 }
@@ -730,14 +795,24 @@ def main():
                     sys.exit(0)
             
             logger.info(f"\n🗑️  Deleting {len(deactivated_user_tags)} tags...")
-            deletion_results = finder.delete_deactivated_user_envs(deactivated_user_tags, environment_ids, revision_ids)
+            deletion_results = finder.delete_deactivated_user_envs(
+                deactivated_user_tags, 
+                environment_ids, 
+                revision_ids,
+                backup=args.backup,
+                s3_bucket=s3_bucket,
+                region=s3_region
+            )
             
             # Print deletion summary
             logger.info("\n" + "=" * 60)
             logger.info("   DELETION SUMMARY")
             logger.info("=" * 60)
+            total_backed_up = deletion_results.get('images_backed_up', 0)
             total_deleted = deletion_results.get('docker_images_deleted', 0)
             total_cleaned = deletion_results.get('mongo_records_cleaned', 0)
+            if total_backed_up > 0:
+                logger.info(f"Total images backed up to S3: {total_backed_up}")
             logger.info(f"Total Docker images deleted: {total_deleted}")
             logger.info(f"Total MongoDB records cleaned: {total_cleaned}")
             
@@ -763,10 +838,7 @@ def main():
             logger.info(f"Total environment IDs: {summary['total_environment_ids']}")
             logger.info(f"Total revision IDs: {summary['total_revision_ids']}")
             logger.info(f"Total matching tags: {summary['total_matching_tags']}")
-            logger.info(f"Space that would be freed: {summary['freed_space_gb']:.2f} GB ({summary['freed_space_mb']:.2f} MB)")
-            logger.info(f"Tags by image type:")
-            for img_type, count in summary['tags_by_image_type'].items():
-                logger.info(f"  {img_type}: {count} tags")
+            logger.info(f"Space that would be freed: {summary['freed_space_gb']:.2f} GB")
             
             logger.info(f"\nDetailed report saved to: {output_file}")
             

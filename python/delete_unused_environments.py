@@ -3,13 +3,13 @@
 Find and optionally delete unused environment tags in MongoDB and Docker registry.
 
 This script analyzes metadata from extract_metadata.py and inspect_workload.py to identify
-environments that are not being used in workspaces, models, or as project defaults.
+environments that are not being used in workspaces, models, project defaults, scheduled jobs, or app versions.
 
 Workflow:
 - Auto-generate required reports if they don't exist (or use --generate-reports to force)
   - Extract model and workspace environment usage from MongoDB
   - Inspect Kubernetes workloads to find running containers
-- Query MongoDB for all environments and project defaults
+- Query MongoDB for all environments, project defaults, scheduled job environments, and app version environments
 - Identify environments NOT being used anywhere
 - Find Docker tags containing these unused environment ObjectIDs
 - Generate a comprehensive report of unused environments and their sizes
@@ -25,7 +25,19 @@ Usage examples:
   # Delete unused environments directly
   python delete_unused_environments.py --apply
   
-  # Delete unused environments from pre-generated file
+  # Back up images to S3 before deletion (requires --s3-bucket)
+  python delete_unused_environments.py --apply --backup
+
+  # Optional: Back up images to S3 with custom bucket and region
+  python delete_unused_environments.py --apply --backup --s3-bucket my-backup-bucket --region us-east-1
+
+  # Optional: Override registry settings
+  python delete_unused_environments.py --registry-url registry.example.com --repository my-repo
+
+  # Optional: Custom output file
+  python delete_unused_environments.py --output unused-envs.json
+
+  # Optional:Delete unused environments from pre-generated file
   python delete_unused_environments.py --apply --input unused-envs.json
 """
 
@@ -60,11 +72,6 @@ class UnusedEnvInfo:
     tag: str = ""
     full_image: str = ""
     size_bytes: int = 0
-    context: Dict = None
-
-    def __post_init__(self):
-        if self.context is None:
-            self.context = {}
 
 
 class UnusedEnvironmentsFinder:
@@ -76,14 +83,14 @@ class UnusedEnvironmentsFinder:
         self.skopeo_client = SkopeoClient(config_manager, use_pod=False)
         self.logger = get_logger(__name__)
         
-        # Image types to scan
-        self.image_types = ['environment', 'model']
+        # Image types to scan (only environment images contain environment ObjectIDs)
+        self.image_types = ['environment']
     
     def extract_object_id_from_tag(self, tag: str) -> str:
         """Extract ObjectID from a Docker tag.
         
         Environment tags typically follow pattern: <ObjectID>-<revision>
-        Model tags typically follow pattern: <ObjectID>-v<version>-<timestamp>_<hash>
+        where ObjectID is either an environment ID or revision ID.
         
         This extracts the first 24-character hex string that looks like an ObjectID.
         """
@@ -282,7 +289,10 @@ class UnusedEnvironmentsFinder:
         return used_ids
     
     def fetch_all_environments_and_defaults(self) -> tuple:
-        """Fetch all environment IDs from MongoDB and project default environment IDs"""
+        """Fetch all environment IDs from MongoDB, project defaults, scheduled job environments, and app versions
+        
+        For app versions, only includes environments from app_versions that reference unarchived model_products.
+        """
         mongo_client = get_mongo_client()
         
         try:
@@ -328,7 +338,63 @@ class UnusedEnvironmentsFinder:
             
             self.logger.info(f"Found {len(default_env_ids)} project default environments")
             
-            return all_env_ids, all_revision_ids, default_env_ids
+            # Get scheduled job environments
+            scheduler_jobs_collection = db["scheduler_jobs"]
+            scheduler_cursor = scheduler_jobs_collection.find({}, {"jobDataPlain.overrideEnvironmentId": 1})
+            
+            scheduler_env_ids = set()
+            for doc in scheduler_cursor:
+                job_data = doc.get("jobDataPlain", {})
+                env_id = job_data.get("overrideEnvironmentId")
+                if env_id is not None:
+                    scheduler_env_ids.add(str(env_id))
+            
+            self.logger.info(f"Found {len(scheduler_env_ids)} scheduled job environments")
+            
+            # Get app version environments (collection may not exist)
+            app_version_env_ids = set()
+            collection_names = db.list_collection_names()
+            if "model_products" in collection_names and "app_versions" in collection_names:
+                # First get unarchived model products
+                model_products_collection = db["model_products"]
+                model_products_cursor = model_products_collection.find(
+                    {"isArchived": False}, 
+                    {"_id": 1}
+                )
+                
+                unarchived_product_ids = set()
+                for doc in model_products_cursor:
+                    product_id = doc.get("_id")
+                    if product_id is not None:
+                        unarchived_product_ids.add(product_id)
+                
+                self.logger.info(f"Found {len(unarchived_product_ids)} unarchived model products")
+                
+                # Then find app_versions that reference these unarchived products
+                if unarchived_product_ids:
+                    app_versions_collection = db["app_versions"]
+                    app_versions_cursor = app_versions_collection.find(
+                        {"appId": {"$in": list(unarchived_product_ids)}},
+                        {"environmentId": 1}
+                    )
+                    
+                    for doc in app_versions_cursor:
+                        env_id = doc.get("environmentId")
+                        if env_id is not None:
+                            app_version_env_ids.add(str(env_id))
+                    
+                    self.logger.info(f"Found {len(app_version_env_ids)} app version environments from unarchived products")
+                else:
+                    self.logger.info("No unarchived model products found, skipping app version environment check")
+            else:
+                missing = []
+                if "model_products" not in collection_names:
+                    missing.append("model_products")
+                if "app_versions" not in collection_names:
+                    missing.append("app_versions")
+                self.logger.info(f"Collections not found: {', '.join(missing)}, skipping app version environment check")
+            
+            return all_env_ids, all_revision_ids, default_env_ids, scheduler_env_ids, app_version_env_ids
             
         finally:
             mongo_client.close()
@@ -342,11 +408,13 @@ class UnusedEnvironmentsFinder:
         used_ids = self.extract_used_environment_ids(model_env_data, workspace_env_data, workload_data)
         
         # Get all environments and defaults from MongoDB
-        all_env_ids, all_revision_ids, default_env_ids = self.fetch_all_environments_and_defaults()
+        all_env_ids, all_revision_ids, default_env_ids, scheduler_env_ids, app_version_env_ids = self.fetch_all_environments_and_defaults()
         
-        # Add project defaults to used IDs
+        # Add project defaults, scheduled job environments, and app version environments to used IDs
         used_ids.update(default_env_ids)
-        self.logger.info(f"Total used IDs (including project defaults): {len(used_ids)}")
+        used_ids.update(scheduler_env_ids)
+        used_ids.update(app_version_env_ids)
+        self.logger.info(f"Total used IDs (including project defaults, scheduled jobs, and app versions): {len(used_ids)}")
         
         # Combine all environment and revision IDs
         all_ids = {}
@@ -406,14 +474,7 @@ class UnusedEnvironmentsFinder:
                             env_name=unused_ids_dict.get(obj_id, ""),
                             image_type=image_type,
                             tag=tag,
-                            full_image=full_image,
-                            context={
-                                'repository': self.repository,
-                                'image_type': image_type,
-                                'tag': tag,
-                                'full_image': full_image,
-                                'environment_name': unused_ids_dict.get(obj_id, "")
-                            }
+                            full_image=full_image
                         )
                         matching_tags.append(env_info)
         
@@ -444,7 +505,7 @@ class UnusedEnvironmentsFinder:
             # Get unique ObjectIDs from unused tags
             unique_ids = list(set(tag.object_id for tag in unused_tags))
             
-            # Analyze both environment and model images filtered by unused ObjectIDs
+            # Analyze environment images filtered by unused ObjectIDs
             for image_type in self.image_types:
                 self.logger.info(f"Analyzing {image_type} images...")
                 success = analyzer.analyze_image(image_type, object_ids=unique_ids)
@@ -454,6 +515,13 @@ class UnusedEnvironmentsFinder:
             # Build list of image_ids from unused tags
             # ImageAnalyzer uses format "image_type:tag" as image_id
             image_ids = [f"{tag.image_type}:{tag.tag}" for tag in unused_tags]
+            
+            # Calculate individual size for each tag (layers unique to that image)
+            self.logger.info("Calculating individual image sizes...")
+            for tag in unused_tags:
+                image_id = f"{tag.image_type}:{tag.tag}"
+                # Calculate what would be freed if only this image was deleted
+                tag.size_bytes = analyzer.freed_space_if_deleted([image_id])
             
             # Calculate freed space using ImageAnalyzer's method
             # This properly accounts for shared layers
@@ -469,8 +537,15 @@ class UnusedEnvironmentsFinder:
             self.logger.error(traceback.format_exc())
             return 0
     
-    def delete_unused_tags(self, unused_tags: List[UnusedEnvInfo]) -> Dict[str, int]:
-        """Delete unused Docker images and clean up MongoDB records"""
+    def delete_unused_tags(self, unused_tags: List[UnusedEnvInfo], backup: bool = False, s3_bucket: str = None, region: str = 'us-west-2') -> Dict[str, int]:
+        """Delete unused Docker images and clean up MongoDB records
+        
+        Args:
+            unused_tags: List of unused environment tags to delete
+            backup: Whether to backup images to S3 before deletion
+            s3_bucket: S3 bucket name for backups
+            region: AWS region for S3 and ECR operations
+        """
         if not unused_tags:
             self.logger.info("No unused tags to delete")
             return {}
@@ -478,8 +553,47 @@ class UnusedEnvironmentsFinder:
         deletion_results = {
             'docker_images_deleted': 0,
             'mongo_environment_revisions_cleaned': 0,
-            'mongo_environments_cleaned': 0
+            'mongo_environments_cleaned': 0,
+            'images_backed_up': 0
         }
+        
+        # Backup images to S3 if requested
+        if backup and s3_bucket:
+            from backup_restore import process_backup
+            from config_manager import ConfigManager
+            
+            self.logger.info(f"📦 Backing up {len(unused_tags)} images to S3 bucket: {s3_bucket}")
+            
+            # Prepare tags for backup_restore.process_backup
+            tags_to_backup = [tag.tag for tag in unused_tags]
+            full_repo = f"{self.registry_url}/{self.repository}"
+            
+            # Initialize ConfigManager and SkopeoClient for backup
+            cfg_mgr = ConfigManager()
+            from config_manager import SkopeoClient
+            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=False)
+            
+            # Call process_backup from backup_restore
+            try:
+                process_backup(
+                    skopeo_client=backup_skopeo_client,
+                    full_repo=full_repo,
+                    tags=tags_to_backup,
+                    s3_bucket=s3_bucket,
+                    region=region,
+                    dry_run=False,
+                    delete=False,  # Don't delete yet, we'll do that below
+                    min_age_days=None,
+                    workers=1,
+                    tmpdir=None,
+                    failed_tags_file=None
+                )
+                deletion_results['images_backed_up'] = len(tags_to_backup)
+                self.logger.info(f"✅ Successfully backed up {len(tags_to_backup)} images to S3")
+            except Exception as backup_err:
+                self.logger.error(f"❌ Backup failed: {backup_err}")
+                self.logger.error("Aborting deletion to prevent data loss")
+                raise
         
         try:
             # Enable deletion in registry if it's in the same Kubernetes cluster
@@ -586,57 +700,41 @@ class UnusedEnvironmentsFinder:
             freed_space_bytes: Total bytes that would be freed by deletion (accounts for shared layers)
         """
         
-        # Group by ObjectID and image type
+        # Group by ObjectID
         by_object_id = {}
-        by_image_type = {'environment': 0, 'model': 0}
         
         for tag in unused_tags:
             obj_id = tag.object_id
             if obj_id not in by_object_id:
                 by_object_id[obj_id] = []
             by_object_id[obj_id].append(tag)
-            if tag.image_type in by_image_type:
-                by_image_type[tag.image_type] += 1
         
         # Create summary statistics
         summary = {
             'total_unused_environment_ids': len(unused_envs),
             'total_matching_tags': len(unused_tags),
-            'freed_space_bytes': freed_space_bytes,
-            'freed_space_mb': round(freed_space_bytes / (1024 * 1024), 2),
             'freed_space_gb': round(freed_space_bytes / (1024 * 1024 * 1024), 2),
-            'tags_by_image_type': by_image_type,
             'object_ids_with_tags': len(by_object_id),
             'object_ids_without_tags': len(unused_envs) - len(by_object_id)
         }
         
-        # Prepare detailed data
-        detailed_envs = []
-        for env in unused_envs:
-            detailed_envs.append({
-                'object_id': env.object_id,
-                'environment_name': env.env_name
-            })
-        
-        detailed_tags = []
-        for tag in unused_tags:
-            detailed_tags.append({
-                'object_id': tag.object_id,
-                'environment_name': tag.env_name,
-                'image_type': tag.image_type,
-                'tag': tag.tag,
-                'full_image': tag.full_image,
-                'context': tag.context
-            })
+        # Prepare grouped data
+        grouped_data = {}
+        for obj_id, tags in by_object_id.items():
+            grouped_data[obj_id] = []
+            for tag in tags:
+                grouped_data[obj_id].append({
+                    'object_id': tag.object_id,
+                    'env_name': tag.env_name,
+                    'image_type': tag.image_type,
+                    'tag': tag.tag,
+                    'full_image': tag.full_image,
+                    'size_bytes': tag.size_bytes
+                })
         
         report = {
             'summary': summary,
-            'unused_environments': detailed_envs,
-            'unused_tags': detailed_tags,
-            'grouped_by_object_id': {
-                obj_id: [tag.to_dict() if hasattr(tag, 'to_dict') else tag.__dict__ for tag in tags]
-                for obj_id, tags in by_object_id.items()
-            },
+            'grouped_by_object_id': grouped_data,
             'metadata': {
                 'registry_url': self.registry_url,
                 'repository': self.repository,
@@ -654,17 +752,20 @@ class UnusedEnvironmentsFinder:
                 report = json.load(f)
             
             unused_tags = []
-            for tag_data in report.get('unused_tags', []):
-                tag = UnusedEnvInfo(
-                    object_id=tag_data['object_id'],
-                    env_name=tag_data.get('environment_name', ''),
-                    image_type=tag_data['image_type'],
-                    tag=tag_data['tag'],
-                    full_image=tag_data['full_image'],
-                    size_bytes=tag_data.get('size_bytes', 0),
-                    context=tag_data.get('context', {})
-                )
-                unused_tags.append(tag)
+            
+            # Load from grouped_by_object_id
+            grouped_data = report.get('grouped_by_object_id', {})
+            for obj_id, tags_list in grouped_data.items():
+                for tag_data in tags_list:
+                    tag = UnusedEnvInfo(
+                        object_id=tag_data['object_id'],
+                        env_name=tag_data.get('env_name', ''),
+                        image_type=tag_data['image_type'],
+                        tag=tag_data['tag'],
+                        full_image=tag_data['full_image'],
+                        size_bytes=tag_data.get('size_bytes', 0)
+                    )
+                    unused_tags.append(tag)
             
             self.logger.info(f"Loaded {len(unused_tags)} unused tags from {file_path}")
             return unused_tags
@@ -745,6 +846,22 @@ Examples:
         help='Generate required metadata reports (extract_metadata + inspect_workload) before analysis'
     )
     
+    parser.add_argument(
+        '--backup',
+        action='store_true',
+        help='Backup images to S3 before deletion (requires --s3-bucket)'
+    )
+    
+    parser.add_argument(
+        '--s3-bucket',
+        help='S3 bucket for backups (optional if configured in config.yaml or S3_BUCKET env var)'
+    )
+    
+    parser.add_argument(
+        '--region',
+        help='AWS region for S3 and ECR (default: from config or us-west-2)'
+    )
+    
     return parser.parse_args()
 
 
@@ -752,6 +869,16 @@ def main():
     """Main function"""
     setup_logging()
     args = parse_arguments()
+    
+    # Get S3 configuration from args or config
+    s3_bucket = args.s3_bucket or config_manager.get_s3_bucket()
+    s3_region = args.region or config_manager.get_s3_region()
+    
+    # Validate backup arguments
+    if args.backup and not s3_bucket:
+        logger.error("❌ Error: --s3-bucket is required when --backup is set")
+        logger.error("   You can provide it via --s3-bucket flag, S3_BUCKET env var, or config.yaml")
+        sys.exit(1)
     
     # Get configuration
     registry_url = args.registry_url or config_manager.get_registry_url()
@@ -817,20 +944,15 @@ def main():
                     'summary': {
                         'total_unused_environment_ids': 0,
                         'total_matching_tags': 0,
-                        'freed_space_bytes': 0,
-                        'freed_space_mb': 0,
                         'freed_space_gb': 0,
-                        'tags_by_image_type': {'environment': 0, 'model': 0},
                         'object_ids_with_tags': 0,
                         'object_ids_without_tags': 0
                     },
-                    'unused_environments': [],
-                    'unused_tags': [],
                     'grouped_by_object_id': {},
                     'metadata': {
                         'registry_url': registry_url,
                         'repository': repository,
-                        'image_types_scanned': ['environment', 'model'],
+                        'image_types_scanned': finder.image_types,
                         'analysis_timestamp': datetime.now().isoformat()
                     }
                 }
@@ -867,7 +989,12 @@ def main():
                     sys.exit(0)
             
             logger.info(f"\n🗑️  Deleting {len(unused_tags)} unused environment tags...")
-            deletion_results = finder.delete_unused_tags(unused_tags)
+            deletion_results = finder.delete_unused_tags(
+                unused_tags,
+                backup=args.backup,
+                s3_bucket=s3_bucket,
+                region=s3_region
+            )
             
             # Print deletion summary
             logger.info("\n" + "=" * 60)
@@ -900,10 +1027,7 @@ def main():
             logger.info("=" * 60)
             logger.info(f"Total unused environment IDs: {summary['total_unused_environment_ids']}")
             logger.info(f"Total matching tags: {summary['total_matching_tags']}")
-            logger.info(f"Space that would be freed: {summary['freed_space_gb']:.2f} GB ({summary['freed_space_mb']:.2f} MB)")
-            logger.info(f"Tags by image type:")
-            for img_type, count in summary['tags_by_image_type'].items():
-                logger.info(f"  {img_type}: {count} tags")
+            logger.info(f"Space that would be freed: {summary['freed_space_gb']:.2f} GB")
             logger.info(f"Environment IDs with tags: {summary['object_ids_with_tags']}")
             logger.info(f"Environment IDs without tags: {summary['object_ids_without_tags']}")
             
