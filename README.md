@@ -6,27 +6,25 @@ An intelligent Docker registry cleanup tool that analyzes workload usage pattern
 
 This project provides a comprehensive solution for cleaning up Docker registries by:
 
-1. **Analyzing current workload usage** - Identifies which images are actively used by running Kubernetes pods
-2. **Analyzing registry contents** - Maps image layers, sizes, and tag distributions with shared layer awareness
-3. **Intelligent deletion** - Safely removes unused images while preserving all actively used ones
-4. **ObjectID filtering** - Target specific models/environments using MongoDB ObjectIDs
-5. **MongoDB integration** - Find and clean up archived environments, models, and orphaned records
+1. **Analyzing registry contents** - Maps image layers, sizes, and tags with shared layer awareness, to accurately predict space savings
+2. **Domino-integrated intelligent detection** - Identifies which images are actively used by Domino workloads or project defaults
+3. **Unused environment deletion** - Deletes unused and archived Domino environment and model images 
+4. **Deactivated user cleanup** - Finds and deletes private environments owned by deactivated Domino users
+5. **S3 backup and restore** - Optionally back up Docker images as individual tar files to S3  
 6. **Unused reference detection** - Identify and remove MongoDB records referencing non-existent Docker images
-7. **Deactivated user cleanup** - Find and delete private environments owned by deactivated Keycloak users
-8. **Unused environment detection** - Find and delete environments not used in workspaces, models, project defaults, scheduled jobs, or app versions
-9. **Transaction safety** - Only deletes MongoDB records for successfully deleted Docker images
+7. **Transaction safety** - Only deletes MongoDB records for successfully deleted Docker images
 
 ## 🏗️ Architecture
 
 The project consists of several Python scripts that work together:
 
 - **`python/main.py`** - Unified entrypoint for all operations
-- **`python/backup_restore.py`** - Backup and restore Docker images to/from S3 (used by all delete scripts)
+- **`python/backup_restore.py`** - Backup and restore Docker images to/from S3 (used by all Docker delete scripts)
 - **`python/config_manager.py`** - Centralized configuration and Skopeo client management
-- **`python/delete_archived_tags.py`** - Finds and deletes Docker tags associated with archived environments and/or models (unified script)
+- **`python/delete_archived_tags.py`** - Finds and deletes Docker tags associated with archived environments and/or models
 - **`python/delete_image.py`** - Intelligently deletes unused images based on workload analysis
-- **`python/delete_unused_environments.py`** - Finds and deletes environments not used in workspaces, models, or as project defaults (auto-generates reports)
-- **`python/delete_unused_private_environments.py`** - Finds and deletes private environments owned by deactivated Keycloak users
+- **`python/delete_unused_environments.py`** - Finds and deletes environments not used in Domino workloads or as project defaults (auto-generates reports)
+- **`python/delete_unused_private_environments.py`** - Finds and deletes private environments owned by deactivated Domino users
 - **`python/delete_unused_references.py`** - Finds and deletes MongoDB references to non-existent Docker images
 - **`python/extract_metadata.py`** - Extracts metadata from MongoDB collections
 - **`python/image_data_analysis.py`** - Analyzes Docker registry contents and layer information with shared layer detection
@@ -90,68 +88,23 @@ pip install -r requirements.txt
 
 ### Configuration Setup
 
-The tool uses `config.yaml` for default settings. Create or modify this file:
-
-```yaml
-# config.yaml (key excerpts)
-registry:
-  url: "docker-registry:5000"
-  repository: "dominodatalab"
-
-kubernetes:
-  platform_namespace: "domino-platform"
-  compute_namespace: "domino-compute"
-  pod_prefixes: ["model-", "run-"]
-
-mongo:
-  host: "mongodb-replicaset"
-  port: 27017
-  replicaset: "rs0"
-  db: "domino"
-
-analysis:
-  max_workers: 4
-  timeout: 300
-  output_dir: "reports"
-
-s3:
-  bucket: ""  # S3 bucket for image backups (optional)
-  region: "us-west-2"  # AWS region for S3 and ECR
-
-reports:
-  workload_report: "workload-report.json"
-  image_analysis: "final-report.json"
-  deletion_analysis: "deletion-analysis.json"
-  tags_per_layer: "tags-per-layer.json"
-  layers_and_sizes: "layers-and-sizes.json"
-  filtered_layers: "filtered-layers.json"
-  tag_sums: "tag-sums.json"
-  images_report: "images-report"
-  archived_tags: "archived-tags.json"
-  unused_references: "unused-references.json"
-
-security:
-  dry_run_by_default: true
-  require_confirmation: true
-```
+The tool uses `config.yaml` for default settings. 
+A template `config-example.yaml` is provided. Rename it to `config.yaml` and modify the values as needed.  
 
 ### Basic Workflow
 
 ```bash
-# 1. Analyze current workload
-python python/main.py inspect_workload
-
-# 2. Analyze registry contents
-python python/main.py image_data_analysis
-
-# 3. Generate tag usage reports
+# 1. Analyze current image usage
 python python/main.py reports
 
-# 4. Intelligent deletion (dry-run)
-python python/main.py delete_image
+# 2. Basic deletion (dry-run)
+python python/main.py delete_image environment:abc-123
 
-# 5. Delete unused images
-python python/main.py delete_image --apply
+# 3. Intelligent deletion of archived environments (dry-run)
+python python/main.py delete_archived_tags
+
+# 4. Intelligent deletion of unused environments (--apply flag to delete images)
+python python/main.py delete_all_unused_environments --apply
 ```
 
 ### Backup and Restore
@@ -159,20 +112,20 @@ python python/main.py delete_image --apply
 All delete scripts support backing up images to S3 before deletion:
 
 ```bash
-# Backup images to S3 before deletion (all delete scripts)
-python python/main.py delete_archived_tags --environment --apply --backup --s3-bucket my-backup-bucket
-python python/main.py delete_archived_tags --model --apply --backup --s3-bucket my-backup-bucket
+# Backup images to S3 before deletion (all delete scripts that remove Docker images)
 python python/main.py delete_archived_tags --environment --model --apply --backup --s3-bucket my-backup-bucket
 python python/main.py delete_unused_environments --apply --backup --s3-bucket my-backup-bucket
 python python/main.py delete_unused_private_environments --apply --backup --s3-bucket my-backup-bucket
-python python/main.py delete_unused_references --apply --backup --s3-bucket my-backup-bucket
 python python/main.py delete_image --apply --backup --s3-bucket my-backup-bucket
 
 # Specify custom AWS region (default: us-west-2)
 python python/main.py delete_archived_tags --environment --apply --backup --s3-bucket my-backup-bucket --region us-east-1
 
-# Restore images from S3 backup
-python python/backup_restore.py restore --repo REGISTRY/REPO --s3-bucket my-backup-bucket --tags tag1 tag2
+# Restore images from S3 backup (uses config.yaml for registry/repo/S3 bucket)
+python python/backup_restore.py restore --tags tag1 tag2
+
+# Restore with explicit S3 bucket override
+python python/backup_restore.py restore --s3-bucket my-backup-bucket --tags tag1 tag2
 
 # Backup behavior:
 # - Images are backed up to S3 BEFORE deletion
@@ -227,10 +180,10 @@ python python/main.py delete_unused_environments --apply
 python python/main.py delete_unused_environments --generate-reports --apply
 
 # Comprehensive unused environment cleanup - analyze (dry-run, runs both scripts)
-python python/main.py --delete-all-unused-environments
+python python/main.py delete_all_unused_environments
 
 # Comprehensive unused environment cleanup - delete (requires --apply)
-python python/main.py --delete-all-unused-environments --apply
+python python/main.py delete_all_unused_environments --apply
 ```
 
 ### ObjectID Filtering Examples
@@ -272,6 +225,9 @@ export KEYCLOAK_PASSWORD="keycloak_password"
 # S3 Backup (optional - can also use --s3-bucket flag)
 export S3_BUCKET="my-backup-bucket"
 export S3_REGION="us-west-2"
+
+# Skopeo Configuration (optional)
+export SKOPEO_USE_POD="false"  # Set to "true" for Kubernetes pod mode
 ```
 
 ### Show Current Configuration
@@ -443,7 +399,7 @@ Cleans up MongoDB records based on Docker tag information:
 - **S3 Backup** - Optionally backup images to S3 before deletion with `--backup` flag
 
 ### Backup to S3 (New!)
-- **Pre-deletion backup** - All delete scripts support `--backup` and `--s3-bucket` flags
+- **Pre-deletion backup** - Docker image deletion scripts support `--backup` and `--s3-bucket` flags
 - **Automatic abort** - If backup fails, deletion is aborted to prevent data loss
 - **Region support** - Specify AWS region with `--region` (default: us-west-2)
 - **Restore capability** - Use `backup_restore.py restore` to restore backed up images
@@ -451,8 +407,8 @@ Cleans up MongoDB records based on Docker tag information:
   - `delete_archived_tags.py` (supports `--environment` and/or `--model`)
   - `delete_unused_environments.py`
   - `delete_unused_private_environments.py`
-  - `delete_unused_references.py`
   - `delete_image.py`
+- **Note**: `delete_unused_references.py` doesn't support backup as it only deletes MongoDB records, not Docker images
 
 ### Transaction Safety
 - **Docker-first deletion** - Always deletes Docker images before MongoDB records
@@ -499,9 +455,7 @@ python python/main.py delete_image --file environments
 
 ### Custom Configuration
 ```bash
-# Override defaults (all flags optional, uses config.yaml if not specified)
-python python/main.py inspect_workload --registry-url registry.example.com
-python python/main.py image_data_analysis --registry-url registry.example.com --repository my-repo
+# All commands use config.yaml for registry/repository configuration
 ```
 
 ### Deletion Modes
@@ -610,25 +564,25 @@ Run both unused environment cleanup scripts in a single command:
 
 ```bash
 # Analyze (dry-run) - find unused environments from both sources
-python python/main.py --delete-all-unused-environments
+python python/main.py delete_all_unused_environments
 
 # Delete after analysis (requires --apply)
-python python/main.py --delete-all-unused-environments --apply
+python python/main.py delete_all_unused_environments --apply
 
 # With S3 backup for safety
-python python/main.py --delete-all-unused-environments --apply --backup --s3-bucket my-backup-bucket
+python python/main.py delete_all_unused_environments --apply --backup --s3-bucket my-backup-bucket
 
 # With custom region
-python python/main.py --delete-all-unused-environments --apply --backup --s3-bucket my-backup-bucket --region us-east-1
+python python/main.py delete_all_unused_environments --apply --backup --s3-bucket my-backup-bucket --region us-east-1
 
 # Force without confirmation
-python python/main.py --delete-all-unused-environments --apply --force
+python python/main.py delete_all_unused_environments --apply --force
 
 # Generate reports before analysis (dry-run)
-python python/main.py --delete-all-unused-environments --generate-reports
+python python/main.py delete_all_unused_environments --generate-reports
 
 # Generate reports and delete
-python python/main.py --delete-all-unused-environments --generate-reports --apply
+python python/main.py delete_all_unused_environments --generate-reports --apply
 ```
 
 This runs two cleanup operations sequentially:
@@ -699,51 +653,14 @@ docker-registry-cleaner/
 ## 🔧 Configuration
 
 ### config.yaml
-```yaml
-# Docker Registry Cleaner Configuration
-registry:
-  url: "docker-registry:5000"
-  repository: "dominodatalab"
-
-kubernetes:
-  platform_namespace: "domino-platform"
-  compute_namespace: "domino-compute"
-  pod_prefixes: ["model-", "run-"]
-
-mongo:
-  host: "mongodb-replicaset"
-  port: 27017
-  replicaset: "rs0"
-  db: "domino"
-
-analysis:
-  max_workers: 4
-  timeout: 300
-  output_dir: "reports"
-
-s3:
-  bucket: ""  # S3 bucket for image backups (optional)
-  region: "us-west-2"  # AWS region for S3 and ECR
-
-reports:
-  workload_report: "workload-report.json"
-  image_analysis: "final-report.json"
-  deletion_analysis: "deletion-analysis.json"
-  tags_per_layer: "tags-per-layer.json"
-  layers_and_sizes: "layers-and-sizes.json"
-  filtered_layers: "filtered-layers.json"
-  tag_sums: "tag-sums.json"
-  images_report: "images-report"
-  archived_tags: "archived-env-tags.json"
-  archived_model_tags: "archived-model-tags.json"
-  unused_references: "unused-references.json"
-
-security:
-  dry_run_by_default: true
-  require_confirmation: true
-```
+Docker Registry Cleaner will attempt to take its configuration from `config.yaml`, in the root of the project.
+`config-example.yaml` has been provided as a template. Feel free to copy it and replace values with your own.
 
 ### Environment Variables
+Alternatively, you can provide values as environment variables, either by manually exporting them in your environment
+e.g.
+`export REGISTRY_URL=my-docker-registry:5000`
+Or– if running in a Kubernetes pod– by adding them to the manifest for the pod.
 
 **Docker Registry:**
 - `REGISTRY_URL` - Docker registry URL
@@ -752,20 +669,23 @@ security:
 
 **Kubernetes:**
 - `PLATFORM_NAMESPACE` - Domino platform namespace
-- `COMPUTE_NAMESPACE` - Compute namespace
+- `COMPUTE_NAMESPACE` - Domino compute namespace
 
 **MongoDB:**
 - `MONGODB_USERNAME` - MongoDB username (optional, defaults to 'admin')
-- `MONGODB_PASSWORD` - MongoDB password (optional - uses K8s secrets if not set)
+- `MONGODB_PASSWORD` - MongoDB password (optional - uses Kubernetes secrets if not set)
 
 **Keycloak (for deactivated user cleanup):**
-- `KEYCLOAK_HOST` - Keycloak server URL (e.g., `https://keycloak.example.com/auth/`)
+- `KEYCLOAK_HOST` - Keycloak server URL (e.g. `https://domino.example.com/auth/`)
 - `KEYCLOAK_USERNAME` - Keycloak admin username
 - `KEYCLOAK_PASSWORD` - Keycloak admin password
 
 **S3 Backup:**
 - `S3_BUCKET` - S3 bucket name for image backups (optional)
 - `S3_REGION` - AWS region for S3 and ECR operations (default: us-west-2)
+
+**Skopeo:**
+- `SKOPEO_USE_POD` - Set to `true` to run Skopeo in Kubernetes pod mode instead of local subprocess (default: false)
 
 ### Skopeo Configuration
 
@@ -775,8 +695,9 @@ The tool uses a standardized `SkopeoClient` that provides consistent authenticat
 - **ECR Support**: Automatic ECR authentication if registry URL contains "amazonaws.com"
 - **TLS**: Deactivated with `--tls-verify=false` for internal registries
 - **Execution modes**: 
-  - **Local mode**: Direct subprocess calls (used by most scripts)
-  - **Pod mode**: Kubernetes pod execution (used by `delete_image.py`)
+  - **Local mode** (default): Direct subprocess calls to locally installed Skopeo
+  - **Pod mode**: Kubernetes pod execution for environments without local Skopeo installation
+  - Configure via `config.yaml` (`skopeo.use_pod`) or environment variable (`SKOPEO_USE_POD`)
 - **Centralized config**: All Skopeo operations use the same credentials from `REGISTRY_PASSWORD`
 
 ### MongoDB Configuration

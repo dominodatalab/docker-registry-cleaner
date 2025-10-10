@@ -60,7 +60,7 @@ class UnusedReferencesFinder:
     def __init__(self, registry_url: str, repository: str):
         self.registry_url = registry_url
         self.repository = repository
-        self.skopeo_client = SkopeoClient(config_manager, use_pod=False)
+        self.skopeo_client = SkopeoClient(config_manager, use_pod=config_manager.get_skopeo_use_pod())
         self.logger = get_logger(__name__)
         
         # Image type mappings for registry queries

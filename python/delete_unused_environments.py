@@ -80,7 +80,7 @@ class UnusedEnvironmentsFinder:
     def __init__(self, registry_url: str, repository: str):
         self.registry_url = registry_url
         self.repository = repository
-        self.skopeo_client = SkopeoClient(config_manager, use_pod=False)
+        self.skopeo_client = SkopeoClient(config_manager, use_pod=config_manager.get_skopeo_use_pod())
         self.logger = get_logger(__name__)
         
         # Image types to scan (only environment images contain environment ObjectIDs)
@@ -571,7 +571,7 @@ class UnusedEnvironmentsFinder:
             # Initialize ConfigManager and SkopeoClient for backup
             cfg_mgr = ConfigManager()
             from config_manager import SkopeoClient
-            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=False)
+            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
             
             # Call process_backup from backup_restore
             try:

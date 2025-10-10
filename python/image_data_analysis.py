@@ -31,7 +31,7 @@ class ImageAnalyzer:
     def __init__(self, registry_url: str, repository: str):
         self.registry_url = registry_url
         self.repository = repository
-        self.skopeo_client = SkopeoClient(config_manager, use_pod=False)
+        self.skopeo_client = SkopeoClient(config_manager, use_pod=config_manager.get_skopeo_use_pod())
         
         # Initialize DataFrames
         self.layers_df = pd.DataFrame(columns=["layer_id", "size_bytes", "ref_count"])
@@ -313,24 +313,19 @@ Examples:
   # Use config_manager defaults
   python image_data_analysis.py
   
-  # Override registry and repository
-  python image_data_analysis.py --registry-url docker-registry:5000 --repository dominodatalab
-  
   # Filter by ObjectIDs from file
   python image_data_analysis.py --file environments environment model
         """
     )
     
-    parser.add_argument("--registry-url", help=f"Container registry URL (default: from config)")
-    parser.add_argument("--repository", help=f"Container repository name (default: from config)")
     parser.add_argument("--file", help="File containing ObjectIDs (first column) to filter images")
     parser.add_argument("images", nargs="*", help="Images to analyze (default: environment, model)")
     
     args = parser.parse_args()
     
-    # Use config_manager defaults if not provided
-    registry_url = args.registry_url or config_manager.get_registry_url()
-    repository = args.repository or config_manager.get_repository()
+    # Use config_manager for registry and repository
+    registry_url = config_manager.get_registry_url()
+    repository = config_manager.get_repository()
     
     # Parse ObjectIDs (typed) from file if provided
     object_ids_map = None

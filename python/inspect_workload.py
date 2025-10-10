@@ -317,9 +317,6 @@ Examples:
   # Basic usage (uses config values)
   python inspect_workload.py
 
-  # With custom registry URL
-  python inspect_workload.py --registry-url registry.example.com
-
   # Custom namespace and pod prefixes
   python inspect_workload.py --namespace my-namespace --pod-prefixes app- job-
 
@@ -334,10 +331,6 @@ Examples:
 		"""
 	)
 	
-	parser.add_argument(
-		'--registry-url', 
-		help='Container registry URL (defaults to config value)'
-	)
 	
 	parser.add_argument(
 		'--prefix-to-remove', 
@@ -379,8 +372,8 @@ def main():
 	setup_logging()
 	args = parse_arguments()
 	
-	# Get registry URL from args or config
-	registry_url = args.registry_url or config_manager.get_registry_url()
+	# Get registry URL from config
+	registry_url = config_manager.get_registry_url()
 	
 	# Get prefix to remove from args or derive from registry URL
 	prefix_to_remove = args.prefix_to_remove or f"{registry_url}/"

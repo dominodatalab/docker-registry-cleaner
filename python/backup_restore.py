@@ -23,14 +23,17 @@ Features:
   - S3 backup/restore with checksum validation
 
 Usage:
-    # Backup images from environments file (uses config.yaml for registry/repo)
+    # Backup images from environments file (uses config.yaml for registry/repo and S3 bucket)
+    python backup_restore.py backup
+
+    # Backup with explicit S3 bucket override
     python backup_restore.py backup --s3-bucket my-bucket
 
-    # Restore specific tags (explicit repo override)
-    python backup_restore.py restore --repo REGISTRY/REPO --s3-bucket my-bucket --tags tag1 tag2
+    # Restore specific tags (uses config.yaml for registry/repo and S3 bucket)
+    python backup_restore.py restore --tags tag1 tag2
 
     # Delete old images after backup
-    python backup_restore.py backup --s3-bucket my-bucket --delete
+    python backup_restore.py backup --delete
 """
 
 import argparse
@@ -436,7 +439,6 @@ def process_backup(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=["backup", "restore", "delete"])
-    parser.add_argument("--repo", help="Registry and repository (e.g. IMAGE_REGISTRY/repo). Defaults to config.yaml values.")
     # ``--prefix`` is required for the backup mode but optional for restore.  We enforce this
     # requirement after parsing based on the selected mode.
     parser.add_argument(
@@ -444,7 +446,7 @@ def main():
         required=False,
         help="Prefix to filter tags (e.g. commit SHA). Required when running in backup mode and ignored in restore mode.",
     )
-    parser.add_argument("--s3-bucket", required=True, help="S3 bucket for backups")
+    parser.add_argument("--s3-bucket", help="S3 bucket for backups (optional - defaults to config.yaml s3.bucket)")
     parser.add_argument("--region", default="us-west-2", help="AWS region")
     parser.add_argument("--dry-run", action="store_true", help="Simulate operations")
     parser.add_argument("--min-age-days", type=int, help="Skip tags younger than this")
@@ -485,14 +487,24 @@ def main():
 
     # Initialize ConfigManager and SkopeoClient
     cfg_mgr = ConfigManager()
-    skopeo_client = SkopeoClient(cfg_mgr, use_pod=False)
+    skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
 
-    # Use config_manager values if --repo not provided
-    if not args.repo:
-        registry_url = cfg_mgr.get_registry_url()
-        repository = cfg_mgr.get_repository()
-        args.repo = f"{registry_url}/{repository}"
-        logger.info(f"Using repository from config: {args.repo}")
+    # Always use config_manager values for registry and repository
+    registry_url = cfg_mgr.get_registry_url()
+    repository = cfg_mgr.get_repository()
+    full_repo = f"{registry_url}/{repository}"
+    logger.info(f"Using repository from config: {full_repo}")
+
+    # Get S3 bucket from args or config
+    s3_bucket = args.s3_bucket or cfg_mgr.get_s3_bucket()
+    if not s3_bucket:
+        logger.error("S3 bucket is required but not provided")
+        logger.error("Options:")
+        logger.error("  1. Provide via --s3-bucket flag")
+        logger.error("  2. Set S3_BUCKET environment variable")
+        logger.error("  3. Configure in config.yaml: s3.bucket")
+        parser.error("S3 bucket is required")
+    logger.info(f"Using S3 bucket: {s3_bucket}")
 
     # Configure optional file logging before any processing
     if args.log_file:
@@ -532,7 +544,7 @@ def main():
             parser.error(f"Unable to read tags from {args.file}: {err}")
 
     if args.mode == "backup":
-        registry, repository = parse_registry_and_repo(args.repo)
+        registry, repository = parse_registry_and_repo(full_repo)
         ecr_client = get_ecr_client(args.region)
         if args.tags or tags_from_file:
             # Use provided tags (from CLI or file).  Combine both sources.
@@ -559,9 +571,9 @@ def main():
             )
         process_backup(
             skopeo_client,
-            args.repo,
+            full_repo,
             tags,
-            args.s3_bucket,
+            s3_bucket,
             args.region,
             args.dry_run,
             args.delete,
@@ -583,9 +595,9 @@ def main():
             parser.error("--tags or --file must be provided when using restore mode")
         restore_images(
             skopeo_client,
-            args.repo,
+            full_repo,
             restore_tags,
-            args.s3_bucket,
+            s3_bucket,
             args.region,
             args.dry_run,
             tmpdir=args.tmpdir,
@@ -596,7 +608,7 @@ def main():
         if not delete_tags:
             if not args.prefix:
                 parser.error("--prefix required when no explicit tags for delete")
-            _, repo = parse_registry_and_repo(args.repo)
+            _, repo = parse_registry_and_repo(full_repo)
             all_tags = list_ecr_images(get_ecr_client(args.region), repo)
             delete_tags = filter_tags(all_tags, args.prefix, exclude_latest=True)
     
@@ -606,7 +618,7 @@ def main():
     
         ecr = get_ecr_client(args.region)
         for tag in delete_tags:
-            image = f"{args.repo}:{tag}"
+            image = f"{full_repo}:{tag}"
             try:
                 if not args.dry_run:
                     ecr.batch_delete_image(

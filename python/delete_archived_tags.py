@@ -82,7 +82,7 @@ class ArchivedTagsFinder:
     def __init__(self, registry_url: str, repository: str, process_environments: bool = False, process_models: bool = False):
         self.registry_url = registry_url
         self.repository = repository
-        self.skopeo_client = SkopeoClient(config_manager, use_pod=False)
+        self.skopeo_client = SkopeoClient(config_manager, use_pod=config_manager.get_skopeo_use_pod())
         self.logger = get_logger(__name__)
         
         # Determine what to process
@@ -317,7 +317,7 @@ class ArchivedTagsFinder:
                 
                 # Initialize ConfigManager and SkopeoClient for backup
                 cfg_mgr = ConfigManager()
-                backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=False)
+                backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
                 
                 # Call process_backup from backup_restore
                 try:

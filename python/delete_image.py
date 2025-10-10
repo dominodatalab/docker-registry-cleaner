@@ -7,11 +7,17 @@ from the registry while preserving all actively used ones.
 
 Configuration:
   Registry password is sourced from (in priority order):
-  1. Command-line argument (highest priority)
+  1. --password command-line flag (highest priority)
   2. REGISTRY_PASSWORD environment variable
   3. config.yaml registry.password field (lowest priority)
 
 Usage examples:
+  # Delete a specific image (dry-run)
+  python delete_image.py dominodatalab/environment:abc-123
+
+  # Delete a specific image (apply)
+  python delete_image.py dominodatalab/environment:abc-123 --apply
+
   # Analyze unused images (dry-run)
   python delete_image.py
 
@@ -22,7 +28,7 @@ Usage examples:
   python delete_image.py --apply --force
 
   # Provide Docker Registry password manually (overrides env and config)
-  python delete_image.py --apply mypassword
+  python delete_image.py --apply --password mypassword
 
   # Back up images to S3 before deletion
   python delete_image.py --apply --backup
@@ -39,8 +45,8 @@ Usage examples:
   # Optional: Skip MongoDB cleanup after deletion
   python delete_image.py --apply --skip-cleanup-mongo
 
-  # Optional: Specify MongoDB collection for cleanup
-  python delete_image.py --apply --mongo-collection environments_v2
+  # MongoDB cleanup (automatically cleans up environment_revisions and/or model_versions collections)
+  python delete_image.py --apply
 """
 
 import argparse
@@ -89,7 +95,7 @@ class IntelligentImageDeleter:
         
         # Initialize Skopeo client for local execution (same as other delete scripts)
         # SkopeoClient now handles registry deletion enable/disable via enable_registry_deletion()
-        self.skopeo_client = SkopeoClient(config_manager, use_pod=False)
+        self.skopeo_client = SkopeoClient(config_manager, use_pod=config_manager.get_skopeo_use_pod())
     
     def load_workload_report(self, report_path: str = "workload-report.json") -> Dict:
         """Load workload analysis report from JSON file"""
@@ -278,7 +284,7 @@ class IntelligentImageDeleter:
             
             # Initialize ConfigManager and SkopeoClient for backup
             cfg_mgr = ConfigManager()
-            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=False)
+            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
             
             # Call process_backup from backup_restore
             try:
@@ -353,41 +359,75 @@ class IntelligentImageDeleter:
         
         return deleted_tags
 
-    def cleanup_mongo_references(self, deleted_tags: List[str], collection_name: str = "environment_revisions") -> None:
+    def cleanup_mongo_references(self, deleted_tags: List[str]) -> None:
         """Clean up Mongo references for deleted image tags by calling mongo_cleanup.py
         
+        Automatically determines whether to clean environment_revisions or model_versions
+        collections based on the image type in the tag.
+        
         Args:
-            deleted_tags: List of Docker image tags that were deleted
-            collection_name: MongoDB collection to clean up (default: environment_revisions)
+            deleted_tags: List of Docker image tags that were deleted (format: repository/type:tag)
         """
         if not deleted_tags:
             return
         
         print(f"\n🗄️  Cleaning up Mongo references for {len(deleted_tags)} deleted tags...")
         
-        # Create temporary file with deleted tags
-        temp_file = os.path.join(config_manager.get_output_dir(), "deleted_tags_temp.txt")
+        # Separate tags by image type
+        environment_tags = []
+        model_tags = []
+        
+        for tag in deleted_tags:
+            # Extract image type from tag format: repository/type:tag
+            # e.g., "dominodatalab/environment:abc123" or "dominodatalab/model:xyz789"
+            if '/environment:' in tag:
+                environment_tags.append(tag)
+            elif '/model:' in tag:
+                model_tags.append(tag)
+            else:
+                self.logger.warning(f"Could not determine image type for tag: {tag}")
+        
+        script_path = os.path.join(os.path.dirname(__file__), "mongo_cleanup.py")
+        
+        # Clean up environment_revisions collection
+        if environment_tags:
+            self._cleanup_collection(environment_tags, "environment_revisions", script_path)
+        
+        # Clean up model_versions collection
+        if model_tags:
+            self._cleanup_collection(model_tags, "model_versions", script_path)
+        
+        if environment_tags or model_tags:
+            print("✅ Mongo references cleaned up successfully")
+    
+    def _cleanup_collection(self, tags: List[str], collection_name: str, script_path: str) -> None:
+        """Helper method to clean up a specific MongoDB collection.
+        
+        Args:
+            tags: List of tags to clean up
+            collection_name: MongoDB collection name
+            script_path: Path to mongo_cleanup.py script
+        """
+        temp_file = os.path.join(config_manager.get_output_dir(), f"deleted_tags_{collection_name}_temp.txt")
         try:
             with open(temp_file, 'w') as f:
-                for tag in deleted_tags:
+                for tag in tags:
                     f.write(f"{tag}\n")
             
-            # Call mongo_cleanup.py to delete references
-            script_path = os.path.join(os.path.dirname(__file__), "mongo_cleanup.py")
+            print(f"  Cleaning {len(tags)} tags from {collection_name}...")
             cmd = [sys.executable, script_path, "delete", "--file", temp_file, "--collection", collection_name]
             
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-                print("✅ Mongo references cleaned up successfully")
                 if result.stdout:
-                    print(result.stdout)
+                    print(f"    {result.stdout}")
             except subprocess.CalledProcessError as e:
-                self.logger.error(f"Failed to clean up Mongo references: {e}")
+                self.logger.error(f"Failed to clean up {collection_name}: {e}")
                 if e.stdout:
-                    print(f"stdout: {e.stdout}")
+                    print(f"    stdout: {e.stdout}")
                 if e.stderr:
-                    print(f"stderr: {e.stderr}")
-                print("⚠️  Mongo cleanup failed - you may need to clean up references manually")
+                    print(f"    stderr: {e.stderr}")
+                print(f"    ⚠️  Cleanup of {collection_name} failed - you may need to clean up references manually")
         
         finally:
             # Clean up temporary file
@@ -400,7 +440,8 @@ class IntelligentImageDeleter:
 def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="Intelligent Docker image deletion with workload analysis")
-    parser.add_argument("password", nargs="?", help="Password for registry access (optional; defaults to REGISTRY_PASSWORD env var or config.yaml)")
+    parser.add_argument("image", nargs="?", help="Specific image to delete (format: repository/type:tag, e.g., dominodatalab/environment:abc-123)")
+    parser.add_argument("--password", help="Password for registry access (optional; defaults to REGISTRY_PASSWORD env var or config.yaml)")
     parser.add_argument("--apply", action="store_true", help="Actually apply changes and delete images (default is dry-run)")
     parser.add_argument("--force", action="store_true", help="Skip confirmation prompt when using --apply")
     parser.add_argument("--workload-report", default=config_manager.get_workload_report_path(), help="Path to workload analysis report")
@@ -408,8 +449,7 @@ def parse_arguments():
     parser.add_argument("--output-report", default=config_manager.get_deletion_analysis_path(), help="Path for deletion analysis report")
     parser.add_argument("--skip-analysis", action="store_true", help="Skip workload analysis and use traditional environments file")
     parser.add_argument("--file", help="File containing ObjectIDs (one per line) to filter images")
-    parser.add_argument("--skip-cleanup-mongo", action="store_true", help="Skip MongoDB cleanup after deleting images (cleanup is enabled by default)")
-    parser.add_argument("--mongo-collection", default="environment_revisions", help="MongoDB collection to clean up (default: environment_revisions)")
+    parser.add_argument("--skip-cleanup-mongo", action="store_true", help="Skip MongoDB cleanup after deleting images (automatically cleans environment_revisions and/or model_versions based on image type)")
     parser.add_argument(
         '--backup',
         action='store_true',
@@ -497,6 +537,52 @@ def main():
         # Create deleter
         deleter = IntelligentImageDeleter()
         
+        # Handle direct image deletion if image argument is provided
+        if args.image:
+            print(f"🎯 Deleting specific image: {args.image}")
+            
+            # Parse image format: repository/type:tag
+            if ':' not in args.image:
+                print(f"❌ Error: Invalid image format. Expected format: repository/type:tag (e.g., dominodatalab/environment:abc-123)")
+                sys.exit(1)
+            
+            parts = args.image.split(':')
+            repository_tag = parts[0]
+            tag = parts[1]
+            
+            # Extract repository name (remove registry URL if present)
+            if '/' in repository_tag:
+                repository = repository_tag.split('/', 1)[1]  # Remove registry URL
+            else:
+                repository = repository_tag
+            
+            # Enable deletion in registry (if running in Kubernetes)
+            if not dry_run:
+                deleter.enable_deletion_of_docker_images()
+            
+            # Delete the image
+            deleted_tags = []
+            if dry_run:
+                print(f"  Would delete: {args.image}")
+                deleted_tags = [args.image]
+            else:
+                print(f"  Deleting: {args.image}")
+                if deleter.skopeo_client.delete_image(repository, tag):
+                    print(f"    ✅ Deleted successfully")
+                    deleted_tags = [args.image]
+                else:
+                    print(f"    ❌ Failed to delete")
+            
+            # Disable deletion in registry (if running in Kubernetes)
+            if not dry_run:
+                deleter.disable_deletion_of_docker_images()
+            
+            # Clean up Mongo references for deleted tags
+            if deleted_tags and not dry_run and not args.skip_cleanup_mongo:
+                deleter.cleanup_mongo_references(deleted_tags)
+            
+            return
+        
         if not args.skip_analysis:
             # Load analysis reports
             print("📊 Loading workload and image analysis reports...")
@@ -544,7 +630,7 @@ def main():
             
             # Clean up Mongo references for deleted tags (enabled by default, can be skipped with --skip-cleanup-mongo)
             if deleted_tags and not dry_run and not args.skip_cleanup_mongo:
-                deleter.cleanup_mongo_references(deleted_tags, args.mongo_collection)
+                deleter.cleanup_mongo_references(deleted_tags)
             
         else:
             # Use traditional environments file method

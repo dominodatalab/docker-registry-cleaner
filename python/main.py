@@ -29,7 +29,7 @@ def get_script_descriptions():
     return {
         "delete_all_unused_environments": "Run comprehensive unused environment cleanup (unused environments + deactivated user private environments)",
         "delete_archived_tags": "Find and optionally delete Docker tags associated with archived environments and/or models",
-        "delete_image": "Delete Docker images from registry (default: dry-run)",
+        "delete_image": "Delete specific Docker image or analyze/delete unused images (default: dry-run)",
         "delete_unused_environments": "Find and optionally delete environments not used in workspaces, models, or project defaults (auto-generates reports)",
         "delete_unused_private_environments": "Find and optionally delete private environments owned by deactivated Keycloak users",
         "delete_unused_references": "Find and optionally delete MongoDB references to non-existent Docker images",
@@ -101,29 +101,10 @@ def read_object_ids_from_file(file_path: str) -> List[str]:
 def validate_script_requirements(script_keyword, args):
     """Validate required arguments for specific scripts"""
     
-    if script_keyword == "image_data_analysis":
-        # Check if registry URL and repository name are provided, otherwise use config defaults
-        has_registry_url = any('--registry-url' in arg for arg in args)
-        has_repository = any('--repository' in arg for arg in args)
-        
-        if not has_registry_url and not has_repository:
-            # Use config defaults
-            registry_url = config_manager.get_registry_url()
-            repository = config_manager.get_repository()
-            args.extend(['--registry-url', registry_url, '--repository', repository])
-            logging.info(f"Using config defaults: registry-url={registry_url}, repository={repository}")
-        elif not has_registry_url or not has_repository:
-            logging.error("Both --registry-url and --repository are required for image_data_analysis.")
-            logging.error("Example: main.py image_data_analysis --registry-url <url> --repository <name>")
-            logging.error("Or configure defaults in config.yaml")
-            sys.exit(1)
+    # image_data_analysis and inspect_workload now always use config_manager
+    # No validation needed - they get registry/repository from config.yaml
     
-    elif script_keyword == "inspect_workload":
-        # inspect_workload.py now handles config defaults internally
-        # No validation needed - it will use config values if args not provided
-        pass
-    
-    elif script_keyword == "mongo_cleanup":
+    if script_keyword == "mongo_cleanup":
         # Check if required arguments are provided
         has_file = any('--file' in arg for arg in args)
         
@@ -135,7 +116,7 @@ def validate_script_requirements(script_keyword, args):
     
     elif script_keyword == "delete_image":
         # Check if password is provided (argument, env var, or config)
-        has_password_arg = any(arg.startswith('--password') or not arg.startswith('-') for arg in args)
+        has_password_arg = any(arg.startswith('--password') for arg in args.additional_args)
         has_password = config_manager.get_registry_password() is not None
         
         # Check if using ECR (which doesn't need a password)
@@ -147,7 +128,7 @@ def validate_script_requirements(script_keyword, args):
             logging.warning("Options:")
             logging.warning("  1. Add to config.yaml: registry.password: <password>")
             logging.warning("  2. Set REGISTRY_PASSWORD environment variable: export REGISTRY_PASSWORD=<password>")
-            logging.warning("  3. Provide password as argument: main.py delete_image <password>")
+            logging.warning("  3. Provide password as flag: main.py delete_image --password <password>")
             logging.warning("  4. For ECR registries, authentication is automatic (no password needed)")
     
     # Validate ObjectID file if provided for supported scripts
@@ -177,7 +158,7 @@ def main():
 Available scripts:
   delete_all_unused_environments     - Run comprehensive unused environment cleanup (unused environments + deactivated user private environments)
   delete_archived_tags               - Find and optionally delete Docker tags associated with archived environments and/or models
-  delete_image                       - Delete Docker images from registry (default: dry-run)
+  delete_image [image]               - Delete specific Docker image or analyze/delete unused images (default: dry-run)
   delete_unused_environments         - Find and optionally delete environments not used in workspaces, models, or project defaults (auto-generates reports)
   delete_unused_private_environments - Find and optionally delete private environments owned by deactivated Keycloak users
   delete_unused_references           - Find and optionally delete MongoDB references to non-existent Docker images
@@ -199,21 +180,23 @@ Examples:
   # Basic usage (uses config.yaml defaults)
   python main.py image_data_analysis
   python main.py inspect_workload
-  python main.py delete_image [password]  # password optional if REGISTRY_PASSWORD is set
+  python main.py delete_image
   python main.py delete_archived_tags --environment --output archived-tags.json
 
-  # Override defaults
-  python main.py image_data_analysis --registry-url registry.example.com --repository my-repo
-  python main.py inspect_workload --registry-url registry.example.com
+  # Delete a specific image (dry run - default, safe)
+  python main.py delete_image environment:abc-123
 
-  # Delete images (dry run - default, safe) - password optional
+  # Delete a specific image (actual deletion)
+  python main.py delete_image environment:abc-123 --apply
+
+  # Delete unused images (dry run - default, safe)
   python main.py delete_image
 
-  # Delete images (actual deletion - requires confirmation)
+  # Delete unused images (actual deletion - requires confirmation)
   python main.py delete_image --apply
 
-  # Delete images (force deletion - no confirmation) - explicit password
-  python main.py delete_image <password> --apply --force
+  # Delete unused images (force deletion - no confirmation) with explicit password
+  python main.py delete_image --apply --force --password mypassword
 
   # Filter by ObjectIDs from file (first column contains ObjectIDs)
   python main.py image_data_analysis --file environments
