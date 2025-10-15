@@ -777,6 +777,51 @@ def main():
                 logger.info(f"Report written to {output_file}")
                 sys.exit(0)
         
+        # Backup-only mode: allow backing up without deletion when --backup is provided without --apply
+        if (not is_delete_mode) and args.backup:
+            if not deactivated_user_tags:
+                logger.info("No tags to back up")
+                sys.exit(0)
+
+            # Confirmation prompt (unless --force)
+            if not args.force:
+                logger.warning(f"\n⚠️  WARNING: About to back up {len(deactivated_user_tags)} tags to S3!")
+                logger.warning("This will upload tar archives to your configured S3 bucket.")
+                response = input("\nProceed with backup only (no deletions)? (yes/no): ").strip().lower()
+                if response not in ['yes', 'y']:
+                    logger.info("Operation cancelled by user")
+                    sys.exit(0)
+
+            # Execute backup only
+            logger.info(f"\n📦 Backing up {len(deactivated_user_tags)} tags to S3 (no deletion)...")
+            tags_to_backup = [t.tag for t in deactivated_user_tags]
+            full_repo = f"{registry_url}/{repository}"
+
+            cfg_mgr = ConfigManager()
+            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
+
+            try:
+                process_backup(
+                    skopeo_client=backup_skopeo_client,
+                    full_repo=full_repo,
+                    tags=tags_to_backup,
+                    s3_bucket=s3_bucket,
+                    region=s3_region,
+                    dry_run=False,
+                    delete=False,
+                    min_age_days=None,
+                    workers=1,
+                    tmpdir=None,
+                    failed_tags_file=None,
+                )
+                logger.info(f"✅ Successfully backed up {len(tags_to_backup)} images to S3")
+            except Exception as e:
+                logger.error(f"❌ Backup failed: {e}")
+                sys.exit(1)
+
+            logger.info("\n✅ Backup-only operation completed successfully!")
+            sys.exit(0)
+
         # Handle deletion mode
         if is_delete_mode:
             if not deactivated_user_tags:

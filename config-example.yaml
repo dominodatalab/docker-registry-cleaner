@@ -44,6 +44,7 @@ reports:
   tags_per_layer: "tags-per-layer.json"
   tag_sums: "tag-sums.json"
   workload_report: "workload-report.json"
+  runs_env_usage: "runs_env_usage_output.json"
 
 # Security Configuration
 security:

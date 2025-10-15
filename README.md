@@ -118,6 +118,12 @@ python python/main.py delete_unused_environments --apply --backup --s3-bucket my
 python python/main.py delete_unused_private_environments --apply --backup --s3-bucket my-backup-bucket
 python python/main.py delete_image --apply --backup --s3-bucket my-backup-bucket
 
+# Backup only (no deletion) - will prompt for confirmation unless --force
+python python/main.py delete_archived_tags --environment --backup --s3-bucket my-backup-bucket --force
+python python/main.py delete_unused_environments --backup --s3-bucket my-backup-bucket --force
+python python/main.py delete_unused_private_environments --backup --s3-bucket my-backup-bucket --force
+python python/main.py delete_image --backup --s3-bucket my-backup-bucket --force
+
 # Specify custom AWS region (default: us-west-2)
 python python/main.py delete_archived_tags --environment --apply --backup --s3-bucket my-backup-bucket --region us-east-1
 
@@ -545,6 +551,9 @@ python python/main.py delete_unused_environments --output unused-envs.json
 # Delete unused environments (with confirmation)
 python python/main.py delete_unused_environments --apply
 
+# Consider only recent usage in runs (e.g., last 30 days)
+python python/main.py delete_unused_environments --days 30
+
 # Delete with S3 backup for safety
 python python/main.py delete_unused_environments --apply --backup --s3-bucket my-backup-bucket
 
@@ -869,7 +878,7 @@ python python/main.py inspect_workload --max-workers 1
 - **Registry access** - For image inspection and deletion
 - **MongoDB access** - For metadata extraction and cleanup
 - **Keycloak access** - For deactivated user detection (optional)
-- **Python 3.7+** - For script execution
+- **Python 3.9+** - For script execution
 
 ## 🤝 Contributing
 

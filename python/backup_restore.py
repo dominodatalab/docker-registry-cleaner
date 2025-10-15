@@ -38,7 +38,6 @@ Usage:
 
 import argparse
 import boto3
-import datetime
 import hashlib
 import logging
 import os
@@ -47,6 +46,7 @@ import tempfile
 
 from botocore.config import Config
 from botocore.exceptions import ClientError
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
 from config_manager import ConfigManager, SkopeoClient
@@ -346,7 +346,7 @@ def process_backup(
     # Pre-calculate age cutoff if provided
     cutoff_time = None
     if isinstance(min_age_days, int) and min_age_days > 0:
-        cutoff_time = datetime.datetime.utcnow() - datetime.timedelta(days=min_age_days)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(days=min_age_days)
 
     cleanup_tmpdir(tmpdir, dry_run)
 

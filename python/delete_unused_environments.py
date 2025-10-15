@@ -48,7 +48,7 @@ import sys
 
 from bson import ObjectId
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Set
 
@@ -77,7 +77,7 @@ class UnusedEnvInfo:
 class UnusedEnvironmentsFinder:
     """Main class for finding and managing unused environment tags"""
     
-    def __init__(self, registry_url: str, repository: str):
+    def __init__(self, registry_url: str, repository: str, recent_days: int | None = None):
         self.registry_url = registry_url
         self.repository = repository
         self.skopeo_client = SkopeoClient(config_manager, use_pod=config_manager.get_skopeo_use_pod())
@@ -85,6 +85,8 @@ class UnusedEnvironmentsFinder:
         
         # Image types to scan (only environment images contain environment ObjectIDs)
         self.image_types = ['environment']
+        # Days window to consider a run as recent (None means ignore recency filter)
+        self.recent_days = recent_days
     
     def extract_object_id_from_tag(self, tag: str) -> str:
         """Extract ObjectID from a Docker tag.
@@ -108,7 +110,7 @@ class UnusedEnvironmentsFinder:
         # Generate metadata from MongoDB
         self.logger.info("Extracting metadata from MongoDB...")
         try:
-            extract_metadata.run("both")  # Run both model and workspace queries
+            extract_metadata.run("all")  # Run both model and workspace queries
             self.logger.info("✓ Metadata extraction completed")
         except Exception as e:
             self.logger.error(f"Failed to extract metadata: {e}")
@@ -186,7 +188,20 @@ class UnusedEnvironmentsFinder:
         else:
             self.logger.warning(f"Workload report file not found: {workload_file}")
         
-        return model_env_data, workspace_env_data, workload_data
+        # Load runs usage file (new)
+        runs_env_file = Path(output_dir) / "runs_env_usage_output.json"
+        runs_env_data = []
+        if runs_env_file.exists():
+            try:
+                with open(runs_env_file, 'r') as f:
+                    runs_env_data = json.load(f)
+                self.logger.info(f"Loaded {len(runs_env_data)} runs environment records")
+            except Exception as e:
+                self.logger.warning(f"Could not load runs environment usage: {e}")
+        else:
+            self.logger.warning(f"Runs environment usage file not found: {runs_env_file}")
+
+        return model_env_data, workspace_env_data, workload_data, runs_env_data
     
     def _parse_mongodb_json(self, content: str) -> List[dict]:
         """Parse MongoDB extended JSON format to extract data"""
@@ -253,7 +268,9 @@ class UnusedEnvironmentsFinder:
     
     def extract_used_environment_ids(self, model_env_data: List[dict], 
                                      workspace_env_data: List[dict],
-                                     workload_data: Dict) -> Set[str]:
+                                     workload_data: Dict,
+                                     runs_env_data: List[dict],
+                                     recent_days: int | None) -> Set[str]:
         """Extract all environment and revision IDs that are currently in use"""
         used_ids = set()
         
@@ -284,6 +301,37 @@ class UnusedEnvironmentsFinder:
             obj_id = self.extract_object_id_from_tag(tag)
             if obj_id:
                 used_ids.add(obj_id)
+
+        # From runs history - add environmentId and environmentRevisionId
+        # If recent_days is provided, only count runs whose 'started' is within the window
+        threshold = None
+        if recent_days is not None and recent_days > 0:
+            threshold = datetime.now(timezone.utc) - timedelta(days=recent_days)
+
+        for record in runs_env_data:
+            # Filter by recency if requested (prefer last_used, then completed, then started)
+            if threshold is not None:
+                when_raw = record.get('last_used') or record.get('completed') or record.get('started')
+                if not when_raw:
+                    continue
+                try:
+                    # Handle ISO strings possibly ending with 'Z'
+                    if isinstance(when_raw, str):
+                        ts = when_raw.replace('Z', '+00:00')
+                        when_dt = datetime.fromisoformat(ts)
+                    else:
+                        continue
+                except Exception:
+                    when_dt = None
+                if when_dt is None or when_dt < threshold:
+                    continue
+
+            env_id = record.get('environment_id')
+            if env_id:
+                used_ids.add(str(env_id))
+            rev_id = record.get('environment_revision_id')
+            if rev_id:
+                used_ids.add(str(rev_id))
         
         self.logger.info(f"Found {len(used_ids)} environment/revision IDs in use from metadata files")
         return used_ids
@@ -402,10 +450,16 @@ class UnusedEnvironmentsFinder:
     def find_unused_environments(self) -> List[str]:
         """Find environment and revision IDs that are not being used anywhere"""
         # Load metadata files
-        model_env_data, workspace_env_data, workload_data = self.load_metadata_files()
+        model_env_data, workspace_env_data, workload_data, runs_env_data = self.load_metadata_files()
         
         # Extract IDs that are in use
-        used_ids = self.extract_used_environment_ids(model_env_data, workspace_env_data, workload_data)
+        used_ids = self.extract_used_environment_ids(
+            model_env_data,
+            workspace_env_data,
+            workload_data,
+            runs_env_data,
+            recent_days=self.recent_days
+        )
         
         # Get all environments and defaults from MongoDB
         all_env_ids, all_revision_ids, default_env_ids, scheduler_env_ids, app_version_env_ids = self.fetch_all_environments_and_defaults()
@@ -862,6 +916,12 @@ Examples:
         help='AWS region for S3 and ECR (default: from config or us-west-2)'
     )
     
+    parser.add_argument(
+        '--days',
+        type=int,
+        help='Only consider runs within the last N days as in-use (runs older than N days do not prevent deletion). If omitted, any historical run marks the environment as in-use.'
+    )
+    
     return parser.parse_args()
 
 
@@ -905,7 +965,7 @@ def main():
             logger.info(f"Output file: {output_file}")
         
         # Create finder
-        finder = UnusedEnvironmentsFinder(registry_url, repository)
+        finder = UnusedEnvironmentsFinder(registry_url, repository, recent_days=args.days)
         
         # Check if reports need to be generated
         output_dir = config_manager.get_output_dir()
@@ -971,6 +1031,53 @@ def main():
                 logger.info(f"Report written to {output_file}")
                 sys.exit(0)
         
+        # Backup-only mode: allow backing up without deletion when --backup is provided without --apply
+        if (not is_delete_mode) and args.backup:
+            if not unused_tags:
+                logger.info("No unused tags to back up")
+                sys.exit(0)
+
+            # Confirmation prompt (unless --force)
+            if not args.force:
+                logger.warning(f"\n⚠️  WARNING: About to back up {len(unused_tags)} unused environment tags to S3!")
+                logger.warning("This will upload tar archives to your configured S3 bucket.")
+                response = input("\nProceed with backup only (no deletions)? (yes/no): ").strip().lower()
+                if response not in ['yes', 'y']:
+                    logger.info("Operation cancelled by user")
+                    sys.exit(0)
+
+            # Execute backup only
+            logger.info(f"\n📦 Backing up {len(unused_tags)} unused environment tags to S3 (no deletion)...")
+            tags_to_backup = [t.tag for t in unused_tags]
+            full_repo = f"{registry_url}/{repository}"
+
+            from backup_restore import process_backup
+            from config_manager import ConfigManager, SkopeoClient
+            cfg_mgr = ConfigManager()
+            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
+
+            try:
+                process_backup(
+                    skopeo_client=backup_skopeo_client,
+                    full_repo=full_repo,
+                    tags=tags_to_backup,
+                    s3_bucket=s3_bucket,
+                    region=s3_region,
+                    dry_run=False,
+                    delete=False,
+                    min_age_days=None,
+                    workers=1,
+                    tmpdir=None,
+                    failed_tags_file=None,
+                )
+                logger.info(f"✅ Successfully backed up {len(tags_to_backup)} images to S3")
+            except Exception as e:
+                logger.error(f"❌ Backup failed: {e}")
+                sys.exit(1)
+
+            logger.info("\n✅ Backup-only operation completed successfully!")
+            sys.exit(0)
+
         # Handle deletion mode
         if is_delete_mode:
             if not unused_tags:

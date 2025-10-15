@@ -98,7 +98,8 @@ class ConfigManager:
                 'tags_per_layer': 'tags-per-layer.json',
                 'tag_sums': 'tag-sums.json',
                 'unused_references': 'unused-references.json',
-                'workload_report': 'workload-report.json'
+                'workload_report': 'workload-report.json',
+                'runs_env_usage': 'runs_env_usage_output.json'
             },
             'security': {
                 'dry_run_by_default': True,
@@ -259,6 +260,10 @@ class ConfigManager:
     def get_workload_report_path(self) -> str:
         """Get workload report path from config"""
         return self._resolve_report_path(self.config['reports']['workload_report'])
+    
+    def get_runs_env_usage_path(self) -> str:
+        """Get runs environment usage report path from config"""
+        return self._resolve_report_path(self.config['reports']['runs_env_usage'])
     
     def get_image_analysis_path(self) -> str:
         """Get image analysis path from config"""

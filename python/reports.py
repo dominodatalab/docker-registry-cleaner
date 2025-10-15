@@ -51,7 +51,7 @@ def generate_required_reports() -> None:
     # Generate metadata from MongoDB
     logger.info("Extracting metadata from MongoDB...")
     try:
-        extract_metadata.run("both")  # Run both model and workspace queries
+        extract_metadata.run("all")  # Run both model and workspace queries
         logger.info("✓ Metadata extraction completed")
     except Exception as e:
         logger.error(f"Failed to extract metadata: {e}")

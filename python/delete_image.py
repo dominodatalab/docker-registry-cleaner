@@ -583,6 +583,67 @@ def main():
             
             return
         
+        # Backup-only mode when --backup is provided without --apply
+        if (not args.apply) and args.backup:
+            # In backup-only mode, target the set of unused images from analysis
+            print("\n📦 BACKUP-ONLY MODE: Images will be backed up to S3 without deletion.")
+            if not args.force:
+                resp = input("Proceed with backup only (no deletions)? (yes/no): ").strip().lower()
+                if resp not in ['yes', 'y']:
+                    print("Operation cancelled by user")
+                    sys.exit(0)
+
+            # Load reports for analysis
+            print("📊 Loading workload and image analysis reports...")
+            workload_report = deleter.load_workload_report(args.workload_report)
+            image_analysis = deleter.load_image_analysis_report(args.image_analysis)
+            if not workload_report or not image_analysis:
+                print("❌ Missing analysis reports. Run inspect-workload.py and image-data-analysis.py first.")
+                sys.exit(1)
+            merged_ids = None
+            if object_ids_map:
+                merged = set()
+                merged.update(object_ids_map.get('any', []))
+                merged.update(object_ids_map.get('environment', []))
+                merged.update(object_ids_map.get('model', []))
+                merged_ids = sorted(merged)
+                print(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
+            analysis = deleter.analyze_image_usage(workload_report, image_analysis, merged_ids)
+
+            # Prepare tags to backup
+            tags_to_backup = []
+            for image_tag in analysis.unused_images:
+                parts = image_tag.split(':')
+                if len(parts) == 2:
+                    tags_to_backup.append(parts[1])
+            if not tags_to_backup:
+                print("No unused images found to back up.")
+                sys.exit(0)
+
+            full_repo = f"{deleter.registry_url}/{deleter.repository}"
+            cfg_mgr = ConfigManager()
+            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
+            try:
+                process_backup(
+                    skopeo_client=backup_skopeo_client,
+                    full_repo=full_repo,
+                    tags=tags_to_backup,
+                    s3_bucket=s3_bucket,
+                    region=s3_region,
+                    dry_run=False,
+                    delete=False,
+                    min_age_days=None,
+                    workers=1,
+                    tmpdir=None,
+                    failed_tags_file=None
+                )
+                print(f"✅ Successfully backed up {len(tags_to_backup)} images to S3")
+            except Exception as e:
+                print(f"❌ Backup failed: {e}")
+                sys.exit(1)
+            print("\n✅ Backup-only operation completed successfully!")
+            return
+
         if not args.skip_analysis:
             # Load analysis reports
             print("📊 Loading workload and image analysis reports...")
