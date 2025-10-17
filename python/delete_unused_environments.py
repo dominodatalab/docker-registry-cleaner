@@ -50,7 +50,7 @@ from bson import ObjectId
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 import extract_metadata
 from config_manager import config_manager, SkopeoClient
@@ -77,7 +77,7 @@ class UnusedEnvInfo:
 class UnusedEnvironmentsFinder:
     """Main class for finding and managing unused environment tags"""
     
-    def __init__(self, registry_url: str, repository: str, recent_days: int | None = None):
+    def __init__(self, registry_url: str, repository: str, recent_days: Optional[int] = None):
         self.registry_url = registry_url
         self.repository = repository
         self.skopeo_client = SkopeoClient(config_manager, use_pod=config_manager.get_skopeo_use_pod())
@@ -270,7 +270,7 @@ class UnusedEnvironmentsFinder:
                                      workspace_env_data: List[dict],
                                      workload_data: Dict,
                                      runs_env_data: List[dict],
-                                     recent_days: int | None) -> Set[str]:
+                                     recent_days: Optional[int]) -> Set[str]:
         """Extract all environment and revision IDs that are currently in use"""
         used_ids = set()
         

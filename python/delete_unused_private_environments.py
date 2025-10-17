@@ -119,7 +119,7 @@ class DeactivatedUserEnvFinder:
             verify=False
         )
     
-    def fetch_deactivated_user_env_ids(self) -> tuple[List[str], List[str], Dict[str, Dict]]:
+    def fetch_deactivated_user_env_ids(self) -> Tuple[List[str], List[str], Dict[str, Dict]]:
         """Fetch environment and revision ObjectIDs for private environments owned by deactivated Keycloak users
         
         Returns:
