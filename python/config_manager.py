@@ -723,7 +723,7 @@ class SkopeoClient:
         """Wait for pod to be ready after a configuration change.
         
         Args:
-            label_selector: Kubernetes label selector to find the pod (e.g., "app=docker-registry")
+            label_selector: Kubernetes label selector to find the pod (e.g., "app.kubernetes.io/name=docker-registry")
             namespace: Kubernetes namespace
             timeout: Maximum time to wait in seconds (default: 300)
         
@@ -831,7 +831,7 @@ class SkopeoClient:
                 logging.info(f"✓ Deletion enabled in {service_name} StatefulSet")
                 
                 # Wait for pod to restart and become ready
-                label_selector = f"app={service_name}"
+                label_selector = f"app.kubernetes.io/name={service_name}"
                 if not self._wait_for_pod_ready(label_selector, ns):
                     logging.warning(f"Pod may not be ready yet, but continuing anyway")
                 
@@ -870,7 +870,7 @@ class SkopeoClient:
                         logging.info(f"✓ Deletion enabled in {service_name} Deployment")
                         
                         # Wait for pod to restart and become ready
-                        label_selector = f"app={service_name}"
+                        label_selector = f"app.kubernetes.io/name={service_name}"
                         if not self._wait_for_pod_ready(label_selector, ns):
                             logging.warning(f"Pod may not be ready yet, but continuing anyway")
                         
@@ -933,7 +933,7 @@ class SkopeoClient:
                 logging.info(f"✓ Deletion disabled in {service_name} StatefulSet")
                 
                 # Wait for pod to restart and become ready
-                label_selector = f"app={service_name}"
+                label_selector = f"app.kubernetes.io/name={service_name}"
                 if not self._wait_for_pod_ready(label_selector, ns):
                     logging.warning(f"Pod may not be ready yet, but continuing anyway")
                 
@@ -964,7 +964,7 @@ class SkopeoClient:
                         logging.info(f"✓ Deletion disabled in {service_name} Deployment")
                         
                         # Wait for pod to restart and become ready
-                        label_selector = f"app={service_name}"
+                        label_selector = f"app.kubernetes.io/name={service_name}"
                         if not self._wait_for_pod_ready(label_selector, ns):
                             logging.warning(f"Pod may not be ready yet, but continuing anyway")
                         
