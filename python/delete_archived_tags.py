@@ -354,135 +354,137 @@ class ArchivedTagsFinder:
                 if not self.skopeo_client.enable_registry_deletion():
                     self.logger.warning("Failed to enable registry deletion - continuing anyway")
             
-            # Delete Docker images directly using skopeo
-            # Track which ObjectIDs were successfully deleted so we only clean up their MongoDB records
-            self.logger.info(f"Deleting {len(archived_tags)} Docker images from registry...")
-            
-            deleted_count = 0
-            failed_deletions = []
-            successfully_deleted_object_ids = set()
-            
-            for tag_info in archived_tags:
-                try:
-                    self.logger.info(f"  Deleting: {tag_info.full_image}")
-                    success = self.skopeo_client.delete_image(
-                        f"{self.repository}/{tag_info.image_type}",
-                        tag_info.tag
-                    )
-                    if success:
-                        deleted_count += 1
-                        successfully_deleted_object_ids.add(tag_info.object_id)
-                        self.logger.info(f"    ✓ Deleted successfully")
-                    else:
-                        failed_deletions.append(tag_info.full_image)
-                        self.logger.warning(f"    ✗ Failed to delete - MongoDB record will NOT be cleaned")
-                except Exception as e:
-                    failed_deletions.append(tag_info.full_image)
-                    self.logger.error(f"    ✗ Error deleting: {e} - MongoDB record will NOT be cleaned")
-            
-            deletion_results['docker_images_deleted'] = deleted_count
-            
-            # Disable deletion in registry if it was enabled
-            if registry_in_cluster:
-                self.logger.info("Disabling deletion in registry...")
-                if not self.skopeo_client.disable_registry_deletion():
-                    self.logger.warning("Failed to disable registry deletion")
-            
-            if failed_deletions:
-                self.logger.warning(f"Failed to delete {len(failed_deletions)} Docker images:")
-                for img in failed_deletions:
-                    self.logger.warning(f"  - {img}")
-                self.logger.warning("MongoDB records for failed deletions will be preserved.")
-            
-            # Clean up MongoDB records - ONLY for successfully deleted Docker images
-            # Group ObjectIDs by their record type
-            ids_by_type = {}
-            for tag in archived_tags:
-                if tag.object_id in successfully_deleted_object_ids:
-                    record_type = tag.record_type
-                    if record_type not in ids_by_type:
-                        ids_by_type[record_type] = []
-                    ids_by_type[record_type].append(tag.object_id)
-            
-            # Remove duplicates
-            for record_type in ids_by_type:
-                ids_by_type[record_type] = list(set(ids_by_type[record_type]))
-            
-            if ids_by_type:
-                mongo_client = get_mongo_client()
+            try:
+                # Delete Docker images directly using skopeo
+                # Track which ObjectIDs were successfully deleted so we only clean up their MongoDB records
+                self.logger.info(f"Deleting {len(archived_tags)} Docker images from registry...")
                 
-                try:
-                    db = mongo_client[config_manager.get_mongo_db()]
+                deleted_count = 0
+                failed_deletions = []
+                successfully_deleted_object_ids = set()
+                
+                for tag_info in archived_tags:
+                    try:
+                        self.logger.info(f"  Deleting: {tag_info.full_image}")
+                        success = self.skopeo_client.delete_image(
+                            f"{self.repository}/{tag_info.image_type}",
+                            tag_info.tag
+                        )
+                        if success:
+                            deleted_count += 1
+                            successfully_deleted_object_ids.add(tag_info.object_id)
+                            self.logger.info(f"    ✓ Deleted successfully")
+                        else:
+                            failed_deletions.append(tag_info.full_image)
+                            self.logger.warning(f"    ✗ Failed to delete - MongoDB record will NOT be cleaned")
+                    except Exception as e:
+                        failed_deletions.append(tag_info.full_image)
+                        self.logger.error(f"    ✗ Error deleting: {e} - MongoDB record will NOT be cleaned")
+                
+                deletion_results['docker_images_deleted'] = deleted_count
+                
+                if failed_deletions:
+                    self.logger.warning(f"Failed to delete {len(failed_deletions)} Docker images:")
+                    for img in failed_deletions:
+                        self.logger.warning(f"  - {img}")
+                    self.logger.warning("MongoDB records for failed deletions will be preserved.")
+                
+                # Clean up MongoDB records - ONLY for successfully deleted Docker images
+                # Group ObjectIDs by their record type
+                ids_by_type = {}
+                for tag in archived_tags:
+                    if tag.object_id in successfully_deleted_object_ids:
+                        record_type = tag.record_type
+                        if record_type not in ids_by_type:
+                            ids_by_type[record_type] = []
+                        ids_by_type[record_type].append(tag.object_id)
+                
+                # Remove duplicates
+                for record_type in ids_by_type:
+                    ids_by_type[record_type] = list(set(ids_by_type[record_type]))
+                
+                if ids_by_type:
+                    mongo_client = get_mongo_client()
                     
-                    # Clean up environment records
-                    if 'environment' in ids_by_type:
-                        environments_collection = db["environments_v2"]
-                        self.logger.info(f"Cleaning up {len(ids_by_type['environment'])} environment records from MongoDB...")
-                        for obj_id_str in ids_by_type['environment']:
-                            try:
-                                obj_id = ObjectId(obj_id_str)
-                                result = environments_collection.delete_one({"_id": obj_id})
-                                if result.deleted_count > 0:
-                                    self.logger.info(f"  ✓ Deleted environment: {obj_id_str}")
-                                    deletion_results['mongo_records_cleaned'] += 1
-                                else:
-                                    self.logger.warning(f"  ✗ Environment not found: {obj_id_str}")
-                            except Exception as e:
-                                self.logger.error(f"  ✗ Error deleting environment {obj_id_str}: {e}")
-                    
-                    # Clean up environment revision records
-                    if 'revision' in ids_by_type:
-                        environment_revisions_collection = db["environment_revisions"]
-                        self.logger.info(f"Cleaning up {len(ids_by_type['revision'])} environment_revision records from MongoDB...")
-                        for obj_id_str in ids_by_type['revision']:
-                            try:
-                                obj_id = ObjectId(obj_id_str)
-                                result = environment_revisions_collection.delete_one({"_id": obj_id})
-                                if result.deleted_count > 0:
-                                    self.logger.info(f"  ✓ Deleted environment_revision: {obj_id_str}")
-                                    deletion_results['mongo_records_cleaned'] += 1
-                                else:
-                                    self.logger.warning(f"  ✗ Environment_revision not found: {obj_id_str}")
-                            except Exception as e:
-                                self.logger.error(f"  ✗ Error deleting environment_revision {obj_id_str}: {e}")
-                    
-                    # Clean up model records
-                    if 'model' in ids_by_type:
-                        models_collection = db["models"]
-                        self.logger.info(f"Cleaning up {len(ids_by_type['model'])} model records from MongoDB...")
-                        for obj_id_str in ids_by_type['model']:
-                            try:
-                                obj_id = ObjectId(obj_id_str)
-                                result = models_collection.delete_one({"_id": obj_id})
-                                if result.deleted_count > 0:
-                                    self.logger.info(f"  ✓ Deleted model: {obj_id_str}")
-                                    deletion_results['mongo_records_cleaned'] += 1
-                                else:
-                                    self.logger.warning(f"  ✗ Model not found: {obj_id_str}")
-                            except Exception as e:
-                                self.logger.error(f"  ✗ Error deleting model {obj_id_str}: {e}")
-                    
-                    # Clean up model version records
-                    if 'version' in ids_by_type:
-                        model_versions_collection = db["model_versions"]
-                        self.logger.info(f"Cleaning up {len(ids_by_type['version'])} model_version records from MongoDB...")
-                        for obj_id_str in ids_by_type['version']:
-                            try:
-                                obj_id = ObjectId(obj_id_str)
-                                result = model_versions_collection.delete_one({"_id": obj_id})
-                                if result.deleted_count > 0:
-                                    self.logger.info(f"  ✓ Deleted model_version: {obj_id_str}")
-                                    deletion_results['mongo_records_cleaned'] += 1
-                                else:
-                                    self.logger.warning(f"  ✗ Model_version not found: {obj_id_str}")
-                            except Exception as e:
-                                self.logger.error(f"  ✗ Error deleting model_version {obj_id_str}: {e}")
-                finally:
-                    mongo_client.close()
-            else:
-                self.logger.info("No MongoDB records to clean (no Docker images were successfully deleted)")
+                    try:
+                        db = mongo_client[config_manager.get_mongo_db()]
+                        
+                        # Clean up environment records
+                        if 'environment' in ids_by_type:
+                            environments_collection = db["environments_v2"]
+                            self.logger.info(f"Cleaning up {len(ids_by_type['environment'])} environment records from MongoDB...")
+                            for obj_id_str in ids_by_type['environment']:
+                                try:
+                                    obj_id = ObjectId(obj_id_str)
+                                    result = environments_collection.delete_one({"_id": obj_id})
+                                    if result.deleted_count > 0:
+                                        self.logger.info(f"  ✓ Deleted environment: {obj_id_str}")
+                                        deletion_results['mongo_records_cleaned'] += 1
+                                    else:
+                                        self.logger.warning(f"  ✗ Environment not found: {obj_id_str}")
+                                except Exception as e:
+                                    self.logger.error(f"  ✗ Error deleting environment {obj_id_str}: {e}")
+                        
+                        # Clean up environment revision records
+                        if 'revision' in ids_by_type:
+                            environment_revisions_collection = db["environment_revisions"]
+                            self.logger.info(f"Cleaning up {len(ids_by_type['revision'])} environment_revision records from MongoDB...")
+                            for obj_id_str in ids_by_type['revision']:
+                                try:
+                                    obj_id = ObjectId(obj_id_str)
+                                    result = environment_revisions_collection.delete_one({"_id": obj_id})
+                                    if result.deleted_count > 0:
+                                        self.logger.info(f"  ✓ Deleted environment_revision: {obj_id_str}")
+                                        deletion_results['mongo_records_cleaned'] += 1
+                                    else:
+                                        self.logger.warning(f"  ✗ Environment_revision not found: {obj_id_str}")
+                                except Exception as e:
+                                    self.logger.error(f"  ✗ Error deleting environment_revision {obj_id_str}: {e}")
+                        
+                        # Clean up model records
+                        if 'model' in ids_by_type:
+                            models_collection = db["models"]
+                            self.logger.info(f"Cleaning up {len(ids_by_type['model'])} model records from MongoDB...")
+                            for obj_id_str in ids_by_type['model']:
+                                try:
+                                    obj_id = ObjectId(obj_id_str)
+                                    result = models_collection.delete_one({"_id": obj_id})
+                                    if result.deleted_count > 0:
+                                        self.logger.info(f"  ✓ Deleted model: {obj_id_str}")
+                                        deletion_results['mongo_records_cleaned'] += 1
+                                    else:
+                                        self.logger.warning(f"  ✗ Model not found: {obj_id_str}")
+                                except Exception as e:
+                                    self.logger.error(f"  ✗ Error deleting model {obj_id_str}: {e}")
+                        
+                        # Clean up model version records
+                        if 'version' in ids_by_type:
+                            model_versions_collection = db["model_versions"]
+                            self.logger.info(f"Cleaning up {len(ids_by_type['version'])} model_version records from MongoDB...")
+                            for obj_id_str in ids_by_type['version']:
+                                try:
+                                    obj_id = ObjectId(obj_id_str)
+                                    result = model_versions_collection.delete_one({"_id": obj_id})
+                                    if result.deleted_count > 0:
+                                        self.logger.info(f"  ✓ Deleted model_version: {obj_id_str}")
+                                        deletion_results['mongo_records_cleaned'] += 1
+                                    else:
+                                        self.logger.warning(f"  ✗ Model_version not found: {obj_id_str}")
+                                except Exception as e:
+                                    self.logger.error(f"  ✗ Error deleting model_version {obj_id_str}: {e}")
+                    finally:
+                        mongo_client.close()
+                else:
+                    self.logger.info("No MongoDB records to clean (no Docker images were successfully deleted)")
             
-            self.logger.info("Archived tag deletion completed successfully")
+                self.logger.info("Archived tag deletion completed successfully")
+                
+            finally:
+                # Always disable deletion in registry if it was enabled
+                if registry_in_cluster:
+                    self.logger.info("Disabling deletion in registry...")
+                    if not self.skopeo_client.disable_registry_deletion():
+                        self.logger.warning("Failed to disable registry deletion")
             
         except Exception as e:
             self.logger.error(f"Error deleting archived tags: {e}")

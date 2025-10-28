@@ -576,29 +576,33 @@ def main():
                 repository = repository_tag
             
             # Enable deletion in registry (if running in Kubernetes)
+            registry_enabled = False
             if not dry_run:
                 deleter.enable_deletion_of_docker_images()
+                registry_enabled = True
             
-            # Delete the image
-            deleted_tags = []
-            if dry_run:
-                print(f"  Would delete: {args.image}")
-                deleted_tags = [args.image]
-            else:
-                print(f"  Deleting: {args.image}")
-                if deleter.skopeo_client.delete_image(repository, tag):
-                    print(f"    ✅ Deleted successfully")
+            try:
+                # Delete the image
+                deleted_tags = []
+                if dry_run:
+                    print(f"  Would delete: {args.image}")
                     deleted_tags = [args.image]
                 else:
-                    print(f"    ❌ Failed to delete")
+                    print(f"  Deleting: {args.image}")
+                    if deleter.skopeo_client.delete_image(repository, tag):
+                        print(f"    ✅ Deleted successfully")
+                        deleted_tags = [args.image]
+                    else:
+                        print(f"    ❌ Failed to delete")
+                
+                # Clean up Mongo references for deleted tags
+                if deleted_tags and not dry_run and not args.skip_cleanup_mongo:
+                    deleter.cleanup_mongo_references(deleted_tags)
             
-            # Disable deletion in registry (if running in Kubernetes)
-            if not dry_run:
-                deleter.disable_deletion_of_docker_images()
-            
-            # Clean up Mongo references for deleted tags
-            if deleted_tags and not dry_run and not args.skip_cleanup_mongo:
-                deleter.cleanup_mongo_references(deleted_tags)
+            finally:
+                # Always disable deletion in registry if it was enabled
+                if registry_enabled:
+                    deleter.disable_deletion_of_docker_images()
             
             return
         
@@ -691,26 +695,30 @@ def main():
             deleter.generate_deletion_report(analysis, args.output_report)
             
             # Enable deletion in registry (if running in Kubernetes)
+            registry_enabled = False
             if not dry_run:
                 deleter.enable_deletion_of_docker_images()
+                registry_enabled = True
             
-            # Delete unused images using SkopeoClient (same as other delete scripts)
-            deleted_tags = deleter.delete_unused_images(
-                analysis, 
-                password, 
-                dry_run=dry_run,
-                backup=args.backup,
-                s3_bucket=s3_bucket,
-                region=s3_region
-            )
+            try:
+                # Delete unused images using SkopeoClient (same as other delete scripts)
+                deleted_tags = deleter.delete_unused_images(
+                    analysis, 
+                    password, 
+                    dry_run=dry_run,
+                    backup=args.backup,
+                    s3_bucket=s3_bucket,
+                    region=s3_region
+                )
+                
+                # Clean up Mongo references for deleted tags (enabled by default, can be skipped with --skip-cleanup-mongo)
+                if deleted_tags and not dry_run and not args.skip_cleanup_mongo:
+                    deleter.cleanup_mongo_references(deleted_tags)
             
-            # Disable deletion in registry (if running in Kubernetes)
-            if not dry_run:
-                deleter.disable_deletion_of_docker_images()
-            
-            # Clean up Mongo references for deleted tags (enabled by default, can be skipped with --skip-cleanup-mongo)
-            if deleted_tags and not dry_run and not args.skip_cleanup_mongo:
-                deleter.cleanup_mongo_references(deleted_tags)
+            finally:
+                # Always disable deletion in registry if it was enabled
+                if registry_enabled:
+                    deleter.disable_deletion_of_docker_images()
             
         else:
             # Use traditional environments file method
