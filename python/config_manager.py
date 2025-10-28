@@ -719,6 +719,63 @@ class SkopeoClient:
         
         return service_name, check_namespace
     
+    def _wait_for_pod_ready(self, label_selector: str, namespace: str, timeout: int = 300) -> bool:
+        """Wait for pod to be ready after a configuration change.
+        
+        Args:
+            label_selector: Kubernetes label selector to find the pod (e.g., "app=docker-registry")
+            namespace: Kubernetes namespace
+            timeout: Maximum time to wait in seconds (default: 300)
+        
+        Returns:
+            True if pod becomes ready, False if timeout or error
+        """
+        import time
+        from kubernetes.client.rest import ApiException
+        
+        try:
+            core_v1, _ = _get_kubernetes_clients()
+            
+            logging.info(f"Waiting for pod with selector '{label_selector}' to be ready in namespace '{namespace}'...")
+            start_time = time.time()
+            
+            while time.time() - start_time < timeout:
+                try:
+                    # List pods matching the label selector
+                    pods = core_v1.list_namespaced_pod(
+                        namespace=namespace,
+                        label_selector=label_selector
+                    )
+                    
+                    if not pods.items:
+                        logging.debug(f"No pods found with selector '{label_selector}', waiting...")
+                        time.sleep(5)
+                        continue
+                    
+                    # Check if at least one pod is ready
+                    for pod in pods.items:
+                        if pod.status.conditions:
+                            for condition in pod.status.conditions:
+                                if condition.type == "Ready" and condition.status == "True":
+                                    elapsed = int(time.time() - start_time)
+                                    logging.info(f"✓ Pod {pod.metadata.name} is ready (waited {elapsed}s)")
+                                    return True
+                    
+                    # No ready pods yet, wait and retry
+                    time.sleep(5)
+                    
+                except ApiException as e:
+                    logging.debug(f"Error checking pod status: {e}")
+                    time.sleep(5)
+            
+            # Timeout reached
+            logging.error(f"Timeout waiting for pod to be ready after {timeout}s")
+            return False
+            
+        except Exception as e:
+            logging.error(f"Error waiting for pod readiness: {e}")
+            return False
+    
     def enable_registry_deletion(self, namespace: str = None) -> bool:
         """Enable deletion of Docker images in the registry by setting REGISTRY_STORAGE_DELETE_ENABLED=true
         
@@ -772,6 +829,12 @@ class SkopeoClient:
                     body=sts_data
                 )
                 logging.info(f"✓ Deletion enabled in {service_name} StatefulSet")
+                
+                # Wait for pod to restart and become ready
+                label_selector = f"app={service_name}"
+                if not self._wait_for_pod_ready(label_selector, ns):
+                    logging.warning(f"Pod may not be ready yet, but continuing anyway")
+                
                 return True
                 
             except ApiException as e:
@@ -805,6 +868,12 @@ class SkopeoClient:
                             body=dep_data
                         )
                         logging.info(f"✓ Deletion enabled in {service_name} Deployment")
+                        
+                        # Wait for pod to restart and become ready
+                        label_selector = f"app={service_name}"
+                        if not self._wait_for_pod_ready(label_selector, ns):
+                            logging.warning(f"Pod may not be ready yet, but continuing anyway")
+                        
                         return True
                         
                     except Exception as dep_error:
@@ -862,6 +931,12 @@ class SkopeoClient:
                     body=sts_data
                 )
                 logging.info(f"✓ Deletion disabled in {service_name} StatefulSet")
+                
+                # Wait for pod to restart and become ready
+                label_selector = f"app={service_name}"
+                if not self._wait_for_pod_ready(label_selector, ns):
+                    logging.warning(f"Pod may not be ready yet, but continuing anyway")
+                
                 return True
                 
             except ApiException as e:
@@ -887,6 +962,12 @@ class SkopeoClient:
                             body=dep_data
                         )
                         logging.info(f"✓ Deletion disabled in {service_name} Deployment")
+                        
+                        # Wait for pod to restart and become ready
+                        label_selector = f"app={service_name}"
+                        if not self._wait_for_pod_ready(label_selector, ns):
+                            logging.warning(f"Pod may not be ready yet, but continuing anyway")
+                        
                         return True
                         
                     except Exception as dep_error:
