@@ -1,7 +1,6 @@
 #pyclair
 boto3
 kubernetes
-pandas
 pymongo
 PyYAML
 python-keycloak

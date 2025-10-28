@@ -3,17 +3,17 @@
 Docker Image and Layer Analysis Tool
 
 This script analyzes Docker registry images and extracts layer information,
-using pandas DataFrames for efficient data management and analysis.
+using native Python data structures for efficient data management and analysis.
 
 Data Model:
-- Layers DataFrame: layer_id, size_bytes, ref_count
-- Images DataFrame: image_id, repository, tag, digest
-- Image-to-Layer Mapping: image_id, layer_id, order_index
+- Layers: dict mapping layer_id -> {size_bytes, ref_count}
+- Images: dict mapping image_id -> {repository, tag, digest}
+- Image-to-Layer Mapping: list of {image_id, layer_id, order_index}
 """
 
 import argparse
-import pandas as pd
 import sys
+from collections import Counter
 
 from typing import List, Optional, Dict
 
@@ -26,17 +26,17 @@ logger = get_logger(__name__)
 
 
 class ImageAnalyzer:
-    """Analyzes Docker images and their layers using pandas DataFrames"""
+    """Analyzes Docker images and their layers using native Python data structures"""
     
     def __init__(self, registry_url: str, repository: str):
         self.registry_url = registry_url
         self.repository = repository
         self.skopeo_client = SkopeoClient(config_manager, use_pod=config_manager.get_skopeo_use_pod())
         
-        # Initialize DataFrames
-        self.layers_df = pd.DataFrame(columns=["layer_id", "size_bytes", "ref_count"])
-        self.images_df = pd.DataFrame(columns=["image_id", "repository", "tag", "digest"])
-        self.image_layers_df = pd.DataFrame(columns=["image_id", "layer_id", "order_index"])
+        # Initialize data structures
+        self.layers = {}  # layer_id -> {size_bytes, ref_count}
+        self.images = {}  # image_id -> {repository, tag, digest}
+        self.image_layers = []  # [{image_id, layer_id, order_index}, ...]
         
         self.logger = get_logger(__name__)
     
@@ -91,14 +91,12 @@ class ImageAnalyzer:
                 digest = image_info.get('Digest', '')
                 image_id = f"{image_type}:{tag}"
                 
-                # Add image to images DataFrame
-                new_image = pd.DataFrame([{
-                    'image_id': image_id,
+                # Add image to images dict
+                self.images[image_id] = {
                     'repository': f"{self.repository}/{image_type}",
                     'tag': tag,
                     'digest': digest
-                }])
-                self.images_df = pd.concat([self.images_df, new_image], ignore_index=True)
+                }
                 
                 # Extract layers
                 layers_data = image_info.get('LayersData', [])
@@ -107,26 +105,23 @@ class ImageAnalyzer:
                     layer_id = layer['Digest']
                     layer_size = layer['Size']
                     
-                    # Add or update layer in layers DataFrame
-                    if layer_id in self.layers_df['layer_id'].values:
+                    # Add or update layer in layers dict
+                    if layer_id in self.layers:
                         # Layer exists, increment ref_count
-                        self.layers_df.loc[self.layers_df['layer_id'] == layer_id, 'ref_count'] += 1
+                        self.layers[layer_id]['ref_count'] += 1
                     else:
                         # New layer
-                        new_layer = pd.DataFrame([{
-                            'layer_id': layer_id,
+                        self.layers[layer_id] = {
                             'size_bytes': layer_size,
                             'ref_count': 1
-                        }])
-                        self.layers_df = pd.concat([self.layers_df, new_layer], ignore_index=True)
+                        }
                     
                     # Add image-to-layer mapping
-                    new_mapping = pd.DataFrame([{
+                    self.image_layers.append({
                         'image_id': image_id,
                         'layer_id': layer_id,
                         'order_index': order_index
-                    }])
-                    self.image_layers_df = pd.concat([self.image_layers_df, new_mapping], ignore_index=True)
+                    })
             
             return True
             
@@ -145,46 +140,67 @@ class ImageAnalyzer:
             Total bytes that would be freed
         """
         # Count how many of the to-be-deleted images use each layer
-        layers_to_delete = self.image_layers_df[
-            self.image_layers_df['image_id'].isin(image_ids)
-        ]['layer_id'].value_counts()
+        layer_ids_to_delete = [
+            mapping['layer_id'] 
+            for mapping in self.image_layers 
+            if mapping['image_id'] in image_ids
+        ]
+        layers_to_delete = Counter(layer_ids_to_delete)
         
         total_freed = 0
         for layer_id, delete_count in layers_to_delete.items():
             # Get current ref_count for this layer
-            current_ref = self.layers_df[self.layers_df['layer_id'] == layer_id]['ref_count'].values[0]
+            layer_data = self.layers.get(layer_id)
+            if not layer_data:
+                continue
+            
+            current_ref = layer_data['ref_count']
             
             # If this layer would have 0 references after deletion, it will be freed
             if current_ref == delete_count:
-                layer_size = self.layers_df[self.layers_df['layer_id'] == layer_id]['size_bytes'].values[0]
+                layer_size = layer_data['size_bytes']
                 total_freed += layer_size
         
         return int(total_freed)
     
-    def get_unused_images(self, used_tags: List[str]) -> pd.DataFrame:
+    def get_unused_images(self, used_tags: List[str]) -> List[Dict]:
         """Get images that are not in the used_tags list.
         
         Args:
             used_tags: List of tags that are currently in use
         
         Returns:
-            DataFrame of unused images
+            List of unused image dicts with image_id added
         """
-        return self.images_df[~self.images_df['tag'].isin(used_tags)]
+        used_tags_set = set(used_tags)
+        unused_images = []
+        for image_id, image_data in self.images.items():
+            if image_data['tag'] not in used_tags_set:
+                unused_images.append({
+                    'image_id': image_id,
+                    **image_data
+                })
+        return unused_images
     
     def generate_summary_stats(self) -> Dict:
         """Generate summary statistics about the analyzed images and layers"""
-        total_images = len(self.images_df)
-        total_layers = len(self.layers_df)
-        total_size = int(self.layers_df['size_bytes'].sum())
+        total_images = len(self.images)
+        total_layers = len(self.layers)
+        total_size = sum(layer['size_bytes'] for layer in self.layers.values())
         
         # Layers used by only one image
-        single_use_layers = self.layers_df[self.layers_df['ref_count'] == 1]
-        single_use_size = int(single_use_layers['size_bytes'].sum())
+        single_use_layers = [layer for layer in self.layers.values() if layer['ref_count'] == 1]
+        single_use_size = sum(layer['size_bytes'] for layer in single_use_layers)
         
         # Shared layers (used by multiple images)
-        shared_layers = self.layers_df[self.layers_df['ref_count'] > 1]
-        shared_size = int(shared_layers['size_bytes'].sum())
+        shared_layers = [layer for layer in self.layers.values() if layer['ref_count'] > 1]
+        shared_size = sum(layer['size_bytes'] for layer in shared_layers)
+        
+        # Calculate average reference count
+        avg_ref_count = (
+            sum(layer['ref_count'] for layer in self.layers.values()) / total_layers 
+            if total_layers > 0 else 0
+        )
         
         return {
             'total_images': total_images,
@@ -194,13 +210,20 @@ class ImageAnalyzer:
             'single_use_size_gb': round(single_use_size / (1024**3), 2),
             'shared_layers': len(shared_layers),
             'shared_size_gb': round(shared_size / (1024**3), 2),
-            'avg_layers_per_image': round(len(self.image_layers_df) / total_images, 2) if total_images > 0 else 0,
-            'avg_ref_count': round(self.layers_df['ref_count'].mean(), 2) if total_layers > 0 else 0
+            'avg_layers_per_image': round(len(self.image_layers) / total_images, 2) if total_images > 0 else 0,
+            'avg_ref_count': round(avg_ref_count, 2)
         }
     
-    def get_images_by_tag_prefix(self, prefix: str) -> pd.DataFrame:
+    def get_images_by_tag_prefix(self, prefix: str) -> List[Dict]:
         """Get all images whose tags start with the given prefix (e.g., ObjectID)"""
-        return self.images_df[self.images_df['tag'].str.startswith(prefix)]
+        matching_images = []
+        for image_id, image_data in self.images.items():
+            if image_data['tag'].startswith(prefix):
+                matching_images.append({
+                    'image_id': image_id,
+                    **image_data
+                })
+        return matching_images
     
     def export_to_legacy_format(self) -> Dict:
         """Export data in the legacy format for backward compatibility.
@@ -209,28 +232,28 @@ class ImageAnalyzer:
         """
         legacy_data = {}
         
-        for _, layer in self.layers_df.iterrows():
-            layer_id = layer['layer_id']
-            
+        for layer_id, layer_data in self.layers.items():
             # Get all image-layer mappings for this layer
-            mappings = self.image_layers_df[self.image_layers_df['layer_id'] == layer_id]
+            image_ids = [
+                mapping['image_id'] 
+                for mapping in self.image_layers 
+                if mapping['layer_id'] == layer_id
+            ]
             
             # Get the tags for these images (use sets for deduplication)
-            image_ids = mappings['image_id'].tolist()
             tag_set = set()
             env_set = set()
             
             for image_id in image_ids:
-                image_row = self.images_df[self.images_df['image_id'] == image_id]
-                if not image_row.empty:
-                    tag = image_row.iloc[0]['tag']
+                if image_id in self.images:
+                    tag = self.images[image_id]['tag']
                     tag_set.add(tag)
                     # Extract environment ID (first part before '-')
                     env_id = tag.split('-')[0] if '-' in tag else tag
                     env_set.add(env_id)
             
             legacy_data[layer_id] = {
-                'size': int(layer['size_bytes']),
+                'size': int(layer_data['size_bytes']),
                 'tags': list(tag_set),
                 'environments': list(env_set)
             }
@@ -254,26 +277,24 @@ class ImageAnalyzer:
         
         # Tags per layer
         tags_per_layer = {
-            layer_id: data['ref_count'] 
-            for layer_id, data in self.layers_df.set_index('layer_id').to_dict('index').items()
+            layer_id: layer_data['ref_count'] 
+            for layer_id, layer_data in self.layers.items()
         }
         save_json(tags_per_layer_output_file, tags_per_layer)
         self.logger.info(f"Tags per layer count saved to: {tags_per_layer_output_file}")
         
         # Layers and sizes
         layers_and_sizes = {
-            layer_id: int(data['size_bytes'])
-            for layer_id, data in self.layers_df.set_index('layer_id').to_dict('index').items()
+            layer_id: int(layer_data['size_bytes'])
+            for layer_id, layer_data in self.layers.items()
         }
         save_json(layers_and_sizes_output_file, layers_and_sizes)
         self.logger.info(f"Layers and sizes saved to: {layers_and_sizes_output_file}")
         
         # Filtered layers (ref_count == 1)
-        single_use_layers = self.layers_df[self.layers_df['ref_count'] == 1]
         filtered_legacy = {}
-        for _, layer in single_use_layers.iterrows():
-            layer_id = layer['layer_id']
-            if layer_id in legacy_data:
+        for layer_id, layer_data in self.layers.items():
+            if layer_data['ref_count'] == 1 and layer_id in legacy_data:
                 filtered_legacy[layer_id] = legacy_data[layer_id]
         save_json(filtered_layers_output_file, filtered_legacy)
         self.logger.info(f"Filtered layers saved to: {filtered_layers_output_file}")
