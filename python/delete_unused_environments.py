@@ -77,10 +77,16 @@ class UnusedEnvInfo:
 class UnusedEnvironmentsFinder:
     """Main class for finding and managing unused environment tags"""
     
-    def __init__(self, registry_url: str, repository: str, recent_days: Optional[int] = None):
+    def __init__(self, registry_url: str, repository: str, recent_days: Optional[int] = None,
+                 enable_docker_deletion: bool = False, registry_statefulset_name: str = None):
         self.registry_url = registry_url
         self.repository = repository
-        self.skopeo_client = SkopeoClient(config_manager, use_pod=config_manager.get_skopeo_use_pod())
+        self.skopeo_client = SkopeoClient(
+            config_manager, 
+            use_pod=config_manager.get_skopeo_use_pod(),
+            enable_docker_deletion=enable_docker_deletion,
+            registry_statefulset_name=registry_statefulset_name
+        )
         self.logger = get_logger(__name__)
         
         # Image types to scan (only environment images contain environment ObjectIDs)
@@ -922,6 +928,18 @@ Examples:
         help='Only consider runs within the last N days as in-use (runs older than N days do not prevent deletion). If omitted, any historical run marks the environment as in-use.'
     )
     
+    parser.add_argument(
+        '--enable-docker-deletion',
+        action='store_true',
+        help='Enable registry deletion by treating registry as in-cluster (overrides auto-detection)'
+    )
+    
+    parser.add_argument(
+        '--registry-statefulset-name',
+        default='docker-registry',
+        help='Name of registry StatefulSet/Deployment to modify for deletion (default: docker-registry)'
+    )
+    
     return parser.parse_args()
 
 
@@ -965,7 +983,13 @@ def main():
             logger.info(f"Output file: {output_file}")
         
         # Create finder
-        finder = UnusedEnvironmentsFinder(registry_url, repository, recent_days=args.days)
+        finder = UnusedEnvironmentsFinder(
+            registry_url, 
+            repository, 
+            recent_days=args.days,
+            enable_docker_deletion=args.enable_docker_deletion,
+            registry_statefulset_name=args.registry_statefulset_name
+        )
         
         # Check if reports need to be generated
         output_dir = config_manager.get_output_dir()

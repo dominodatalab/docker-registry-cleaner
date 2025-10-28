@@ -79,10 +79,16 @@ class ArchivedTagInfo:
 class ArchivedTagsFinder:
     """Main class for finding and managing archived tags"""
     
-    def __init__(self, registry_url: str, repository: str, process_environments: bool = False, process_models: bool = False):
+    def __init__(self, registry_url: str, repository: str, process_environments: bool = False, process_models: bool = False,
+                 enable_docker_deletion: bool = False, registry_statefulset_name: str = None):
         self.registry_url = registry_url
         self.repository = repository
-        self.skopeo_client = SkopeoClient(config_manager, use_pod=config_manager.get_skopeo_use_pod())
+        self.skopeo_client = SkopeoClient(
+            config_manager, 
+            use_pod=config_manager.get_skopeo_use_pod(),
+            enable_docker_deletion=enable_docker_deletion,
+            registry_statefulset_name=registry_statefulset_name
+        )
         self.logger = get_logger(__name__)
         
         # Determine what to process
@@ -689,6 +695,18 @@ Examples:
         help='AWS region for S3 and ECR (default: from config or us-west-2)'
     )
     
+    parser.add_argument(
+        '--enable-docker-deletion',
+        action='store_true',
+        help='Enable registry deletion by treating registry as in-cluster (overrides auto-detection)'
+    )
+    
+    parser.add_argument(
+        '--registry-statefulset-name',
+        default='docker-registry',
+        help='Name of registry StatefulSet/Deployment to modify for deletion (default: docker-registry)'
+    )
+    
     return parser.parse_args()
 
 
@@ -749,7 +767,9 @@ def main():
             registry_url, 
             repository,
             process_environments=args.environment,
-            process_models=args.model
+            process_models=args.model,
+            enable_docker_deletion=args.enable_docker_deletion,
+            registry_statefulset_name=args.registry_statefulset_name
         )
         
         # Handle different operation modes

@@ -402,7 +402,19 @@ class ConfigManager:
 class SkopeoClient:
     """Standardized Skopeo client for registry operations"""
     
-    def __init__(self, config_manager: ConfigManager, use_pod: bool = False, namespace: str = None):
+    def __init__(self, config_manager: ConfigManager, use_pod: bool = False, namespace: str = None,
+                 enable_docker_deletion: bool = False, registry_statefulset_name: str = None):
+        """Initialize SkopeoClient.
+        
+        Args:
+            config_manager: ConfigManager instance for accessing configuration
+            use_pod: If True, run Skopeo commands in a Kubernetes pod
+            namespace: Kubernetes namespace (defaults to platform namespace from config)
+            enable_docker_deletion: If True, enable registry deletion by treating registry as in-cluster
+            registry_statefulset_name: Name of the registry StatefulSet/Deployment to modify for deletion.
+                                      Defaults to "docker-registry" if enable_docker_deletion is True.
+                                      Only used when enable_docker_deletion is True.
+        """
         self.config_manager = config_manager
         self.use_pod = use_pod
         self.namespace = namespace or config_manager.get_platform_namespace()
@@ -410,6 +422,10 @@ class SkopeoClient:
         self.repository = config_manager.get_repository()
         self.password = config_manager.get_registry_password()
         self._logged_in = False
+        
+        # Registry deletion override settings
+        self.enable_docker_deletion = enable_docker_deletion
+        self.registry_statefulset_name = registry_statefulset_name or "docker-registry"
         
         if use_pod:
             # Initialize Kubernetes client for pod operations
@@ -604,12 +620,18 @@ class SkopeoClient:
     def is_registry_in_cluster(self) -> bool:
         """Check if the registry service exists in the Kubernetes cluster.
         
-        Parses the registry URL to extract the service name and checks if it exists
+        First checks if force_registry_in_cluster override is enabled. If so, returns True.
+        Otherwise, parses the registry URL to extract the service name and checks if it exists
         as a Service, StatefulSet, or Deployment in the cluster.
         
         Returns:
-            True if registry service/workload is found in the cluster, False otherwise.
+            True if registry service/workload is found in the cluster (or forced), False otherwise.
         """
+        # Check override first
+        if self.enable_docker_deletion:
+            logging.info(f"Registry deletion enabled (using statefulset: {self.registry_statefulset_name})")
+            return True
+        
         try:
             from kubernetes.client.rest import ApiException
             
@@ -676,12 +698,18 @@ class SkopeoClient:
             logging.debug(f"Unexpected error checking registry in cluster: {e}")
             return False
     
-    def _parse_registry_name(self) -> tuple[str, str]:
+    def _parse_registry_name(self) -> Tuple[str, str]:
         """Parse registry URL to extract service name and namespace.
+        
+        If enable_docker_deletion is enabled, uses the override statefulset name instead.
         
         Returns:
             Tuple of (service_name, namespace)
         """
+        # Use override statefulset name if deletion is enabled
+        if self.enable_docker_deletion:
+            return self.registry_statefulset_name, self.namespace
+        
         url = self.registry_url.split(':')[0]  # Remove port
         parts = url.split('.')
         

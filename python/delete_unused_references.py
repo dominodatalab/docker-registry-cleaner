@@ -57,10 +57,16 @@ class ImageReference:
 class UnusedReferencesFinder:
     """Main class for finding unused Docker image references"""
     
-    def __init__(self, registry_url: str, repository: str):
+    def __init__(self, registry_url: str, repository: str,
+                 enable_docker_deletion: bool = False, registry_statefulset_name: str = None):
         self.registry_url = registry_url
         self.repository = repository
-        self.skopeo_client = SkopeoClient(config_manager, use_pod=config_manager.get_skopeo_use_pod())
+        self.skopeo_client = SkopeoClient(
+            config_manager, 
+            use_pod=config_manager.get_skopeo_use_pod(),
+            enable_docker_deletion=enable_docker_deletion,
+            registry_statefulset_name=registry_statefulset_name
+        )
         self.logger = get_logger(__name__)
         
         # Image type mappings for registry queries
@@ -568,6 +574,18 @@ Examples:
         help='Skip confirmation prompt when using --apply'
     )
     
+    parser.add_argument(
+        '--enable-docker-deletion',
+        action='store_true',
+        help='Enable registry deletion by treating registry as in-cluster (overrides auto-detection)'
+    )
+    
+    parser.add_argument(
+        '--registry-statefulset-name',
+        default='docker-registry',
+        help='Name of registry StatefulSet/Deployment to modify for deletion (default: docker-registry)'
+    )
+    
     return parser.parse_args()
 
 
@@ -601,7 +619,12 @@ def main():
             logger.info(f"Output file: {output_file}")
         
         # Create finder
-        finder = UnusedReferencesFinder(registry_url, repository)
+        finder = UnusedReferencesFinder(
+            registry_url, 
+            repository,
+            enable_docker_deletion=args.enable_docker_deletion,
+            registry_statefulset_name=args.registry_statefulset_name
+        )
         
         # Handle different operation modes
         if use_input_file:

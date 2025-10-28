@@ -708,6 +708,18 @@ The tool uses a standardized `SkopeoClient` that provides consistent authenticat
   - **Pod mode**: Kubernetes pod execution for environments without local Skopeo installation
   - Configure via `config.yaml` (`skopeo.use_pod`) or environment variable (`SKOPEO_USE_POD`)
 - **Centralized config**: All Skopeo operations use the same credentials from `REGISTRY_PASSWORD`
+- **Registry deletion override**: For cases where the registry URL doesn't contain enough information for auto-detection:
+  - `enable_docker_deletion=True` - Enables registry deletion by treating the registry as in-cluster
+  - `registry_statefulset_name` - Name of the StatefulSet/Deployment to modify (defaults to "docker-registry")
+  - Example usage:
+    ```python
+    skopeo_client = SkopeoClient(
+        config_manager, 
+        use_pod=False,
+        enable_docker_deletion=True,
+        registry_statefulset_name="custom-registry"
+    )
+    ```
 
 ### MongoDB Configuration
 
@@ -853,6 +865,53 @@ python -c "from python.mongo_utils import get_mongo_client; print('MongoDB conne
 # Look for: "MongoDB record will NOT be cleaned" for failed Docker deletions
 # Look for: "Skipping MongoDB cleanup for X ObjectIDs due to Docker deletion failures"
 ```
+
+**Registry auto-detection fails**
+
+If your Docker registry URL doesn't contain enough information for auto-detection (e.g., it doesn't resolve to a standard Kubernetes service name), you can use the `--enable-docker-deletion` flag:
+
+```bash
+# Enable registry deletion with default "docker-registry" statefulset
+python delete_archived_tags.py --environment --apply --enable-docker-deletion
+
+# Enable with custom statefulset/deployment name
+python delete_unused_environments.py --apply \
+  --enable-docker-deletion \
+  --registry-statefulset-name my-custom-registry
+```
+
+For programmatic usage:
+
+```python
+from python.config_manager import config_manager, SkopeoClient
+
+# Enable registry deletion with default "docker-registry" statefulset
+skopeo_client = SkopeoClient(
+    config_manager, 
+    use_pod=False,
+    enable_docker_deletion=True
+)
+
+# Or specify a custom statefulset/deployment name
+skopeo_client = SkopeoClient(
+    config_manager, 
+    use_pod=False,
+    enable_docker_deletion=True,
+    registry_statefulset_name="my-custom-registry"
+)
+
+# Now is_registry_in_cluster() will return True and enable_registry_deletion() 
+# will target the specified statefulset/deployment
+if skopeo_client.is_registry_in_cluster():
+    skopeo_client.enable_registry_deletion()
+    # ... perform deletions ...
+    skopeo_client.disable_registry_deletion()
+```
+
+This is useful when:
+- The registry URL is an IP address or external DNS name
+- The registry service has a non-standard naming convention
+- You want to explicitly control which StatefulSet/Deployment is modified
 
 ### Debug Mode
 ```bash
