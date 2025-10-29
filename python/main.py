@@ -231,6 +231,9 @@ Examples:
   # Delete both with backup to S3
   python main.py delete_archived_tags --environment --model --apply --backup --s3-bucket my-bucket
 
+  # Backup only (no deletion) - will prompt for confirmation unless --force
+  python main.py delete_archived_tags --environment --backup --s3-bucket my-bucket --force
+
   # Find unused references (MongoDB references to non-existent Docker images)
   python main.py delete_unused_references --output unused-refs.json
 
@@ -258,6 +261,9 @@ Examples:
   # Delete unused environments (with confirmation)
    python main.py delete_unused_environments --apply
 
+  # Consider only recent usage in runs (e.g., last 30 days) when determining unused
+   python main.py delete_unused_environments --days 30
+
   # Full workflow: generate reports and delete
    python main.py delete_unused_environments --generate-reports --apply
    
@@ -282,12 +288,21 @@ Backup Examples (all delete scripts support backup to S3 before deletion):
    
   # Backup before deleting unused environments
   python main.py delete_unused_environments --apply --backup --s3-bucket my-backup-bucket
+  
+  # Backup only for unused environments (no deletion)
+  python main.py delete_unused_environments --backup --s3-bucket my-backup-bucket --force
    
   # Backup before deleting private environments of deactivated users
   python main.py delete_unused_private_environments --apply --backup --s3-bucket my-backup-bucket
+
+  # Backup only for deactivated user private environments (no deletion)
+  python main.py delete_unused_private_environments --backup --s3-bucket my-backup-bucket --force
    
   # Backup before deleting unused Docker images
   python main.py delete_image --apply --backup --s3-bucket my-backup-bucket
+
+  # Backup only for unused Docker images (no deletion)
+  python main.py delete_image --backup --s3-bucket my-backup-bucket --force
 
 Safety Notes:
   - delete_image runs in dry-run mode by default for safety

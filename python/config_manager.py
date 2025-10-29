@@ -98,7 +98,8 @@ class ConfigManager:
                 'tags_per_layer': 'tags-per-layer.json',
                 'tag_sums': 'tag-sums.json',
                 'unused_references': 'unused-references.json',
-                'workload_report': 'workload-report.json'
+                'workload_report': 'workload-report.json',
+                'runs_env_usage': 'runs_env_usage_output.json'
             },
             'security': {
                 'dry_run_by_default': True,
@@ -260,6 +261,10 @@ class ConfigManager:
         """Get workload report path from config"""
         return self._resolve_report_path(self.config['reports']['workload_report'])
     
+    def get_runs_env_usage_path(self) -> str:
+        """Get runs environment usage report path from config"""
+        return self._resolve_report_path(self.config['reports']['runs_env_usage'])
+    
     def get_image_analysis_path(self) -> str:
         """Get image analysis path from config"""
         return self._resolve_report_path(self.config['reports']['image_analysis'])
@@ -397,7 +402,19 @@ class ConfigManager:
 class SkopeoClient:
     """Standardized Skopeo client for registry operations"""
     
-    def __init__(self, config_manager: ConfigManager, use_pod: bool = False, namespace: str = None):
+    def __init__(self, config_manager: ConfigManager, use_pod: bool = False, namespace: str = None,
+                 enable_docker_deletion: bool = False, registry_statefulset_name: str = None):
+        """Initialize SkopeoClient.
+        
+        Args:
+            config_manager: ConfigManager instance for accessing configuration
+            use_pod: If True, run Skopeo commands in a Kubernetes pod
+            namespace: Kubernetes namespace (defaults to platform namespace from config)
+            enable_docker_deletion: If True, enable registry deletion by treating registry as in-cluster
+            registry_statefulset_name: Name of the registry StatefulSet/Deployment to modify for deletion.
+                                      Defaults to "docker-registry" if enable_docker_deletion is True.
+                                      Only used when enable_docker_deletion is True.
+        """
         self.config_manager = config_manager
         self.use_pod = use_pod
         self.namespace = namespace or config_manager.get_platform_namespace()
@@ -405,6 +422,10 @@ class SkopeoClient:
         self.repository = config_manager.get_repository()
         self.password = config_manager.get_registry_password()
         self._logged_in = False
+        
+        # Registry deletion override settings
+        self.enable_docker_deletion = enable_docker_deletion
+        self.registry_statefulset_name = registry_statefulset_name or "docker-registry"
         
         if use_pod:
             # Initialize Kubernetes client for pod operations
@@ -599,12 +620,18 @@ class SkopeoClient:
     def is_registry_in_cluster(self) -> bool:
         """Check if the registry service exists in the Kubernetes cluster.
         
-        Parses the registry URL to extract the service name and checks if it exists
+        First checks if force_registry_in_cluster override is enabled. If so, returns True.
+        Otherwise, parses the registry URL to extract the service name and checks if it exists
         as a Service, StatefulSet, or Deployment in the cluster.
         
         Returns:
-            True if registry service/workload is found in the cluster, False otherwise.
+            True if registry service/workload is found in the cluster (or forced), False otherwise.
         """
+        # Check override first
+        if self.enable_docker_deletion:
+            logging.info(f"Registry deletion enabled (using statefulset: {self.registry_statefulset_name})")
+            return True
+        
         try:
             from kubernetes.client.rest import ApiException
             
@@ -671,12 +698,18 @@ class SkopeoClient:
             logging.debug(f"Unexpected error checking registry in cluster: {e}")
             return False
     
-    def _parse_registry_name(self) -> tuple[str, str]:
+    def _parse_registry_name(self) -> Tuple[str, str]:
         """Parse registry URL to extract service name and namespace.
+        
+        If enable_docker_deletion is enabled, uses the override statefulset name instead.
         
         Returns:
             Tuple of (service_name, namespace)
         """
+        # Use override statefulset name if deletion is enabled
+        if self.enable_docker_deletion:
+            return self.registry_statefulset_name, self.namespace
+        
         url = self.registry_url.split(':')[0]  # Remove port
         parts = url.split('.')
         
@@ -685,6 +718,63 @@ class SkopeoClient:
         check_namespace = parts[1] if len(parts) > 1 and parts[1] != 'svc' else self.namespace
         
         return service_name, check_namespace
+    
+    def _wait_for_pod_ready(self, label_selector: str, namespace: str, timeout: int = 300) -> bool:
+        """Wait for pod to be ready after a configuration change.
+        
+        Args:
+            label_selector: Kubernetes label selector to find the pod (e.g., "app.kubernetes.io/name=docker-registry")
+            namespace: Kubernetes namespace
+            timeout: Maximum time to wait in seconds (default: 300)
+        
+        Returns:
+            True if pod becomes ready, False if timeout or error
+        """
+        import time
+        from kubernetes.client.rest import ApiException
+        
+        try:
+            core_v1, _ = _get_kubernetes_clients()
+            
+            logging.info(f"Waiting for pod with selector '{label_selector}' to be ready in namespace '{namespace}'...")
+            start_time = time.time()
+            
+            while time.time() - start_time < timeout:
+                try:
+                    # List pods matching the label selector
+                    pods = core_v1.list_namespaced_pod(
+                        namespace=namespace,
+                        label_selector=label_selector
+                    )
+                    
+                    if not pods.items:
+                        logging.debug(f"No pods found with selector '{label_selector}', waiting...")
+                        time.sleep(5)
+                        continue
+                    
+                    # Check if at least one pod is ready
+                    for pod in pods.items:
+                        if pod.status.conditions:
+                            for condition in pod.status.conditions:
+                                if condition.type == "Ready" and condition.status == "True":
+                                    elapsed = int(time.time() - start_time)
+                                    logging.info(f"✓ Pod {pod.metadata.name} is ready (waited {elapsed}s)")
+                                    return True
+                    
+                    # No ready pods yet, wait and retry
+                    time.sleep(5)
+                    
+                except ApiException as e:
+                    logging.debug(f"Error checking pod status: {e}")
+                    time.sleep(5)
+            
+            # Timeout reached
+            logging.error(f"Timeout waiting for pod to be ready after {timeout}s")
+            return False
+            
+        except Exception as e:
+            logging.error(f"Error waiting for pod readiness: {e}")
+            return False
     
     def enable_registry_deletion(self, namespace: str = None) -> bool:
         """Enable deletion of Docker images in the registry by setting REGISTRY_STORAGE_DELETE_ENABLED=true
@@ -739,6 +829,12 @@ class SkopeoClient:
                     body=sts_data
                 )
                 logging.info(f"✓ Deletion enabled in {service_name} StatefulSet")
+                
+                # Wait for pod to restart and become ready
+                label_selector = f"app.kubernetes.io/name={service_name}"
+                if not self._wait_for_pod_ready(label_selector, ns):
+                    logging.warning(f"Pod may not be ready yet, but continuing anyway")
+                
                 return True
                 
             except ApiException as e:
@@ -772,6 +868,12 @@ class SkopeoClient:
                             body=dep_data
                         )
                         logging.info(f"✓ Deletion enabled in {service_name} Deployment")
+                        
+                        # Wait for pod to restart and become ready
+                        label_selector = f"app.kubernetes.io/name={service_name}"
+                        if not self._wait_for_pod_ready(label_selector, ns):
+                            logging.warning(f"Pod may not be ready yet, but continuing anyway")
+                        
                         return True
                         
                     except Exception as dep_error:
@@ -829,6 +931,12 @@ class SkopeoClient:
                     body=sts_data
                 )
                 logging.info(f"✓ Deletion disabled in {service_name} StatefulSet")
+                
+                # Wait for pod to restart and become ready
+                label_selector = f"app.kubernetes.io/name={service_name}"
+                if not self._wait_for_pod_ready(label_selector, ns):
+                    logging.warning(f"Pod may not be ready yet, but continuing anyway")
+                
                 return True
                 
             except ApiException as e:
@@ -854,6 +962,12 @@ class SkopeoClient:
                             body=dep_data
                         )
                         logging.info(f"✓ Deletion disabled in {service_name} Deployment")
+                        
+                        # Wait for pod to restart and become ready
+                        label_selector = f"app.kubernetes.io/name={service_name}"
+                        if not self._wait_for_pod_ready(label_selector, ns):
+                            logging.warning(f"Pod may not be ready yet, but continuing anyway")
+                        
                         return True
                         
                     except Exception as dep_error:

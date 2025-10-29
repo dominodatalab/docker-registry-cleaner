@@ -83,10 +83,16 @@ class DeactivatedUserEnvInfo:
 class DeactivatedUserEnvFinder:
     """Main class for finding and managing private environments owned by deactivated users"""
     
-    def __init__(self, registry_url: str, repository: str):
+    def __init__(self, registry_url: str, repository: str,
+                 enable_docker_deletion: bool = False, registry_statefulset_name: str = None):
         self.registry_url = registry_url
         self.repository = repository
-        self.skopeo_client = SkopeoClient(config_manager, use_pod=config_manager.get_skopeo_use_pod())
+        self.skopeo_client = SkopeoClient(
+            config_manager, 
+            use_pod=config_manager.get_skopeo_use_pod(),
+            enable_docker_deletion=enable_docker_deletion,
+            registry_statefulset_name=registry_statefulset_name
+        )
         self.logger = get_logger(__name__)
         
         # Image types to scan (only environment images contain environment ObjectIDs)
@@ -119,7 +125,7 @@ class DeactivatedUserEnvFinder:
             verify=False
         )
     
-    def fetch_deactivated_user_env_ids(self) -> tuple[List[str], List[str], Dict[str, Dict]]:
+    def fetch_deactivated_user_env_ids(self) -> Tuple[List[str], List[str], Dict[str, Dict]]:
         """Fetch environment and revision ObjectIDs for private environments owned by deactivated Keycloak users
         
         Returns:
@@ -396,98 +402,100 @@ class DeactivatedUserEnvFinder:
                 if not self.skopeo_client.enable_registry_deletion():
                     self.logger.warning("Failed to enable registry deletion - continuing anyway")
             
-            # Delete Docker images directly using skopeo
-            # Track which ObjectIDs were successfully deleted so we only clean up their MongoDB records
-            self.logger.info(f"Deleting {len(deactivated_user_tags)} Docker images from registry...")
-            
-            deleted_count = 0
-            failed_deletions = []
-            successfully_deleted_object_ids = set()
-            
-            for tag_info in deactivated_user_tags:
-                try:
-                    self.logger.info(f"  Deleting: {tag_info.full_image} (user: {tag_info.user_email})")
-                    success = self.skopeo_client.delete_image(
-                        f"{self.repository}/{tag_info.image_type}",
-                        tag_info.tag
-                    )
-                    if success:
-                        deleted_count += 1
-                        successfully_deleted_object_ids.add(tag_info.object_id)
-                        self.logger.info(f"    ✓ Deleted successfully")
-                    else:
-                        failed_deletions.append(tag_info.full_image)
-                        self.logger.warning(f"    ✗ Failed to delete - MongoDB record will NOT be cleaned")
-                except Exception as e:
-                    failed_deletions.append(tag_info.full_image)
-                    self.logger.error(f"    ✗ Error deleting: {e} - MongoDB record will NOT be cleaned")
-            
-            deletion_results['docker_images_deleted'] = deleted_count
-            
-            # Disable deletion in registry if it was enabled
-            if registry_in_cluster:
-                self.logger.info("Disabling deletion in registry...")
-                if not self.skopeo_client.disable_registry_deletion():
-                    self.logger.warning("Failed to disable registry deletion")
-            
-            if failed_deletions:
-                self.logger.warning(f"Failed to delete {len(failed_deletions)} Docker images:")
-                for img in failed_deletions:
-                    self.logger.warning(f"  - {img}")
-                self.logger.warning("MongoDB records for failed deletions will be preserved.")
-            
-            # Clean up MongoDB records directly - ONLY for successfully deleted Docker images
-            # Separate environment IDs from revision IDs for proper cleanup
-            env_ids_to_clean = [eid for eid in environment_ids if eid in successfully_deleted_object_ids]
-            rev_ids_to_clean = [rid for rid in revision_ids if rid in successfully_deleted_object_ids]
-            
-            skipped_env_ids = len(environment_ids) - len(env_ids_to_clean)
-            skipped_rev_ids = len(revision_ids) - len(rev_ids_to_clean)
-            
-            if skipped_env_ids > 0 or skipped_rev_ids > 0:
-                self.logger.info(f"Skipping MongoDB cleanup for {skipped_env_ids + skipped_rev_ids} ObjectIDs due to Docker deletion failures")
-            
-            mongo_client = get_mongo_client()
             try:
-                db = mongo_client[config_manager.get_mongo_db()]
+                # Delete Docker images directly using skopeo
+                # Track which ObjectIDs were successfully deleted so we only clean up their MongoDB records
+                self.logger.info(f"Deleting {len(deactivated_user_tags)} Docker images from registry...")
                 
-                # Clean up environment_revisions collection
-                if rev_ids_to_clean:
-                    self.logger.info(f"Cleaning up {len(rev_ids_to_clean)} environment_revisions records from MongoDB...")
-                    revisions_collection = db["environment_revisions"]
-                    
-                    for obj_id_str in rev_ids_to_clean:
-                        try:
-                            obj_id = ObjectId(obj_id_str)
-                            result = revisions_collection.delete_one({"_id": obj_id})
-                            if result.deleted_count > 0:
-                                self.logger.info(f"  ✓ Deleted environment_revision: {obj_id_str}")
-                                deletion_results['mongo_records_cleaned'] += 1
-                            else:
-                                self.logger.warning(f"  ✗ Environment_revision not found: {obj_id_str}")
-                        except Exception as e:
-                            self.logger.error(f"  ✗ Error deleting environment_revision {obj_id_str}: {e}")
+                deleted_count = 0
+                failed_deletions = []
+                successfully_deleted_object_ids = set()
                 
-                # Clean up environments_v2 collection
-                if env_ids_to_clean:
-                    self.logger.info(f"Cleaning up {len(env_ids_to_clean)} environments_v2 records from MongoDB...")
-                    environments_collection = db["environments_v2"]
-                    
-                    for obj_id_str in env_ids_to_clean:
-                        try:
-                            obj_id = ObjectId(obj_id_str)
-                            result = environments_collection.delete_one({"_id": obj_id})
-                            if result.deleted_count > 0:
-                                self.logger.info(f"  ✓ Deleted environment: {obj_id_str}")
-                                deletion_results['mongo_records_cleaned'] += 1
-                            else:
-                                self.logger.warning(f"  ✗ Environment not found: {obj_id_str}")
-                        except Exception as e:
-                            self.logger.error(f"  ✗ Error deleting environment {obj_id_str}: {e}")
-            finally:
-                mongo_client.close()
+                for tag_info in deactivated_user_tags:
+                    try:
+                        self.logger.info(f"  Deleting: {tag_info.full_image} (user: {tag_info.user_email})")
+                        success = self.skopeo_client.delete_image(
+                            f"{self.repository}/{tag_info.image_type}",
+                            tag_info.tag
+                        )
+                        if success:
+                            deleted_count += 1
+                            successfully_deleted_object_ids.add(tag_info.object_id)
+                            self.logger.info(f"    ✓ Deleted successfully")
+                        else:
+                            failed_deletions.append(tag_info.full_image)
+                            self.logger.warning(f"    ✗ Failed to delete - MongoDB record will NOT be cleaned")
+                    except Exception as e:
+                        failed_deletions.append(tag_info.full_image)
+                        self.logger.error(f"    ✗ Error deleting: {e} - MongoDB record will NOT be cleaned")
             
-            self.logger.info("Deactivated user environment deletion completed successfully")
+                deletion_results['docker_images_deleted'] = deleted_count
+                
+                if failed_deletions:
+                    self.logger.warning(f"Failed to delete {len(failed_deletions)} Docker images:")
+                    for img in failed_deletions:
+                        self.logger.warning(f"  - {img}")
+                    self.logger.warning("MongoDB records for failed deletions will be preserved.")
+                
+                # Clean up MongoDB records directly - ONLY for successfully deleted Docker images
+                # Separate environment IDs from revision IDs for proper cleanup
+                env_ids_to_clean = [eid for eid in environment_ids if eid in successfully_deleted_object_ids]
+                rev_ids_to_clean = [rid for rid in revision_ids if rid in successfully_deleted_object_ids]
+                
+                skipped_env_ids = len(environment_ids) - len(env_ids_to_clean)
+                skipped_rev_ids = len(revision_ids) - len(rev_ids_to_clean)
+                
+                if skipped_env_ids > 0 or skipped_rev_ids > 0:
+                    self.logger.info(f"Skipping MongoDB cleanup for {skipped_env_ids + skipped_rev_ids} ObjectIDs due to Docker deletion failures")
+                
+                mongo_client = get_mongo_client()
+                try:
+                    db = mongo_client[config_manager.get_mongo_db()]
+                    
+                    # Clean up environment_revisions collection
+                    if rev_ids_to_clean:
+                        self.logger.info(f"Cleaning up {len(rev_ids_to_clean)} environment_revisions records from MongoDB...")
+                        revisions_collection = db["environment_revisions"]
+                        
+                        for obj_id_str in rev_ids_to_clean:
+                            try:
+                                obj_id = ObjectId(obj_id_str)
+                                result = revisions_collection.delete_one({"_id": obj_id})
+                                if result.deleted_count > 0:
+                                    self.logger.info(f"  ✓ Deleted environment_revision: {obj_id_str}")
+                                    deletion_results['mongo_records_cleaned'] += 1
+                                else:
+                                    self.logger.warning(f"  ✗ Environment_revision not found: {obj_id_str}")
+                            except Exception as e:
+                                self.logger.error(f"  ✗ Error deleting environment_revision {obj_id_str}: {e}")
+                    
+                    # Clean up environments_v2 collection
+                    if env_ids_to_clean:
+                        self.logger.info(f"Cleaning up {len(env_ids_to_clean)} environments_v2 records from MongoDB...")
+                        environments_collection = db["environments_v2"]
+                        
+                        for obj_id_str in env_ids_to_clean:
+                            try:
+                                obj_id = ObjectId(obj_id_str)
+                                result = environments_collection.delete_one({"_id": obj_id})
+                                if result.deleted_count > 0:
+                                    self.logger.info(f"  ✓ Deleted environment: {obj_id_str}")
+                                    deletion_results['mongo_records_cleaned'] += 1
+                                else:
+                                    self.logger.warning(f"  ✗ Environment not found: {obj_id_str}")
+                            except Exception as e:
+                                self.logger.error(f"  ✗ Error deleting environment {obj_id_str}: {e}")
+                finally:
+                    mongo_client.close()
+                
+                self.logger.info("Deactivated user environment deletion completed successfully")
+                
+            finally:
+                # Always disable deletion in registry if it was enabled
+                if registry_in_cluster:
+                    self.logger.info("Disabling deletion in registry...")
+                    if not self.skopeo_client.disable_registry_deletion():
+                        self.logger.warning("Failed to disable registry deletion")
             
         except Exception as e:
             self.logger.error(f"Error deleting deactivated user environments: {e}")
@@ -682,6 +690,18 @@ Environment Variables Required:
         help='AWS region for S3 and ECR (default: from config or us-west-2)'
     )
     
+    parser.add_argument(
+        '--enable-docker-deletion',
+        action='store_true',
+        help='Enable registry deletion by treating registry as in-cluster (overrides auto-detection)'
+    )
+    
+    parser.add_argument(
+        '--registry-statefulset-name',
+        default='docker-registry',
+        help='Name of registry StatefulSet/Deployment to modify for deletion (default: docker-registry)'
+    )
+    
     return parser.parse_args()
 
 
@@ -725,7 +745,12 @@ def main():
             logger.info(f"Output file: {output_file}")
         
         # Create finder
-        finder = DeactivatedUserEnvFinder(registry_url, repository)
+        finder = DeactivatedUserEnvFinder(
+            registry_url, 
+            repository,
+            enable_docker_deletion=args.enable_docker_deletion,
+            registry_statefulset_name=args.registry_statefulset_name
+        )
         
         # Handle different operation modes
         if use_input_file:
@@ -777,6 +802,51 @@ def main():
                 logger.info(f"Report written to {output_file}")
                 sys.exit(0)
         
+        # Backup-only mode: allow backing up without deletion when --backup is provided without --apply
+        if (not is_delete_mode) and args.backup:
+            if not deactivated_user_tags:
+                logger.info("No tags to back up")
+                sys.exit(0)
+
+            # Confirmation prompt (unless --force)
+            if not args.force:
+                logger.warning(f"\n⚠️  WARNING: About to back up {len(deactivated_user_tags)} tags to S3!")
+                logger.warning("This will upload tar archives to your configured S3 bucket.")
+                response = input("\nProceed with backup only (no deletions)? (yes/no): ").strip().lower()
+                if response not in ['yes', 'y']:
+                    logger.info("Operation cancelled by user")
+                    sys.exit(0)
+
+            # Execute backup only
+            logger.info(f"\n📦 Backing up {len(deactivated_user_tags)} tags to S3 (no deletion)...")
+            tags_to_backup = [t.tag for t in deactivated_user_tags]
+            full_repo = f"{registry_url}/{repository}"
+
+            cfg_mgr = ConfigManager()
+            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
+
+            try:
+                process_backup(
+                    skopeo_client=backup_skopeo_client,
+                    full_repo=full_repo,
+                    tags=tags_to_backup,
+                    s3_bucket=s3_bucket,
+                    region=s3_region,
+                    dry_run=False,
+                    delete=False,
+                    min_age_days=None,
+                    workers=1,
+                    tmpdir=None,
+                    failed_tags_file=None,
+                )
+                logger.info(f"✅ Successfully backed up {len(tags_to_backup)} images to S3")
+            except Exception as e:
+                logger.error(f"❌ Backup failed: {e}")
+                sys.exit(1)
+
+            logger.info("\n✅ Backup-only operation completed successfully!")
+            sys.exit(0)
+
         # Handle deletion mode
         if is_delete_mode:
             if not deactivated_user_tags:

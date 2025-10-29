@@ -149,6 +149,49 @@ def workspace_env_usage_pipeline() -> List[dict]:
 	]
 
 
+def runs_env_usage_pipeline() -> List[dict]:
+	# Aggregate recent runs that reference environment and environment revision; enrich with docker image info
+	return [
+		{"$match": {"environmentId": {"$exists": True}, "environmentRevisionId": {"$exists": True}}},
+		{"$lookup": {"from": "environment_revisions", "localField": "environmentRevisionId", "foreignField": "_id", "as": "env_rev"}},
+		{"$project": {
+			"run_id": "$_id",
+			"project_id": "$projectId",
+			"starting_user_id": "$startingUserId",
+			"status": "$status",
+			"started": "$started",
+			"completed": "$completed",
+			"environment_id": "$environmentId",
+			"environment_revision_id": "$environmentRevisionId",
+			"environment_docker_repo": {"$first": "$env_rev.metadata.dockerImageName.repository"},
+			"environment_docker_tag": {"$first": "$env_rev.metadata.dockerImageName.tag"}
+		}},
+		# Group by environment + revision to compute most recent completion time as last_used
+		{"$group": {
+			"_id": {"env": "$environment_id", "rev": "$environment_revision_id"},
+			"environment_id": {"$first": "$environment_id"},
+			"environment_revision_id": {"$first": "$environment_revision_id"},
+			"environment_docker_repo": {"$first": "$environment_docker_repo"},
+			"environment_docker_tag": {"$first": "$environment_docker_tag"},
+			"last_used": {"$max": "$completed"},
+			# Preserve a representative started/completed if needed for compatibility (kept as most recent when sorting next)
+			"any_started": {"$max": "$started"},
+			"any_completed": {"$max": "$completed"}
+		}},
+		# Final projection, keep both last_used and a started field for compatibility
+		{"$project": {
+			"_id": 0,
+			"environment_id": 1,
+			"environment_revision_id": 1,
+			"environment_docker_repo": 1,
+			"environment_docker_tag": 1,
+			"last_used": 1,
+			"started": "$any_started",
+			"completed": "$any_completed"
+		}}
+	]
+
+
 def run(target: str) -> None:
 	mongo_uri = config_manager.get_mongo_connection_string()
 	mongo_db = config_manager.get_mongo_db()
@@ -157,14 +200,18 @@ def run(target: str) -> None:
 	client = get_mongo_client()
 	try:
 		db = client[mongo_db]
-		if target in ("model", "both"):
+		if target in ("model", "all"):
 			logger.info("Running model environment usage aggregation...")
 			model_results = list(db.models.aggregate(model_env_usage_pipeline()))
 			save_json(os.path.join(output_dir, "model_env_usage_output.json"), bson_to_jsonable(model_results))
-		if target in ("workspace", "both"):
+		if target in ("workspace", "all"):
 			logger.info("Running workspace environment usage aggregation...")
 			workspace_results = list(db.workspace.aggregate(workspace_env_usage_pipeline()))
 			save_json(os.path.join(output_dir, "workspace_env_usage_output.json"), bson_to_jsonable(workspace_results))
+		if target in ("runs", "all"):
+			logger.info("Running runs environment usage aggregation...")
+			runs_results = list(db.runs.aggregate(runs_env_usage_pipeline()))
+			save_json(os.path.join(output_dir, "runs_env_usage_output.json"), bson_to_jsonable(runs_results))
 	finally:
 		client.close()
 
@@ -172,7 +219,7 @@ def run(target: str) -> None:
 def main():
 	setup_logging()
 	parser = argparse.ArgumentParser(description='Extract metadata from MongoDB using PyMongo')
-	parser.add_argument('--target', choices=['model', 'workspace', 'both'], default='both', help='Which aggregation(s) to run')
+	parser.add_argument('--target', choices=['model', 'workspace', 'runs', 'all'], default='all', help='Which aggregation(s) to run')
 	args = parser.parse_args()
 	run(args.target)
 

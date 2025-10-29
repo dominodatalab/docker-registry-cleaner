@@ -87,7 +87,8 @@ class LayerAnalysis:
 class IntelligentImageDeleter:
     """Main class for intelligent Docker image deletion"""
     
-    def __init__(self, registry_url: str = None, repository: str = None, namespace: str = None):
+    def __init__(self, registry_url: str = None, repository: str = None, namespace: str = None,
+                 enable_docker_deletion: bool = False, registry_statefulset_name: str = None):
         self.registry_url = registry_url or config_manager.get_registry_url()
         self.repository = repository or config_manager.get_repository()
         self.namespace = namespace or config_manager.get_platform_namespace()
@@ -95,7 +96,12 @@ class IntelligentImageDeleter:
         
         # Initialize Skopeo client for local execution (same as other delete scripts)
         # SkopeoClient now handles registry deletion enable/disable via enable_registry_deletion()
-        self.skopeo_client = SkopeoClient(config_manager, use_pod=config_manager.get_skopeo_use_pod())
+        self.skopeo_client = SkopeoClient(
+            config_manager, 
+            use_pod=config_manager.get_skopeo_use_pod(),
+            enable_docker_deletion=enable_docker_deletion,
+            registry_statefulset_name=registry_statefulset_name
+        )
     
     def load_workload_report(self, report_path: str = "workload-report.json") -> Dict:
         """Load workload analysis report from JSON file"""
@@ -463,6 +469,16 @@ def parse_arguments():
         '--region',
         help='AWS region for S3 and ECR (default: from config or us-west-2)'
     )
+    parser.add_argument(
+        '--enable-docker-deletion',
+        action='store_true',
+        help='Enable registry deletion by treating registry as in-cluster (overrides auto-detection)'
+    )
+    parser.add_argument(
+        '--registry-statefulset-name',
+        default='docker-registry',
+        help='Name of registry StatefulSet/Deployment to modify for deletion (default: docker-registry)'
+    )
     return parser.parse_args()
 
 
@@ -535,7 +551,10 @@ def main():
     
     try:
         # Create deleter
-        deleter = IntelligentImageDeleter()
+        deleter = IntelligentImageDeleter(
+            enable_docker_deletion=args.enable_docker_deletion,
+            registry_statefulset_name=args.registry_statefulset_name
+        )
         
         # Handle direct image deletion if image argument is provided
         if args.image:
@@ -557,32 +576,97 @@ def main():
                 repository = repository_tag
             
             # Enable deletion in registry (if running in Kubernetes)
+            registry_enabled = False
             if not dry_run:
                 deleter.enable_deletion_of_docker_images()
+                registry_enabled = True
             
-            # Delete the image
-            deleted_tags = []
-            if dry_run:
-                print(f"  Would delete: {args.image}")
-                deleted_tags = [args.image]
-            else:
-                print(f"  Deleting: {args.image}")
-                if deleter.skopeo_client.delete_image(repository, tag):
-                    print(f"    ✅ Deleted successfully")
+            try:
+                # Delete the image
+                deleted_tags = []
+                if dry_run:
+                    print(f"  Would delete: {args.image}")
                     deleted_tags = [args.image]
                 else:
-                    print(f"    ❌ Failed to delete")
+                    print(f"  Deleting: {args.image}")
+                    if deleter.skopeo_client.delete_image(repository, tag):
+                        print(f"    ✅ Deleted successfully")
+                        deleted_tags = [args.image]
+                    else:
+                        print(f"    ❌ Failed to delete")
+                
+                # Clean up Mongo references for deleted tags
+                if deleted_tags and not dry_run and not args.skip_cleanup_mongo:
+                    deleter.cleanup_mongo_references(deleted_tags)
             
-            # Disable deletion in registry (if running in Kubernetes)
-            if not dry_run:
-                deleter.disable_deletion_of_docker_images()
-            
-            # Clean up Mongo references for deleted tags
-            if deleted_tags and not dry_run and not args.skip_cleanup_mongo:
-                deleter.cleanup_mongo_references(deleted_tags)
+            finally:
+                # Always disable deletion in registry if it was enabled
+                if registry_enabled:
+                    deleter.disable_deletion_of_docker_images()
             
             return
         
+        # Backup-only mode when --backup is provided without --apply
+        if (not args.apply) and args.backup:
+            # In backup-only mode, target the set of unused images from analysis
+            print("\n📦 BACKUP-ONLY MODE: Images will be backed up to S3 without deletion.")
+            if not args.force:
+                resp = input("Proceed with backup only (no deletions)? (yes/no): ").strip().lower()
+                if resp not in ['yes', 'y']:
+                    print("Operation cancelled by user")
+                    sys.exit(0)
+
+            # Load reports for analysis
+            print("📊 Loading workload and image analysis reports...")
+            workload_report = deleter.load_workload_report(args.workload_report)
+            image_analysis = deleter.load_image_analysis_report(args.image_analysis)
+            if not workload_report or not image_analysis:
+                print("❌ Missing analysis reports. Run inspect-workload.py and image-data-analysis.py first.")
+                sys.exit(1)
+            merged_ids = None
+            if object_ids_map:
+                merged = set()
+                merged.update(object_ids_map.get('any', []))
+                merged.update(object_ids_map.get('environment', []))
+                merged.update(object_ids_map.get('model', []))
+                merged_ids = sorted(merged)
+                print(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
+            analysis = deleter.analyze_image_usage(workload_report, image_analysis, merged_ids)
+
+            # Prepare tags to backup
+            tags_to_backup = []
+            for image_tag in analysis.unused_images:
+                parts = image_tag.split(':')
+                if len(parts) == 2:
+                    tags_to_backup.append(parts[1])
+            if not tags_to_backup:
+                print("No unused images found to back up.")
+                sys.exit(0)
+
+            full_repo = f"{deleter.registry_url}/{deleter.repository}"
+            cfg_mgr = ConfigManager()
+            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
+            try:
+                process_backup(
+                    skopeo_client=backup_skopeo_client,
+                    full_repo=full_repo,
+                    tags=tags_to_backup,
+                    s3_bucket=s3_bucket,
+                    region=s3_region,
+                    dry_run=False,
+                    delete=False,
+                    min_age_days=None,
+                    workers=1,
+                    tmpdir=None,
+                    failed_tags_file=None
+                )
+                print(f"✅ Successfully backed up {len(tags_to_backup)} images to S3")
+            except Exception as e:
+                print(f"❌ Backup failed: {e}")
+                sys.exit(1)
+            print("\n✅ Backup-only operation completed successfully!")
+            return
+
         if not args.skip_analysis:
             # Load analysis reports
             print("📊 Loading workload and image analysis reports...")
@@ -611,26 +695,30 @@ def main():
             deleter.generate_deletion_report(analysis, args.output_report)
             
             # Enable deletion in registry (if running in Kubernetes)
+            registry_enabled = False
             if not dry_run:
                 deleter.enable_deletion_of_docker_images()
+                registry_enabled = True
             
-            # Delete unused images using SkopeoClient (same as other delete scripts)
-            deleted_tags = deleter.delete_unused_images(
-                analysis, 
-                password, 
-                dry_run=dry_run,
-                backup=args.backup,
-                s3_bucket=s3_bucket,
-                region=s3_region
-            )
+            try:
+                # Delete unused images using SkopeoClient (same as other delete scripts)
+                deleted_tags = deleter.delete_unused_images(
+                    analysis, 
+                    password, 
+                    dry_run=dry_run,
+                    backup=args.backup,
+                    s3_bucket=s3_bucket,
+                    region=s3_region
+                )
+                
+                # Clean up Mongo references for deleted tags (enabled by default, can be skipped with --skip-cleanup-mongo)
+                if deleted_tags and not dry_run and not args.skip_cleanup_mongo:
+                    deleter.cleanup_mongo_references(deleted_tags)
             
-            # Disable deletion in registry (if running in Kubernetes)
-            if not dry_run:
-                deleter.disable_deletion_of_docker_images()
-            
-            # Clean up Mongo references for deleted tags (enabled by default, can be skipped with --skip-cleanup-mongo)
-            if deleted_tags and not dry_run and not args.skip_cleanup_mongo:
-                deleter.cleanup_mongo_references(deleted_tags)
+            finally:
+                # Always disable deletion in registry if it was enabled
+                if registry_enabled:
+                    deleter.disable_deletion_of_docker_images()
             
         else:
             # Use traditional environments file method
