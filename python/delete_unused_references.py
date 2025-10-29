@@ -15,13 +15,13 @@ Workflow:
 
 Usage examples:
   # Find unused references (dry-run)
-  python find_unused_references.py --registry-url docker-registry:5000 --repository dominodatalab
+  python delete_unused_references.py --registry-url docker-registry:5000 --repository dominodatalab
   
   # Delete unused references directly
-  python find_unused_references.py --apply
+  python delete_unused_references.py --apply
   
   # Delete unused references from pre-generated file
-  python find_unused_references.py --apply --input unused-refs.json
+  python delete_unused_references.py --apply --input unused-refs.json
 """
 
 import argparse
@@ -92,25 +92,16 @@ class UnusedReferencesFinder:
         
         try:
             # Query all documents that might contain image references
-            query = {}
+            # Use $or to match documents with any of the field patterns
+            or_conditions = []
             for pattern in field_patterns:
-                # Build a query that finds documents with these fields
-                field_parts = pattern.split('.')
-                if len(field_parts) >= 2:
-                    # Create a query for nested fields
-                    nested_query = {}
-                    current_level = nested_query
-                    for part in field_parts[:-1]:
-                        current_level[part] = {}
-                        current_level = current_level[part]
-                    current_level[field_parts[-1]] = {"$exists": True}
-                    
-                    # Combine with OR logic for multiple patterns
-                    if '$or' not in query:
-                        query['$or'] = []
-                    query['$or'].append(nested_query)
+                # Use dot notation for nested fields in MongoDB queries
+                or_conditions.append({pattern: {"$exists": True}})
+            
+            query = {"$or": or_conditions} if len(or_conditions) > 1 else or_conditions[0]
             
             self.logger.info(f"Querying {collection_name} for image references...")
+            self.logger.debug(f"Query: {query}")
             cursor = collection.find(query)
             
             for doc in cursor:
@@ -517,22 +508,22 @@ def parse_arguments():
         epilog="""
 Examples:
   # Find unused references (dry-run)
-  python find_unused_references.py
+  python delete_unused_references.py
 
   # Override registry settings
-  python find_unused_references.py --registry-url registry.example.com --repository my-repo
+  python delete_unused_references.py --registry-url registry.example.com --repository my-repo
 
   # Custom output file
-  python find_unused_references.py --output unused-refs.json
+  python delete_unused_references.py --output unused-refs.json
 
   # Delete unused references directly (requires confirmation)
-  python find_unused_references.py --apply
+  python delete_unused_references.py --apply
 
   # Delete unused references from pre-generated file
-  python find_unused_references.py --apply --input unused-refs.json
+  python delete_unused_references.py --apply --input unused-refs.json
 
   # Force deletion without confirmation
-  python find_unused_references.py --apply --force
+  python delete_unused_references.py --apply --force
         """
     )
     

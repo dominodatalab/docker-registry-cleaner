@@ -411,7 +411,7 @@ class SkopeoClient:
             use_pod: If True, run Skopeo commands in a Kubernetes pod
             namespace: Kubernetes namespace (defaults to platform namespace from config)
             enable_docker_deletion: If True, enable registry deletion by treating registry as in-cluster
-            registry_statefulset_name: Name of the registry StatefulSet/Deployment to modify for deletion.
+            registry_statefulset_name: Name of the registry StatefulSet to modify for deletion.
                                       Defaults to "docker-registry" if enable_docker_deletion is True.
                                       Only used when enable_docker_deletion is True.
         """
@@ -620,9 +620,9 @@ class SkopeoClient:
     def is_registry_in_cluster(self) -> bool:
         """Check if the registry service exists in the Kubernetes cluster.
         
-        First checks if force_registry_in_cluster override is enabled. If so, returns True.
+        First checks if enable_docker_deletion override is enabled. If so, returns True.
         Otherwise, parses the registry URL to extract the service name and checks if it exists
-        as a Service, StatefulSet, or Deployment in the cluster.
+        as a Service or StatefulSet in the cluster.
         
         Returns:
             True if registry service/workload is found in the cluster (or forced), False otherwise.
@@ -675,19 +675,7 @@ class SkopeoClient:
                 if e.status != 404:
                     logging.debug(f"Error checking for StatefulSet: {e}")
             
-            # Check 3: Try to find as a Deployment
-            try:
-                apps_v1.read_namespaced_deployment(
-                    name=service_name,
-                    namespace=check_namespace
-                )
-                logging.debug(f"Found {service_name} Deployment in namespace {check_namespace}")
-                return True
-            except ApiException as e:
-                if e.status != 404:
-                    logging.debug(f"Error checking for Deployment: {e}")
-            
-            # Not found in any form
+            # Not found
             logging.debug(f"Registry '{service_name}' not found in namespace {check_namespace}")
             return False
                     
@@ -800,87 +788,41 @@ class SkopeoClient:
                 logging.error(f"Failed to load Kubernetes config: {e}")
                 return False
             
-            # Try StatefulSet first (most common for registries)
-            try:
-                sts_data = apps_v1.read_namespaced_stateful_set(
-                    name=service_name, 
-                    namespace=ns
-                )
-                
-                # Check if the environment variable already exists
-                env_exists = False
-                for env in sts_data.spec.template.spec.containers[0].env or []:
-                    if env.name == "REGISTRY_STORAGE_DELETE_ENABLED":
-                        env.value = "true"
-                        env_exists = True
-                        break
-                
-                # Add the environment variable if it doesn't exist
-                if not env_exists:
-                    new_env = k8s_client.V1EnvVar(name="REGISTRY_STORAGE_DELETE_ENABLED", value="true")
-                    if sts_data.spec.template.spec.containers[0].env is None:
-                        sts_data.spec.template.spec.containers[0].env = []
-                    sts_data.spec.template.spec.containers[0].env.append(new_env)
-                
-                # Update the StatefulSet
-                apps_v1.patch_namespaced_stateful_set(
-                    name=service_name,
-                    namespace=ns,
-                    body=sts_data
-                )
-                logging.info(f"✓ Deletion enabled in {service_name} StatefulSet")
-                
-                # Wait for pod to restart and become ready
-                label_selector = f"app.kubernetes.io/name={service_name}"
-                if not self._wait_for_pod_ready(label_selector, ns):
-                    logging.warning(f"Pod may not be ready yet, but continuing anyway")
-                
-                return True
-                
-            except ApiException as e:
-                if e.status == 404:
-                    # Try Deployment instead
-                    try:
-                        dep_data = apps_v1.read_namespaced_deployment(
-                            name=service_name,
-                            namespace=ns
-                        )
-                        
-                        # Check if the environment variable already exists
-                        env_exists = False
-                        for env in dep_data.spec.template.spec.containers[0].env or []:
-                            if env.name == "REGISTRY_STORAGE_DELETE_ENABLED":
-                                env.value = "true"
-                                env_exists = True
-                                break
-                        
-                        # Add the environment variable if it doesn't exist
-                        if not env_exists:
-                            new_env = k8s_client.V1EnvVar(name="REGISTRY_STORAGE_DELETE_ENABLED", value="true")
-                            if dep_data.spec.template.spec.containers[0].env is None:
-                                dep_data.spec.template.spec.containers[0].env = []
-                            dep_data.spec.template.spec.containers[0].env.append(new_env)
-                        
-                        # Update the Deployment
-                        apps_v1.patch_namespaced_deployment(
-                            name=service_name,
-                            namespace=ns,
-                            body=dep_data
-                        )
-                        logging.info(f"✓ Deletion enabled in {service_name} Deployment")
-                        
-                        # Wait for pod to restart and become ready
-                        label_selector = f"app.kubernetes.io/name={service_name}"
-                        if not self._wait_for_pod_ready(label_selector, ns):
-                            logging.warning(f"Pod may not be ready yet, but continuing anyway")
-                        
-                        return True
-                        
-                    except Exception as dep_error:
-                        logging.error(f"Failed to enable deletion - registry workload not found: {dep_error}")
-                        return False
-                else:
-                    raise
+            # Find and update the StatefulSet
+            sts_data = apps_v1.read_namespaced_stateful_set(
+                name=service_name, 
+                namespace=ns
+            )
+            
+            # Check if the environment variable already exists
+            env_exists = False
+            for env in sts_data.spec.template.spec.containers[0].env or []:
+                if env.name == "REGISTRY_STORAGE_DELETE_ENABLED":
+                    env.value = "true"
+                    env_exists = True
+                    break
+            
+            # Add the environment variable if it doesn't exist
+            if not env_exists:
+                new_env = k8s_client.V1EnvVar(name="REGISTRY_STORAGE_DELETE_ENABLED", value="true")
+                if sts_data.spec.template.spec.containers[0].env is None:
+                    sts_data.spec.template.spec.containers[0].env = []
+                sts_data.spec.template.spec.containers[0].env.append(new_env)
+            
+            # Update the StatefulSet
+            apps_v1.patch_namespaced_stateful_set(
+                name=service_name,
+                namespace=ns,
+                body=sts_data
+            )
+            logging.info(f"✓ Deletion enabled in {service_name} StatefulSet")
+            
+            # Wait for pod to restart and become ready
+            label_selector = f"app.kubernetes.io/name={service_name}"
+            if not self._wait_for_pod_ready(label_selector, ns):
+                logging.warning(f"Pod may not be ready yet, but continuing anyway")
+            
+            return True
             
         except Exception as e:
             logging.error(f"Failed to enable registry deletion: {e}")
@@ -910,71 +852,33 @@ class SkopeoClient:
                 logging.error(f"Failed to load Kubernetes config: {e}")
                 return False
             
-            # Try StatefulSet first (most common for registries)
-            try:
-                sts_data = apps_v1.read_namespaced_stateful_set(
-                    name=service_name, 
-                    namespace=ns
-                )
-                
-                # Remove the environment variable if it exists
-                if sts_data.spec.template.spec.containers[0].env:
-                    sts_data.spec.template.spec.containers[0].env = [
-                        env for env in sts_data.spec.template.spec.containers[0].env
-                        if env.name != "REGISTRY_STORAGE_DELETE_ENABLED"
-                    ]
-                
-                # Update the StatefulSet
-                apps_v1.patch_namespaced_stateful_set(
-                    name=service_name,
-                    namespace=ns,
-                    body=sts_data
-                )
-                logging.info(f"✓ Deletion disabled in {service_name} StatefulSet")
-                
-                # Wait for pod to restart and become ready
-                label_selector = f"app.kubernetes.io/name={service_name}"
-                if not self._wait_for_pod_ready(label_selector, ns):
-                    logging.warning(f"Pod may not be ready yet, but continuing anyway")
-                
-                return True
-                
-            except ApiException as e:
-                if e.status == 404:
-                    # Try Deployment instead
-                    try:
-                        dep_data = apps_v1.read_namespaced_deployment(
-                            name=service_name,
-                            namespace=ns
-                        )
-                        
-                        # Remove the environment variable if it exists
-                        if dep_data.spec.template.spec.containers[0].env:
-                            dep_data.spec.template.spec.containers[0].env = [
-                                env for env in dep_data.spec.template.spec.containers[0].env
-                                if env.name != "REGISTRY_STORAGE_DELETE_ENABLED"
-                            ]
-                        
-                        # Update the Deployment
-                        apps_v1.patch_namespaced_deployment(
-                            name=service_name,
-                            namespace=ns,
-                            body=dep_data
-                        )
-                        logging.info(f"✓ Deletion disabled in {service_name} Deployment")
-                        
-                        # Wait for pod to restart and become ready
-                        label_selector = f"app.kubernetes.io/name={service_name}"
-                        if not self._wait_for_pod_ready(label_selector, ns):
-                            logging.warning(f"Pod may not be ready yet, but continuing anyway")
-                        
-                        return True
-                        
-                    except Exception as dep_error:
-                        logging.error(f"Failed to disable deletion - registry workload not found: {dep_error}")
-                        return False
-                else:
-                    raise
+            # Find and update the StatefulSet
+            sts_data = apps_v1.read_namespaced_stateful_set(
+                name=service_name, 
+                namespace=ns
+            )
+            
+            # Remove the environment variable if it exists
+            if sts_data.spec.template.spec.containers[0].env:
+                sts_data.spec.template.spec.containers[0].env = [
+                    env for env in sts_data.spec.template.spec.containers[0].env
+                    if env.name != "REGISTRY_STORAGE_DELETE_ENABLED"
+                ]
+            
+            # Update the StatefulSet
+            apps_v1.patch_namespaced_stateful_set(
+                name=service_name,
+                namespace=ns,
+                body=sts_data
+            )
+            logging.info(f"✓ Deletion disabled in {service_name} StatefulSet")
+            
+            # Wait for pod to restart and become ready
+            label_selector = f"app.kubernetes.io/name={service_name}"
+            if not self._wait_for_pod_ready(label_selector, ns):
+                logging.warning(f"Pod may not be ready yet, but continuing anyway")
+            
+            return True
             
         except Exception as e:
             logging.error(f"Failed to disable registry deletion: {e}")

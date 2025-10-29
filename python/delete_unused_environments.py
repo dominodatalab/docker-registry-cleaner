@@ -527,7 +527,8 @@ class UnusedEnvironmentsFinder:
             
             for tag in tags:
                 for obj_id in unused_set:
-                    if obj_id in tag:
+                    # Use prefix matching (not substring) since tags format is: <objectid>-<version/revision>
+                    if tag.startswith(obj_id + '-') or tag == obj_id:
                         full_image = f"{self.registry_url}/{self.repository}/{image_type}:{tag}"
                         env_info = UnusedEnvInfo(
                             object_id=obj_id,
@@ -668,15 +669,29 @@ class UnusedEnvironmentsFinder:
                     self.logger.warning("Failed to enable registry deletion - continuing anyway")
             
             try:
-                # Delete Docker images directly using skopeo
-                # Track which ObjectIDs were successfully deleted so we only clean up their MongoDB records
-                self.logger.info(f"Deleting {len(unused_tags)} Docker images from registry...")
+                # Deduplicate tags before deletion (a tag may appear multiple times if it contains multiple ObjectIDs)
+                # Build a mapping from unique tags to all their associated ObjectIDs
+                unique_tags = {}  # key: (image_type, tag), value: list of ObjectIDs
+                for tag_info in unused_tags:
+                    key = (tag_info.image_type, tag_info.tag)
+                    if key not in unique_tags:
+                        unique_tags[key] = {
+                            'tag_info': tag_info,
+                            'object_ids': []
+                        }
+                    unique_tags[key]['object_ids'].append(tag_info.object_id)
+                
+                self.logger.info(f"Deleting {len(unique_tags)} unique Docker images from registry ({len(unused_tags)} total references)...")
+                if len(unique_tags) < len(unused_tags):
+                    self.logger.info(f"  Note: {len(unused_tags) - len(unique_tags)} tags contain multiple unused ObjectIDs")
                 
                 deleted_count = 0
                 failed_deletions = []
                 successfully_deleted_object_ids = set()
                 
-                for tag_info in unused_tags:
+                for (image_type, tag), data in unique_tags.items():
+                    tag_info = data['tag_info']
+                    associated_object_ids = data['object_ids']
                     try:
                         self.logger.info(f"  Deleting: {tag_info.full_image}")
                         success = self.skopeo_client.delete_image(
@@ -685,8 +700,12 @@ class UnusedEnvironmentsFinder:
                         )
                         if success:
                             deleted_count += 1
-                            successfully_deleted_object_ids.add(tag_info.object_id)
-                            self.logger.info(f"    ✓ Deleted successfully")
+                            # Add all ObjectIDs associated with this tag
+                            successfully_deleted_object_ids.update(associated_object_ids)
+                            if len(associated_object_ids) > 1:
+                                self.logger.info(f"    ✓ Deleted successfully (contains {len(associated_object_ids)} unused ObjectIDs)")
+                            else:
+                                self.logger.info(f"    ✓ Deleted successfully")
                         else:
                             failed_deletions.append(tag_info.full_image)
                             self.logger.warning(f"    ✗ Failed to delete - MongoDB record will NOT be cleaned")
