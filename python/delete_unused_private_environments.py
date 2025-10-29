@@ -290,6 +290,10 @@ class DeactivatedUserEnvFinder:
         This method uses ImageAnalyzer to properly account for shared layers.
         Only layers that would have no remaining references after deletion are counted.
         
+        IMPORTANT: This analyzes ALL images in the registry (not just deactivated user images)
+        to get accurate reference counts. This ensures we don't overestimate freed space
+        by accounting for shared layers between deactivated user images and other images.
+        
         Args:
             deactivated_user_tags: List of tags to analyze
             
@@ -300,18 +304,18 @@ class DeactivatedUserEnvFinder:
             return 0
         
         try:
-            self.logger.info("Analyzing Docker images to calculate freed space...")
+            max_workers = config_manager.get_max_workers()
+            self.logger.info(f"Analyzing ALL Docker images to calculate accurate freed space (using {max_workers} workers)...")
+            self.logger.info("This analyzes all images (not just deactivated user images) to count shared layer references correctly.")
             
             # Create ImageAnalyzer
             analyzer = ImageAnalyzer(self.registry_url, self.repository)
             
-            # Get unique ObjectIDs from tags
-            unique_ids = list(set(tag.object_id for tag in deactivated_user_tags))
-            
-            # Analyze environment images filtered by ObjectIDs
+            # CRITICAL FIX: Analyze ALL images (not just deactivated user images) to get accurate reference counts
+            # This ensures that shared layers between deactivated user images and other images are properly accounted for
             for image_type in self.image_types:
-                self.logger.info(f"Analyzing {image_type} images...")
-                success = analyzer.analyze_image(image_type, object_ids=unique_ids)
+                self.logger.info(f"Analyzing ALL {image_type} images...")
+                success = analyzer.analyze_image(image_type, object_ids=None, max_workers=max_workers)
                 if not success:
                     self.logger.warning(f"Failed to analyze {image_type} images")
             

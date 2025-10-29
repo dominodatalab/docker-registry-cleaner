@@ -80,9 +80,10 @@ class ArchivedTagsFinder:
     """Main class for finding and managing archived tags"""
     
     def __init__(self, registry_url: str, repository: str, process_environments: bool = False, process_models: bool = False,
-                 enable_docker_deletion: bool = False, registry_statefulset_name: str = None):
+                 enable_docker_deletion: bool = False, registry_statefulset_name: str = None, max_workers: int = 4):
         self.registry_url = registry_url
         self.repository = repository
+        self.max_workers = max_workers
         self.skopeo_client = SkopeoClient(
             config_manager, 
             use_pod=config_manager.get_skopeo_use_pod(),
@@ -250,6 +251,10 @@ class ArchivedTagsFinder:
         This method uses ImageAnalyzer to properly account for shared layers.
         Only layers that would have no remaining references after deletion are counted.
         
+        IMPORTANT: This analyzes ALL images in the registry (not just archived ones)
+        to get accurate reference counts. This ensures we don't overestimate freed space
+        by accounting for shared layers between archived and non-archived images.
+        
         Args:
             archived_tags: List of archived tags to analyze
             
@@ -260,18 +265,17 @@ class ArchivedTagsFinder:
             return 0
         
         try:
-            self.logger.info("Analyzing Docker images to calculate freed space...")
+            self.logger.info(f"Analyzing ALL Docker images to calculate accurate freed space (using {self.max_workers} workers)...")
+            self.logger.info("This analyzes all images (not just archived) to count shared layer references correctly.")
             
             # Create ImageAnalyzer
             analyzer = ImageAnalyzer(self.registry_url, self.repository)
             
-            # Get unique ObjectIDs from archived tags
-            unique_ids = list(set(tag.object_id for tag in archived_tags))
-            
-            # Analyze images filtered by archived ObjectIDs
+            # CRITICAL FIX: Analyze ALL images (not just archived ones) to get accurate reference counts
+            # This ensures that shared layers between archived and non-archived images are properly accounted for
             for image_type in self.image_types:
-                self.logger.info(f"Analyzing {image_type} images...")
-                success = analyzer.analyze_image(image_type, object_ids=unique_ids)
+                self.logger.info(f"Analyzing ALL {image_type} images...")
+                success = analyzer.analyze_image(image_type, object_ids=None, max_workers=self.max_workers)
                 if not success:
                     self.logger.warning(f"Failed to analyze {image_type} images")
             
@@ -280,7 +284,8 @@ class ArchivedTagsFinder:
             image_ids = [f"{tag.image_type}:{tag.tag}" for tag in archived_tags]
             
             # Calculate freed space using ImageAnalyzer's method
-            # This properly accounts for shared layers
+            # This properly accounts for shared layers - only counts layers that would have
+            # zero references after deletion (i.e., not used by any remaining images)
             total_freed = analyzer.freed_space_if_deleted(image_ids)
             
             self.logger.info(f"Total space that would be freed: {total_freed / (1024**3):.2f} GB")
@@ -709,6 +714,12 @@ Examples:
         help='Name of registry StatefulSet/Deployment to modify for deletion (default: docker-registry)'
     )
     
+    parser.add_argument(
+        '--max-workers',
+        type=int,
+        help='Maximum number of parallel workers for tag inspection (default: from config)'
+    )
+    
     return parser.parse_args()
 
 
@@ -736,6 +747,7 @@ def main():
     registry_url = args.registry_url or config_manager.get_registry_url()
     repository = args.repository or config_manager.get_repository()
     output_file = args.output or config_manager.get_archived_tags_report_path()
+    max_workers = args.max_workers or config_manager.get_max_workers()
     
     try:
         # Determine operation mode
@@ -758,6 +770,7 @@ def main():
         logger.info("=" * 60)
         logger.info(f"Registry URL: {registry_url}")
         logger.info(f"Repository: {repository}")
+        logger.info(f"Max Workers: {max_workers}")
         
         if use_input_file:
             logger.info(f"Input file: {args.input}")
@@ -771,7 +784,8 @@ def main():
             process_environments=args.environment,
             process_models=args.model,
             enable_docker_deletion=args.enable_docker_deletion,
-            registry_statefulset_name=args.registry_statefulset_name
+            registry_statefulset_name=args.registry_statefulset_name,
+            max_workers=max_workers
         )
         
         # Handle different operation modes
