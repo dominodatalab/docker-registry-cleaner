@@ -183,9 +183,17 @@ class UnusedReferencesFinder:
                 tags = self.skopeo_client.list_tags(f"{self.repository}/{image_type}")
                 
                 for tag in tags:
-                    full_image = f"{self.registry_url}/{self.repository}/{image_type}:{tag}"
-                    existing_images.add(full_image)
-                    existing_images.add(tag)  # Also add just the tag for flexible matching
+                    # Add multiple formats for flexible matching
+                    full_path = f"{self.repository}/{image_type}"
+                    
+                    # Full image with registry URL
+                    existing_images.add(f"{self.registry_url}/{full_path}:{tag}")
+                    # Full path without registry URL
+                    existing_images.add(f"{full_path}:{tag}")
+                    # Image type with tag (for when MongoDB stores just "environment" as repository)
+                    existing_images.add(f"{image_type}:{tag}")
+                    # Just the tag for flexible matching
+                    existing_images.add(tag)
                 
                 self.logger.info(f"Found {len(tags)} existing {image_type} tags")
                 
@@ -213,9 +221,20 @@ class UnusedReferencesFinder:
             
             self.logger.info(f"Total image references found in MongoDB: {len(all_references)}")
             
+            # Log a few samples from MongoDB for debugging
+            if all_references:
+                sample_refs = all_references[:3]
+                for ref in sample_refs:
+                    self.logger.debug(f"Sample MongoDB ref - full_image: {ref.full_image}, tag: {ref.tag}, repository: {ref.repository}")
+            
             # Get existing images from Docker registry
             existing_images = self.get_existing_images_from_registry()
             self.logger.info(f"Total existing images in Docker registry: {len(existing_images)}")
+            
+            # Log a few samples for debugging
+            if existing_images:
+                sample_images = list(existing_images)[:5]
+                self.logger.debug(f"Sample existing images: {sample_images}")
             
             # Find unused references
             unused_references = []
@@ -232,6 +251,8 @@ class UnusedReferencesFinder:
                 if image_exists:
                     used_references.append(ref)
                 else:
+                    # Debug logging for false negatives
+                    self.logger.debug(f"Image not found - full_image: {ref.full_image}, tag: {ref.tag}, repository: {ref.repository}")
                     unused_references.append(ref)
             
             self.logger.info(f"Found {len(unused_references)} unused references and {len(used_references)} used references")
