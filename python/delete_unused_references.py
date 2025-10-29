@@ -108,9 +108,13 @@ class UnusedReferencesFinder:
                 doc_id = str(doc.get('_id', ''))
                 
                 # Extract image references from each pattern
+                # Only process .tag patterns to avoid duplicates (repository field is derived from tag field)
                 for pattern in field_patterns:
+                    if not pattern.endswith('.tag'):
+                        continue  # Skip non-tag patterns
+                    
                     tag_field = pattern
-                    repo_field = pattern.replace('.tag', '.repository').replace('.repository', '.tag')
+                    repo_field = pattern[:-4] + '.repository'  # Replace '.tag' with '.repository'
                     
                     # Get tag value
                     tag_value = self._get_nested_value(doc, tag_field)
@@ -283,8 +287,7 @@ class UnusedReferencesFinder:
                 'full_image': ref.full_image,
                 'collection': ref.collection,
                 'document_id': ref.document_id,
-                'field_path': ref.field_path,
-                'context': ref.context
+                'field_path': ref.field_path
             })
         
         used_details = []
@@ -295,8 +298,7 @@ class UnusedReferencesFinder:
                 'full_image': ref.full_image,
                 'collection': ref.collection,
                 'document_id': ref.document_id,
-                'field_path': ref.field_path,
-                'context': ref.context
+                'field_path': ref.field_path
             })
         
         report = {
@@ -343,15 +345,15 @@ class UnusedReferencesFinder:
                     try:
                         # Build query based on the field path and document ID
                         try:
-                            doc_id = ObjectId(ref.context.get('document_id'))
+                            doc_id = ObjectId(ref.document_id)
                         except (TypeError, ValueError) as e:
-                            self.logger.error(f"Invalid document ID {ref.context.get('document_id')}: {e}")
+                            self.logger.error(f"Invalid document ID {ref.document_id}: {e}")
                             continue
                         
                         query = {"_id": doc_id}
                         
                         # For safety, also match on the specific field to ensure we're deleting the right record
-                        if 'tag_field_value' in ref.context and ref.context['tag_field_value']:
+                        if ref.tag:
                             # Add the tag field to the query for extra safety
                             field_parts = ref.field_path.split('.')
                             if len(field_parts) >= 2:
@@ -360,7 +362,7 @@ class UnusedReferencesFinder:
                                 for part in field_parts[:-1]:
                                     current_level[part] = {}
                                     current_level = current_level[part]
-                                current_level[field_parts[-1]] = ref.context['tag_field_value']
+                                current_level[field_parts[-1]] = ref.tag
                                 query.update(nested_query)
                         
                         # Delete the document
@@ -394,6 +396,9 @@ class UnusedReferencesFinder:
             unused_refs = []
             for ref_data in report.get('unused_references', []):
                 # Reconstruct ImageReference object from the report data
+                # Context is optional (for backward compatibility with old reports)
+                context = ref_data.get('context', {})
+                
                 ref = ImageReference(
                     tag=ref_data['tag'],
                     repository=ref_data['repository'],
@@ -401,7 +406,7 @@ class UnusedReferencesFinder:
                     collection=ref_data['collection'],
                     document_id=ref_data['document_id'],
                     field_path=ref_data['field_path'],
-                    context=ref_data['context']
+                    context=context
                 )
                 unused_refs.append(ref)
             
