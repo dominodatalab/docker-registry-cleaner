@@ -80,7 +80,7 @@ class ArchivedTagsFinder:
     """Main class for finding and managing archived tags"""
     
     def __init__(self, registry_url: str, repository: str, process_environments: bool = False, process_models: bool = False,
-                 enable_docker_deletion: bool = False, registry_statefulset_name: str = None, max_workers: int = 4):
+                 enable_docker_deletion: bool = False, registry_statefulset: str = None, max_workers: int = 4):
         self.registry_url = registry_url
         self.repository = repository
         self.max_workers = max_workers
@@ -88,7 +88,7 @@ class ArchivedTagsFinder:
             config_manager, 
             use_pod=config_manager.get_skopeo_use_pod(),
             enable_docker_deletion=enable_docker_deletion,
-            registry_statefulset_name=registry_statefulset_name
+            registry_statefulset=registry_statefulset
         )
         self.logger = get_logger(__name__)
         
@@ -728,7 +728,7 @@ Examples:
     )
     
     parser.add_argument(
-        '--registry-statefulset-name',
+        '--registry-statefulset',
         default='docker-registry',
         help='Name of registry StatefulSet/Deployment to modify for deletion (default: docker-registry)'
     )
@@ -803,7 +803,7 @@ def main():
             process_environments=args.environment,
             process_models=args.model,
             enable_docker_deletion=args.enable_docker_deletion,
-            registry_statefulset_name=args.registry_statefulset_name,
+            registry_statefulset=args.registry_statefulset,
             max_workers=max_workers
         )
         

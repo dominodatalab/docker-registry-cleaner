@@ -84,14 +84,14 @@ class DeactivatedUserEnvFinder:
     """Main class for finding and managing private environments owned by deactivated users"""
     
     def __init__(self, registry_url: str, repository: str,
-                 enable_docker_deletion: bool = False, registry_statefulset_name: str = None):
+                 enable_docker_deletion: bool = False, registry_statefulset: str = None):
         self.registry_url = registry_url
         self.repository = repository
         self.skopeo_client = SkopeoClient(
             config_manager, 
             use_pod=config_manager.get_skopeo_use_pod(),
             enable_docker_deletion=enable_docker_deletion,
-            registry_statefulset_name=registry_statefulset_name
+            registry_statefulset=registry_statefulset
         )
         self.logger = get_logger(__name__)
         
@@ -720,7 +720,7 @@ Environment Variables Required:
     )
     
     parser.add_argument(
-        '--registry-statefulset-name',
+        '--registry-statefulset',
         default='docker-registry',
         help='Name of registry StatefulSet/Deployment to modify for deletion (default: docker-registry)'
     )
@@ -772,7 +772,7 @@ def main():
             registry_url, 
             repository,
             enable_docker_deletion=args.enable_docker_deletion,
-            registry_statefulset_name=args.registry_statefulset_name
+            registry_statefulset=args.registry_statefulset
         )
         
         # Handle different operation modes

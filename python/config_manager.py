@@ -403,7 +403,7 @@ class SkopeoClient:
     """Standardized Skopeo client for registry operations"""
     
     def __init__(self, config_manager: ConfigManager, use_pod: bool = False, namespace: str = None,
-                 enable_docker_deletion: bool = False, registry_statefulset_name: str = None):
+                 enable_docker_deletion: bool = False, registry_statefulset: str = None):
         """Initialize SkopeoClient.
         
         Args:
@@ -411,9 +411,9 @@ class SkopeoClient:
             use_pod: If True, run Skopeo commands in a Kubernetes pod
             namespace: Kubernetes namespace (defaults to platform namespace from config)
             enable_docker_deletion: If True, enable registry deletion by treating registry as in-cluster
-            registry_statefulset_name: Name of the registry StatefulSet to modify for deletion.
-                                      Defaults to "docker-registry" if enable_docker_deletion is True.
-                                      Only used when enable_docker_deletion is True.
+            registry_statefulset: Name of the registry StatefulSet to modify for deletion.
+                                  Defaults to "docker-registry" if enable_docker_deletion is True.
+                                  Only used when enable_docker_deletion is True.
         """
         self.config_manager = config_manager
         self.use_pod = use_pod
@@ -425,7 +425,7 @@ class SkopeoClient:
         
         # Registry deletion override settings
         self.enable_docker_deletion = enable_docker_deletion
-        self.registry_statefulset_name = registry_statefulset_name or "docker-registry"
+        self.registry_statefulset = registry_statefulset or "docker-registry"
         
         if use_pod:
             # Initialize Kubernetes client for pod operations
@@ -629,7 +629,7 @@ class SkopeoClient:
         """
         # Check override first
         if self.enable_docker_deletion:
-            logging.info(f"Registry deletion enabled (using statefulset: {self.registry_statefulset_name})")
+            logging.info(f"Registry deletion enabled (using statefulset: {self.registry_statefulset})")
             return True
         
         try:
@@ -696,7 +696,7 @@ class SkopeoClient:
         """
         # Use override statefulset name if deletion is enabled
         if self.enable_docker_deletion:
-            return self.registry_statefulset_name, self.namespace
+            return self.registry_statefulset, self.namespace
         
         url = self.registry_url.split(':')[0]  # Remove port
         parts = url.split('.')
