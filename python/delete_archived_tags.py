@@ -203,6 +203,83 @@ class ArchivedTagsFinder:
             
         finally:
             mongo_client.close()
+
+    def get_in_use_environment_ids(self, env_ids: List[str], rev_ids: List[str]) -> Dict[str, bool]:
+        """Check workspace and workspace_session collections for references to the given
+        environment and environment revision IDs.
+
+        Args:
+            env_ids: Environment ObjectID strings
+            rev_ids: Environment revision ObjectID strings
+
+        Returns:
+            Mapping of ObjectID string -> True if referenced (in use)
+        """
+        in_use: Dict[str, bool] = {}
+        if not env_ids and not rev_ids:
+            return in_use
+
+        mongo_client = get_mongo_client()
+        try:
+            db = mongo_client[config_manager.get_mongo_db()]
+
+            env_object_ids = [ObjectId(eid) for eid in env_ids] if env_ids else []
+            rev_object_ids = [ObjectId(rid) for rid in rev_ids] if rev_ids else []
+
+            # workspace: configTemplate.environmentId
+            if env_object_ids:
+                ws_cursor = db["workspace"].find(
+                    {"configTemplate.environmentId": {"$in": env_object_ids}}, {"configTemplate.environmentId": 1}
+                )
+                for _ in ws_cursor:
+                    # Mark all envs as possibly used; precise which one requires projection aggregation,
+                    # but it's sufficient to mark env_ids as in-use if any doc matches
+                    # We'll resolve exact IDs via separate queries below
+                    pass
+
+                # More precise: fetch distinct environmentId values
+                used_env_ids = db["workspace"].distinct("configTemplate.environmentId", {"configTemplate.environmentId": {"$in": env_object_ids}})
+                for oid in used_env_ids:
+                    in_use[str(oid)] = True
+
+            # workspace_session: environmentId, config.environmentId, computeClusterEnvironmentId,
+            # config.computeClusterProps.computeEnvironmentId
+            if env_object_ids:
+                ws_sess_env_query = {
+                    "$or": [
+                        {"environmentId": {"$in": env_object_ids}},
+                        {"config.environmentId": {"$in": env_object_ids}},
+                        {"computeClusterEnvironmentId": {"$in": env_object_ids}},
+                        {"config.computeClusterProps.computeEnvironmentId": {"$in": env_object_ids}},
+                    ]
+                }
+                used_env_ids = set()
+                used_env_ids.update(db["workspace_session"].distinct("environmentId", ws_sess_env_query))
+                used_env_ids.update(db["workspace_session"].distinct("config.environmentId", ws_sess_env_query))
+                used_env_ids.update(db["workspace_session"].distinct("computeClusterEnvironmentId", ws_sess_env_query))
+                used_env_ids.update(db["workspace_session"].distinct("config.computeClusterProps.computeEnvironmentId", ws_sess_env_query))
+                for oid in used_env_ids:
+                    if oid is not None:
+                        in_use[str(oid)] = True
+
+            # workspace_session: environmentRevisionId, computeClusterEnvironmentRevisionId
+            if rev_object_ids:
+                ws_sess_rev_query = {
+                    "$or": [
+                        {"environmentRevisionId": {"$in": rev_object_ids}},
+                        {"computeClusterEnvironmentRevisionId": {"$in": rev_object_ids}},
+                    ]
+                }
+                used_rev_ids = set()
+                used_rev_ids.update(db["workspace_session"].distinct("environmentRevisionId", ws_sess_rev_query))
+                used_rev_ids.update(db["workspace_session"].distinct("computeClusterEnvironmentRevisionId", ws_sess_rev_query))
+                for oid in used_rev_ids:
+                    if oid is not None:
+                        in_use[str(oid)] = True
+
+            return in_use
+        finally:
+            mongo_client.close()
     
     def list_tags_for_image(self, image: str) -> List[str]:
         """List tags for a specific image using skopeo"""
@@ -860,6 +937,22 @@ def main():
                 logger.info(f"Empty report written to {output_file}")
                 sys.exit(0)
             
+            # Filter out archived environment/revision IDs that are still in use
+            env_ids = [oid for oid in archived_ids if id_to_type_map.get(oid) == 'environment']
+            rev_ids = [oid for oid in archived_ids if id_to_type_map.get(oid) == 'revision']
+            in_use_map = finder.get_in_use_environment_ids(env_ids, rev_ids)
+            if in_use_map:
+                # Keep IDs that are not in use
+                before = len(archived_ids)
+                archived_ids = [oid for oid in archived_ids if oid not in in_use_map]
+                after = len(archived_ids)
+                skipped = before - after
+                logger.info(f"Skipping {skipped} archived environment/revision ObjectIDs still referenced by workspaces/sessions")
+                # Also remove from id_to_type_map
+                for oid in list(id_to_type_map.keys()):
+                    if oid not in archived_ids:
+                        id_to_type_map.pop(oid, None)
+
             logger.info("Finding matching Docker tags...")
             archived_tags = finder.find_matching_tags(archived_ids, id_to_type_map)
             
