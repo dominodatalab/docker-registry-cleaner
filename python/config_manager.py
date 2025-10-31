@@ -438,10 +438,14 @@ class SkopeoClient:
         self._ensure_logged_in()
     
     def _ensure_logged_in(self):
-        """Ensure skopeo is logged in to the registry before operations"""
+        """Ensure skopeo is logged in to the registry before operations
+        
+        Raises:
+            RuntimeError: If authentication fails or is required but credentials are missing
+        """
         if self._logged_in:
             return
-
+        
         try:
             # For ECR, authentication is handled by get_registry_password()
             # For other registries, we'll try to login if we have credentials
@@ -453,8 +457,12 @@ class SkopeoClient:
             logging.info("Skopeo authentication ready")
             
         except Exception as e:
-            logging.warning(f"Failed to authenticate with registry: {e}")
-            # Continue without authentication - some operations might work unauthenticated
+            logging.error(f"Failed to authenticate with registry: {self.registry_url}")
+            logging.error(f"Authentication error: {e}")
+            raise RuntimeError(
+                f"Skopeo authentication failed for registry {self.registry_url}. "
+                f"Cannot proceed without successful authentication. Error: {e}"
+            ) from e
     
     def _login_to_registry(self):
         """Login to the registry using skopeo login"""
