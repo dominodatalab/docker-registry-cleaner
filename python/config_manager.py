@@ -441,7 +441,7 @@ class SkopeoClient:
         """Ensure skopeo is logged in to the registry before operations"""
         if self._logged_in:
             return
-        
+
         try:
             # For ECR, authentication is handled by get_registry_password()
             # For other registries, we'll try to login if we have credentials

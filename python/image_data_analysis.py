@@ -99,6 +99,12 @@ class ImageAnalyzer:
         try:
             # Get tags using standardized client
             tags = self.skopeo_client.list_tags(f"{self.repository}/{image_type}")
+
+            # Skip internal/cache tags
+            original_count = len(tags)
+            tags = [t for t in tags if t != "buildcache"]
+            if len(tags) != original_count:
+                self.logger.info(f"Skipping {original_count - len(tags)} 'buildcache' tag(s) for {image_type}")
             
             # Filter tags by ObjectIDs if provided
             if object_ids:
