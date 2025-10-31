@@ -307,6 +307,17 @@ class UnusedEnvironmentsFinder:
                 obj_id = self.extract_object_id_from_tag(record['compute_environment_docker_tag'])
                 if obj_id:
                     used_ids.add(obj_id)
+
+            # Include workspace_session-derived environment revision tags (user and compute cluster)
+            if 'session_environment_docker_tag' in record and record['session_environment_docker_tag']:
+                obj_id = self.extract_object_id_from_tag(record['session_environment_docker_tag'])
+                if obj_id:
+                    used_ids.add(obj_id)
+
+            if 'session_compute_environment_docker_tag' in record and record['session_compute_environment_docker_tag']:
+                obj_id = self.extract_object_id_from_tag(record['session_compute_environment_docker_tag'])
+                if obj_id:
+                    used_ids.add(obj_id)
         
         # From workload report - extract ObjectIDs from running tags
         for tag in workload_data.keys():
