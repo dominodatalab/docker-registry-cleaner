@@ -15,13 +15,13 @@ Workflow:
 
 Usage examples:
   # Find unused references (dry-run)
-  python find_unused_references.py --registry-url docker-registry:5000 --repository dominodatalab
+  python delete_unused_references.py --registry-url docker-registry:5000 --repository dominodatalab
   
   # Delete unused references directly
-  python find_unused_references.py --apply
+  python delete_unused_references.py --apply
   
   # Delete unused references from pre-generated file
-  python find_unused_references.py --apply --input unused-refs.json
+  python delete_unused_references.py --apply --input unused-refs.json
 """
 
 import argparse
@@ -92,34 +92,29 @@ class UnusedReferencesFinder:
         
         try:
             # Query all documents that might contain image references
-            query = {}
+            # Use $or to match documents with any of the field patterns
+            or_conditions = []
             for pattern in field_patterns:
-                # Build a query that finds documents with these fields
-                field_parts = pattern.split('.')
-                if len(field_parts) >= 2:
-                    # Create a query for nested fields
-                    nested_query = {}
-                    current_level = nested_query
-                    for part in field_parts[:-1]:
-                        current_level[part] = {}
-                        current_level = current_level[part]
-                    current_level[field_parts[-1]] = {"$exists": True}
-                    
-                    # Combine with OR logic for multiple patterns
-                    if '$or' not in query:
-                        query['$or'] = []
-                    query['$or'].append(nested_query)
+                # Use dot notation for nested fields in MongoDB queries
+                or_conditions.append({pattern: {"$exists": True}})
+            
+            query = {"$or": or_conditions} if len(or_conditions) > 1 else or_conditions[0]
             
             self.logger.info(f"Querying {collection_name} for image references...")
+            self.logger.debug(f"Query: {query}")
             cursor = collection.find(query)
             
             for doc in cursor:
                 doc_id = str(doc.get('_id', ''))
                 
                 # Extract image references from each pattern
+                # Only process .tag patterns to avoid duplicates (repository field is derived from tag field)
                 for pattern in field_patterns:
+                    if not pattern.endswith('.tag'):
+                        continue  # Skip non-tag patterns
+                    
                     tag_field = pattern
-                    repo_field = pattern.replace('.tag', '.repository').replace('.repository', '.tag')
+                    repo_field = pattern[:-4] + '.repository'  # Replace '.tag' with '.repository'
                     
                     # Get tag value
                     tag_value = self._get_nested_value(doc, tag_field)
@@ -188,9 +183,17 @@ class UnusedReferencesFinder:
                 tags = self.skopeo_client.list_tags(f"{self.repository}/{image_type}")
                 
                 for tag in tags:
-                    full_image = f"{self.registry_url}/{self.repository}/{image_type}:{tag}"
-                    existing_images.add(full_image)
-                    existing_images.add(tag)  # Also add just the tag for flexible matching
+                    # Add multiple formats for flexible matching
+                    full_path = f"{self.repository}/{image_type}"
+                    
+                    # Full image with registry URL
+                    existing_images.add(f"{self.registry_url}/{full_path}:{tag}")
+                    # Full path without registry URL
+                    existing_images.add(f"{full_path}:{tag}")
+                    # Image type with tag (for when MongoDB stores just "environment" as repository)
+                    existing_images.add(f"{image_type}:{tag}")
+                    # Just the tag for flexible matching
+                    existing_images.add(tag)
                 
                 self.logger.info(f"Found {len(tags)} existing {image_type} tags")
                 
@@ -218,9 +221,20 @@ class UnusedReferencesFinder:
             
             self.logger.info(f"Total image references found in MongoDB: {len(all_references)}")
             
+            # Log a few samples from MongoDB for debugging
+            if all_references:
+                sample_refs = all_references[:3]
+                for ref in sample_refs:
+                    self.logger.debug(f"Sample MongoDB ref - full_image: {ref.full_image}, tag: {ref.tag}, repository: {ref.repository}")
+            
             # Get existing images from Docker registry
             existing_images = self.get_existing_images_from_registry()
             self.logger.info(f"Total existing images in Docker registry: {len(existing_images)}")
+            
+            # Log a few samples for debugging
+            if existing_images:
+                sample_images = list(existing_images)[:5]
+                self.logger.debug(f"Sample existing images: {sample_images}")
             
             # Find unused references
             unused_references = []
@@ -237,6 +251,8 @@ class UnusedReferencesFinder:
                 if image_exists:
                     used_references.append(ref)
                 else:
+                    # Debug logging for false negatives
+                    self.logger.debug(f"Image not found - full_image: {ref.full_image}, tag: {ref.tag}, repository: {ref.repository}")
                     unused_references.append(ref)
             
             self.logger.info(f"Found {len(unused_references)} unused references and {len(used_references)} used references")
@@ -292,8 +308,7 @@ class UnusedReferencesFinder:
                 'full_image': ref.full_image,
                 'collection': ref.collection,
                 'document_id': ref.document_id,
-                'field_path': ref.field_path,
-                'context': ref.context
+                'field_path': ref.field_path
             })
         
         used_details = []
@@ -304,8 +319,7 @@ class UnusedReferencesFinder:
                 'full_image': ref.full_image,
                 'collection': ref.collection,
                 'document_id': ref.document_id,
-                'field_path': ref.field_path,
-                'context': ref.context
+                'field_path': ref.field_path
             })
         
         report = {
@@ -352,15 +366,15 @@ class UnusedReferencesFinder:
                     try:
                         # Build query based on the field path and document ID
                         try:
-                            doc_id = ObjectId(ref.context.get('document_id'))
+                            doc_id = ObjectId(ref.document_id)
                         except (TypeError, ValueError) as e:
-                            self.logger.error(f"Invalid document ID {ref.context.get('document_id')}: {e}")
+                            self.logger.error(f"Invalid document ID {ref.document_id}: {e}")
                             continue
                         
                         query = {"_id": doc_id}
                         
                         # For safety, also match on the specific field to ensure we're deleting the right record
-                        if 'tag_field_value' in ref.context and ref.context['tag_field_value']:
+                        if ref.tag:
                             # Add the tag field to the query for extra safety
                             field_parts = ref.field_path.split('.')
                             if len(field_parts) >= 2:
@@ -369,7 +383,7 @@ class UnusedReferencesFinder:
                                 for part in field_parts[:-1]:
                                     current_level[part] = {}
                                     current_level = current_level[part]
-                                current_level[field_parts[-1]] = ref.context['tag_field_value']
+                                current_level[field_parts[-1]] = ref.tag
                                 query.update(nested_query)
                         
                         # Delete the document
@@ -403,6 +417,9 @@ class UnusedReferencesFinder:
             unused_refs = []
             for ref_data in report.get('unused_references', []):
                 # Reconstruct ImageReference object from the report data
+                # Context is optional (for backward compatibility with old reports)
+                context = ref_data.get('context', {})
+                
                 ref = ImageReference(
                     tag=ref_data['tag'],
                     repository=ref_data['repository'],
@@ -410,7 +427,7 @@ class UnusedReferencesFinder:
                     collection=ref_data['collection'],
                     document_id=ref_data['document_id'],
                     field_path=ref_data['field_path'],
-                    context=ref_data['context']
+                    context=context
                 )
                 unused_refs.append(ref)
             
@@ -517,22 +534,22 @@ def parse_arguments():
         epilog="""
 Examples:
   # Find unused references (dry-run)
-  python find_unused_references.py
+  python delete_unused_references.py
 
   # Override registry settings
-  python find_unused_references.py --registry-url registry.example.com --repository my-repo
+  python delete_unused_references.py --registry-url registry.example.com --repository my-repo
 
   # Custom output file
-  python find_unused_references.py --output unused-refs.json
+  python delete_unused_references.py --output unused-refs.json
 
   # Delete unused references directly (requires confirmation)
-  python find_unused_references.py --apply
+  python delete_unused_references.py --apply
 
   # Delete unused references from pre-generated file
-  python find_unused_references.py --apply --input unused-refs.json
+  python delete_unused_references.py --apply --input unused-refs.json
 
   # Force deletion without confirmation
-  python find_unused_references.py --apply --force
+  python delete_unused_references.py --apply --force
         """
     )
     

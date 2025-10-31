@@ -78,14 +78,14 @@ class UnusedEnvironmentsFinder:
     """Main class for finding and managing unused environment tags"""
     
     def __init__(self, registry_url: str, repository: str, recent_days: Optional[int] = None,
-                 enable_docker_deletion: bool = False, registry_statefulset_name: str = None):
+                 enable_docker_deletion: bool = False, registry_statefulset: str = None):
         self.registry_url = registry_url
         self.repository = repository
         self.skopeo_client = SkopeoClient(
             config_manager, 
             use_pod=config_manager.get_skopeo_use_pod(),
             enable_docker_deletion=enable_docker_deletion,
-            registry_statefulset_name=registry_statefulset_name
+            registry_statefulset=registry_statefulset
         )
         self.logger = get_logger(__name__)
         
@@ -299,6 +299,23 @@ class UnusedEnvironmentsFinder:
             
             if 'project_default_environment_docker_tag' in record:
                 obj_id = self.extract_object_id_from_tag(record['project_default_environment_docker_tag'])
+                if obj_id:
+                    used_ids.add(obj_id)
+
+            # Include distributed compute cluster environment usage if present
+            if 'compute_environment_docker_tag' in record and record['compute_environment_docker_tag']:
+                obj_id = self.extract_object_id_from_tag(record['compute_environment_docker_tag'])
+                if obj_id:
+                    used_ids.add(obj_id)
+
+            # Include workspace_session-derived environment revision tags (user and compute cluster)
+            if 'session_environment_docker_tag' in record and record['session_environment_docker_tag']:
+                obj_id = self.extract_object_id_from_tag(record['session_environment_docker_tag'])
+                if obj_id:
+                    used_ids.add(obj_id)
+
+            if 'session_compute_environment_docker_tag' in record and record['session_compute_environment_docker_tag']:
+                obj_id = self.extract_object_id_from_tag(record['session_compute_environment_docker_tag'])
                 if obj_id:
                     used_ids.add(obj_id)
         
@@ -527,7 +544,8 @@ class UnusedEnvironmentsFinder:
             
             for tag in tags:
                 for obj_id in unused_set:
-                    if obj_id in tag:
+                    # Use prefix matching (not substring) since tags format is: <objectid>-<version/revision>
+                    if tag.startswith(obj_id + '-') or tag == obj_id:
                         full_image = f"{self.registry_url}/{self.repository}/{image_type}:{tag}"
                         env_info = UnusedEnvInfo(
                             object_id=obj_id,
@@ -547,6 +565,10 @@ class UnusedEnvironmentsFinder:
         This method uses ImageAnalyzer to properly account for shared layers.
         Only layers that would have no remaining references after deletion are counted.
         
+        IMPORTANT: This analyzes ALL images in the registry (not just unused ones)
+        to get accurate reference counts. This ensures we don't overestimate freed space
+        by accounting for shared layers between unused and used images.
+        
         Args:
             unused_tags: List of unused environment tags to analyze
             
@@ -557,18 +579,18 @@ class UnusedEnvironmentsFinder:
             return 0
         
         try:
-            self.logger.info("Analyzing Docker images to calculate freed space...")
+            max_workers = config_manager.get_max_workers()
+            self.logger.info(f"Analyzing ALL Docker images to calculate accurate freed space (using {max_workers} workers)...")
+            self.logger.info("This analyzes all images (not just unused) to count shared layer references correctly.")
             
             # Create ImageAnalyzer
             analyzer = ImageAnalyzer(self.registry_url, self.repository)
             
-            # Get unique ObjectIDs from unused tags
-            unique_ids = list(set(tag.object_id for tag in unused_tags))
-            
-            # Analyze environment images filtered by unused ObjectIDs
+            # CRITICAL FIX: Analyze ALL images (not just unused ones) to get accurate reference counts
+            # This ensures that shared layers between unused and used images are properly accounted for
             for image_type in self.image_types:
-                self.logger.info(f"Analyzing {image_type} images...")
-                success = analyzer.analyze_image(image_type, object_ids=unique_ids)
+                self.logger.info(f"Analyzing ALL {image_type} images...")
+                success = analyzer.analyze_image(image_type, object_ids=None, max_workers=max_workers)
                 if not success:
                     self.logger.warning(f"Failed to analyze {image_type} images")
             
@@ -664,15 +686,29 @@ class UnusedEnvironmentsFinder:
                     self.logger.warning("Failed to enable registry deletion - continuing anyway")
             
             try:
-                # Delete Docker images directly using skopeo
-                # Track which ObjectIDs were successfully deleted so we only clean up their MongoDB records
-                self.logger.info(f"Deleting {len(unused_tags)} Docker images from registry...")
+                # Deduplicate tags before deletion (a tag may appear multiple times if it contains multiple ObjectIDs)
+                # Build a mapping from unique tags to all their associated ObjectIDs
+                unique_tags = {}  # key: (image_type, tag), value: list of ObjectIDs
+                for tag_info in unused_tags:
+                    key = (tag_info.image_type, tag_info.tag)
+                    if key not in unique_tags:
+                        unique_tags[key] = {
+                            'tag_info': tag_info,
+                            'object_ids': []
+                        }
+                    unique_tags[key]['object_ids'].append(tag_info.object_id)
+                
+                self.logger.info(f"Deleting {len(unique_tags)} unique Docker images from registry ({len(unused_tags)} total references)...")
+                if len(unique_tags) < len(unused_tags):
+                    self.logger.info(f"  Note: {len(unused_tags) - len(unique_tags)} tags contain multiple unused ObjectIDs")
                 
                 deleted_count = 0
                 failed_deletions = []
                 successfully_deleted_object_ids = set()
                 
-                for tag_info in unused_tags:
+                for (image_type, tag), data in unique_tags.items():
+                    tag_info = data['tag_info']
+                    associated_object_ids = data['object_ids']
                     try:
                         self.logger.info(f"  Deleting: {tag_info.full_image}")
                         success = self.skopeo_client.delete_image(
@@ -681,8 +717,12 @@ class UnusedEnvironmentsFinder:
                         )
                         if success:
                             deleted_count += 1
-                            successfully_deleted_object_ids.add(tag_info.object_id)
-                            self.logger.info(f"    ✓ Deleted successfully")
+                            # Add all ObjectIDs associated with this tag
+                            successfully_deleted_object_ids.update(associated_object_ids)
+                            if len(associated_object_ids) > 1:
+                                self.logger.info(f"    ✓ Deleted successfully (contains {len(associated_object_ids)} unused ObjectIDs)")
+                            else:
+                                self.logger.info(f"    ✓ Deleted successfully")
                         else:
                             failed_deletions.append(tag_info.full_image)
                             self.logger.warning(f"    ✗ Failed to delete - MongoDB record will NOT be cleaned")
@@ -937,7 +977,7 @@ Examples:
     )
     
     parser.add_argument(
-        '--registry-statefulset-name',
+        '--registry-statefulset',
         default='docker-registry',
         help='Name of registry StatefulSet/Deployment to modify for deletion (default: docker-registry)'
     )
@@ -987,10 +1027,10 @@ def main():
         # Create finder
         finder = UnusedEnvironmentsFinder(
             registry_url, 
-            repository, 
+            repository,
             recent_days=args.days,
             enable_docker_deletion=args.enable_docker_deletion,
-            registry_statefulset_name=args.registry_statefulset_name
+            registry_statefulset=args.registry_statefulset
         )
         
         # Check if reports need to be generated

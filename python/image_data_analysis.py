@@ -12,6 +12,7 @@ Data Model:
 """
 
 import argparse
+import concurrent.futures
 import sys
 from collections import Counter
 
@@ -55,8 +56,42 @@ class ImageAnalyzer:
         
         return filtered_tags
     
-    def analyze_image(self, image_type: str, object_ids: Optional[List[str]] = None) -> bool:
-        """Analyze a single image type (e.g., 'environment', 'model')
+    def _inspect_single_tag(self, image_type: str, tag: str) -> Optional[Dict]:
+        """Inspect a single tag and return image data
+        
+        Returns:
+            Dict with image_id, repository, tag, digest, and layers_data, or None if inspection fails
+        """
+        try:
+            # Inspect image using standardized client
+            image_info = self.skopeo_client.inspect_image(f"{self.repository}/{image_type}", tag)
+            if not image_info:
+                self.logger.error(f"Failed to inspect image {image_type}:{tag}")
+                return None
+            
+            # Extract image metadata
+            digest = image_info.get('Digest', '')
+            image_id = f"{image_type}:{tag}"
+            layers_data = image_info.get('LayersData', [])
+            
+            return {
+                'image_id': image_id,
+                'repository': f"{self.repository}/{image_type}",
+                'tag': tag,
+                'digest': digest,
+                'layers_data': layers_data
+            }
+        except Exception as e:
+            self.logger.error(f"Error inspecting {image_type}:{tag}: {e}")
+            return None
+    
+    def analyze_image(self, image_type: str, object_ids: Optional[List[str]] = None, max_workers: int = 4) -> bool:
+        """Analyze a single image type (e.g., 'environment', 'model') with parallel tag inspection
+        
+        Args:
+            image_type: Type of image to analyze
+            object_ids: Optional list of ObjectIDs to filter tags
+            max_workers: Number of parallel workers for tag inspection
         
         Returns:
             True if successful, False otherwise
@@ -64,6 +99,12 @@ class ImageAnalyzer:
         try:
             # Get tags using standardized client
             tags = self.skopeo_client.list_tags(f"{self.repository}/{image_type}")
+
+            # Skip internal/cache tags
+            original_count = len(tags)
+            tags = [t for t in tags if t != "buildcache"]
+            if len(tags) != original_count:
+                self.logger.info(f"Skipping {original_count - len(tags)} 'buildcache' tag(s) for {image_type}")
             
             # Filter tags by ObjectIDs if provided
             if object_ids:
@@ -76,32 +117,50 @@ class ImageAnalyzer:
                     self.logger.warning(f"No tags found matching the provided ObjectIDs for image: {image_type}")
                     return False
             
-            self.logger.info(f"Analyzing {len(tags)} tags for {image_type}...")
+            self.logger.info(f"Analyzing {len(tags)} tags for {image_type} (using {max_workers} workers)...")
             
-            for tag in tags:
-                self.logger.info(f"  Processing tag: {tag}...")
+            # Process tags in parallel
+            tag_data_list = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all tag inspection tasks
+                future_to_tag = {
+                    executor.submit(self._inspect_single_tag, image_type, tag): tag
+                    for tag in tags
+                }
                 
-                # Inspect image using standardized client
-                image_info = self.skopeo_client.inspect_image(f"{self.repository}/{image_type}", tag)
-                if not image_info:
-                    self.logger.error(f"Failed to inspect image {image_type}:{tag}")
-                    continue
-                
-                # Extract image metadata
-                digest = image_info.get('Digest', '')
-                image_id = f"{image_type}:{tag}"
+                # Process completed tasks with progress tracking
+                completed = 0
+                total = len(tags)
+                for future in concurrent.futures.as_completed(future_to_tag):
+                    tag = future_to_tag[future]
+                    completed += 1
+                    
+                    try:
+                        tag_data = future.result()
+                        if tag_data:
+                            tag_data_list.append(tag_data)
+                            
+                            # Log progress every 10 tags or at the end
+                            if completed % 10 == 0 or completed == total:
+                                self.logger.info(f"  Progress: {completed}/{total} tags processed ({completed/total*100:.1f}%)")
+                    except Exception as e:
+                        self.logger.error(f"  Error processing {tag}: {e}")
+            
+            self.logger.info(f"Successfully inspected {len(tag_data_list)}/{len(tags)} tags")
+            
+            # Now process the collected data (must be sequential to maintain data integrity)
+            for tag_data in tag_data_list:
+                image_id = tag_data['image_id']
                 
                 # Add image to images dict
                 self.images[image_id] = {
-                    'repository': f"{self.repository}/{image_type}",
-                    'tag': tag,
-                    'digest': digest
+                    'repository': tag_data['repository'],
+                    'tag': tag_data['tag'],
+                    'digest': tag_data['digest']
                 }
                 
                 # Extract layers
-                layers_data = image_info.get('LayersData', [])
-                
-                for order_index, layer in enumerate(layers_data):
+                for order_index, layer in enumerate(tag_data['layers_data']):
                     layer_id = layer['Digest']
                     layer_size = layer['Size']
                     
@@ -340,6 +399,7 @@ Examples:
     )
     
     parser.add_argument("--file", help="File containing ObjectIDs (first column) to filter images")
+    parser.add_argument("--max-workers", type=int, help="Maximum number of parallel workers (default: from config)")
     parser.add_argument("images", nargs="*", help="Images to analyze (default: environment, model)")
     
     args = parser.parse_args()
@@ -347,6 +407,7 @@ Examples:
     # Use config_manager for registry and repository
     registry_url = config_manager.get_registry_url()
     repository = config_manager.get_repository()
+    max_workers = args.max_workers or config_manager.get_max_workers()
     
     # Parse ObjectIDs (typed) from file if provided
     object_ids_map = None
@@ -379,6 +440,7 @@ Examples:
     logger.info(f"Registry: {registry_url}")
     logger.info(f"Repository: {repository}")
     logger.info(f"Images: {', '.join(images)}")
+    logger.info(f"Max Workers: {max_workers}")
     if object_ids_map:
         logger.info(f"Filtering by ObjectIDs from file: {args.file}")
     logger.info("=" * 60)
@@ -395,7 +457,7 @@ Examples:
             per_image_oids = object_ids_map.get(image, [])
         
         logger.info(f"\nAnalyzing image type: {image}")
-        if analyzer.analyze_image(image, per_image_oids):
+        if analyzer.analyze_image(image, per_image_oids, max_workers=max_workers):
             success_count += 1
         logger.info("")
     

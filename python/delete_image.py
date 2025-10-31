@@ -88,7 +88,7 @@ class IntelligentImageDeleter:
     """Main class for intelligent Docker image deletion"""
     
     def __init__(self, registry_url: str = None, repository: str = None, namespace: str = None,
-                 enable_docker_deletion: bool = False, registry_statefulset_name: str = None):
+                 enable_docker_deletion: bool = False, registry_statefulset: str = None):
         self.registry_url = registry_url or config_manager.get_registry_url()
         self.repository = repository or config_manager.get_repository()
         self.namespace = namespace or config_manager.get_platform_namespace()
@@ -100,7 +100,7 @@ class IntelligentImageDeleter:
             config_manager, 
             use_pod=config_manager.get_skopeo_use_pod(),
             enable_docker_deletion=enable_docker_deletion,
-            registry_statefulset_name=registry_statefulset_name
+            registry_statefulset=registry_statefulset
         )
     
     def load_workload_report(self, report_path: str = "workload-report.json") -> Dict:
@@ -475,7 +475,7 @@ def parse_arguments():
         help='Enable registry deletion by treating registry as in-cluster (overrides auto-detection)'
     )
     parser.add_argument(
-        '--registry-statefulset-name',
+        '--registry-statefulset',
         default='docker-registry',
         help='Name of registry StatefulSet/Deployment to modify for deletion (default: docker-registry)'
     )
@@ -553,7 +553,7 @@ def main():
         # Create deleter
         deleter = IntelligentImageDeleter(
             enable_docker_deletion=args.enable_docker_deletion,
-            registry_statefulset_name=args.registry_statefulset_name
+            registry_statefulset=args.registry_statefulset
         )
         
         # Handle direct image deletion if image argument is provided

@@ -55,7 +55,7 @@ All Docker deletion scripts share a standardized interface with these common opt
 | `--region REGION` | AWS region for S3/ECR operations | `us-west-2` |
 | `--generate-reports` | Force regeneration of analysis reports | `false` |
 | `--enable-docker-deletion` | Override registry auto-detection | `false` |
-| `--registry-statefulset-name NAME` | StatefulSet/Deployment name for registry | `docker-registry` |
+| `--registry-statefulset NAME` | StatefulSet/Deployment name for registry | `docker-registry` |
 
 ### Safety by Default
 
@@ -364,7 +364,7 @@ python python/main.py delete_archived_tags --environment --apply --enable-docker
 # Or specify custom statefulset/deployment name
 python python/main.py delete_unused_environments --apply \
   --enable-docker-deletion \
-  --registry-statefulset-name my-custom-registry
+  --registry-statefulset my-custom-registry
 ```
 
 Programmatic usage:
@@ -376,7 +376,7 @@ skopeo_client = SkopeoClient(
     config_manager, 
     use_pod=False,
     enable_docker_deletion=True,
-    registry_statefulset_name="my-custom-registry"
+    registry_statefulset="my-custom-registry"
 )
 ```
 

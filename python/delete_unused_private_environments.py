@@ -84,14 +84,14 @@ class DeactivatedUserEnvFinder:
     """Main class for finding and managing private environments owned by deactivated users"""
     
     def __init__(self, registry_url: str, repository: str,
-                 enable_docker_deletion: bool = False, registry_statefulset_name: str = None):
+                 enable_docker_deletion: bool = False, registry_statefulset: str = None):
         self.registry_url = registry_url
         self.repository = repository
         self.skopeo_client = SkopeoClient(
             config_manager, 
             use_pod=config_manager.get_skopeo_use_pod(),
             enable_docker_deletion=enable_docker_deletion,
-            registry_statefulset_name=registry_statefulset_name
+            registry_statefulset=registry_statefulset
         )
         self.logger = get_logger(__name__)
         
@@ -266,7 +266,8 @@ class DeactivatedUserEnvFinder:
             
             for tag in tags:
                 for obj_id in id_set:
-                    if obj_id in tag:
+                    # Use prefix matching (not substring) since tags format is: <objectid>-<version/revision>
+                    if tag.startswith(obj_id + '-') or tag == obj_id:
                         full_image = f"{self.registry_url}/{self.repository}/{image_type}:{tag}"
                         user_info = user_mapping.get(obj_id, {'email': 'unknown', 'user_id': 'unknown', 'env_name': ''})
                         
@@ -290,6 +291,10 @@ class DeactivatedUserEnvFinder:
         This method uses ImageAnalyzer to properly account for shared layers.
         Only layers that would have no remaining references after deletion are counted.
         
+        IMPORTANT: This analyzes ALL images in the registry (not just deactivated user images)
+        to get accurate reference counts. This ensures we don't overestimate freed space
+        by accounting for shared layers between deactivated user images and other images.
+        
         Args:
             deactivated_user_tags: List of tags to analyze
             
@@ -300,18 +305,18 @@ class DeactivatedUserEnvFinder:
             return 0
         
         try:
-            self.logger.info("Analyzing Docker images to calculate freed space...")
+            max_workers = config_manager.get_max_workers()
+            self.logger.info(f"Analyzing ALL Docker images to calculate accurate freed space (using {max_workers} workers)...")
+            self.logger.info("This analyzes all images (not just deactivated user images) to count shared layer references correctly.")
             
             # Create ImageAnalyzer
             analyzer = ImageAnalyzer(self.registry_url, self.repository)
             
-            # Get unique ObjectIDs from tags
-            unique_ids = list(set(tag.object_id for tag in deactivated_user_tags))
-            
-            # Analyze environment images filtered by ObjectIDs
+            # CRITICAL FIX: Analyze ALL images (not just deactivated user images) to get accurate reference counts
+            # This ensures that shared layers between deactivated user images and other images are properly accounted for
             for image_type in self.image_types:
-                self.logger.info(f"Analyzing {image_type} images...")
-                success = analyzer.analyze_image(image_type, object_ids=unique_ids)
+                self.logger.info(f"Analyzing ALL {image_type} images...")
+                success = analyzer.analyze_image(image_type, object_ids=None, max_workers=max_workers)
                 if not success:
                     self.logger.warning(f"Failed to analyze {image_type} images")
             
@@ -403,15 +408,29 @@ class DeactivatedUserEnvFinder:
                     self.logger.warning("Failed to enable registry deletion - continuing anyway")
             
             try:
-                # Delete Docker images directly using skopeo
-                # Track which ObjectIDs were successfully deleted so we only clean up their MongoDB records
-                self.logger.info(f"Deleting {len(deactivated_user_tags)} Docker images from registry...")
+                # Deduplicate tags before deletion (a tag may appear multiple times if it contains multiple ObjectIDs)
+                # Build a mapping from unique tags to all their associated ObjectIDs
+                unique_tags = {}  # key: (image_type, tag), value: list of ObjectIDs
+                for tag_info in deactivated_user_tags:
+                    key = (tag_info.image_type, tag_info.tag)
+                    if key not in unique_tags:
+                        unique_tags[key] = {
+                            'tag_info': tag_info,
+                            'object_ids': []
+                        }
+                    unique_tags[key]['object_ids'].append(tag_info.object_id)
+                
+                self.logger.info(f"Deleting {len(unique_tags)} unique Docker images from registry ({len(deactivated_user_tags)} total references)...")
+                if len(unique_tags) < len(deactivated_user_tags):
+                    self.logger.info(f"  Note: {len(deactivated_user_tags) - len(unique_tags)} tags contain multiple deactivated user ObjectIDs")
                 
                 deleted_count = 0
                 failed_deletions = []
                 successfully_deleted_object_ids = set()
                 
-                for tag_info in deactivated_user_tags:
+                for (image_type, tag), data in unique_tags.items():
+                    tag_info = data['tag_info']
+                    associated_object_ids = data['object_ids']
                     try:
                         self.logger.info(f"  Deleting: {tag_info.full_image} (user: {tag_info.user_email})")
                         success = self.skopeo_client.delete_image(
@@ -420,8 +439,12 @@ class DeactivatedUserEnvFinder:
                         )
                         if success:
                             deleted_count += 1
-                            successfully_deleted_object_ids.add(tag_info.object_id)
-                            self.logger.info(f"    ✓ Deleted successfully")
+                            # Add all ObjectIDs associated with this tag
+                            successfully_deleted_object_ids.update(associated_object_ids)
+                            if len(associated_object_ids) > 1:
+                                self.logger.info(f"    ✓ Deleted successfully (contains {len(associated_object_ids)} deactivated user ObjectIDs)")
+                            else:
+                                self.logger.info(f"    ✓ Deleted successfully")
                         else:
                             failed_deletions.append(tag_info.full_image)
                             self.logger.warning(f"    ✗ Failed to delete - MongoDB record will NOT be cleaned")
@@ -697,7 +720,7 @@ Environment Variables Required:
     )
     
     parser.add_argument(
-        '--registry-statefulset-name',
+        '--registry-statefulset',
         default='docker-registry',
         help='Name of registry StatefulSet/Deployment to modify for deletion (default: docker-registry)'
     )
@@ -749,7 +772,7 @@ def main():
             registry_url, 
             repository,
             enable_docker_deletion=args.enable_docker_deletion,
-            registry_statefulset_name=args.registry_statefulset_name
+            registry_statefulset=args.registry_statefulset
         )
         
         # Handle different operation modes

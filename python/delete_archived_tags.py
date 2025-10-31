@@ -80,14 +80,15 @@ class ArchivedTagsFinder:
     """Main class for finding and managing archived tags"""
     
     def __init__(self, registry_url: str, repository: str, process_environments: bool = False, process_models: bool = False,
-                 enable_docker_deletion: bool = False, registry_statefulset_name: str = None):
+                 enable_docker_deletion: bool = False, registry_statefulset: str = None, max_workers: int = 4):
         self.registry_url = registry_url
         self.repository = repository
+        self.max_workers = max_workers
         self.skopeo_client = SkopeoClient(
             config_manager, 
             use_pod=config_manager.get_skopeo_use_pod(),
             enable_docker_deletion=enable_docker_deletion,
-            registry_statefulset_name=registry_statefulset_name
+            registry_statefulset=registry_statefulset
         )
         self.logger = get_logger(__name__)
         
@@ -202,6 +203,83 @@ class ArchivedTagsFinder:
             
         finally:
             mongo_client.close()
+
+    def get_in_use_environment_ids(self, env_ids: List[str], rev_ids: List[str]) -> Dict[str, bool]:
+        """Check workspace and workspace_session collections for references to the given
+        environment and environment revision IDs.
+
+        Args:
+            env_ids: Environment ObjectID strings
+            rev_ids: Environment revision ObjectID strings
+
+        Returns:
+            Mapping of ObjectID string -> True if referenced (in use)
+        """
+        in_use: Dict[str, bool] = {}
+        if not env_ids and not rev_ids:
+            return in_use
+
+        mongo_client = get_mongo_client()
+        try:
+            db = mongo_client[config_manager.get_mongo_db()]
+
+            env_object_ids = [ObjectId(eid) for eid in env_ids] if env_ids else []
+            rev_object_ids = [ObjectId(rid) for rid in rev_ids] if rev_ids else []
+
+            # workspace: configTemplate.environmentId
+            if env_object_ids:
+                ws_cursor = db["workspace"].find(
+                    {"configTemplate.environmentId": {"$in": env_object_ids}}, {"configTemplate.environmentId": 1}
+                )
+                for _ in ws_cursor:
+                    # Mark all envs as possibly used; precise which one requires projection aggregation,
+                    # but it's sufficient to mark env_ids as in-use if any doc matches
+                    # We'll resolve exact IDs via separate queries below
+                    pass
+
+                # More precise: fetch distinct environmentId values
+                used_env_ids = db["workspace"].distinct("configTemplate.environmentId", {"configTemplate.environmentId": {"$in": env_object_ids}})
+                for oid in used_env_ids:
+                    in_use[str(oid)] = True
+
+            # workspace_session: environmentId, config.environmentId, computeClusterEnvironmentId,
+            # config.computeClusterProps.computeEnvironmentId
+            if env_object_ids:
+                ws_sess_env_query = {
+                    "$or": [
+                        {"environmentId": {"$in": env_object_ids}},
+                        {"config.environmentId": {"$in": env_object_ids}},
+                        {"computeClusterEnvironmentId": {"$in": env_object_ids}},
+                        {"config.computeClusterProps.computeEnvironmentId": {"$in": env_object_ids}},
+                    ]
+                }
+                used_env_ids = set()
+                used_env_ids.update(db["workspace_session"].distinct("environmentId", ws_sess_env_query))
+                used_env_ids.update(db["workspace_session"].distinct("config.environmentId", ws_sess_env_query))
+                used_env_ids.update(db["workspace_session"].distinct("computeClusterEnvironmentId", ws_sess_env_query))
+                used_env_ids.update(db["workspace_session"].distinct("config.computeClusterProps.computeEnvironmentId", ws_sess_env_query))
+                for oid in used_env_ids:
+                    if oid is not None:
+                        in_use[str(oid)] = True
+
+            # workspace_session: environmentRevisionId, computeClusterEnvironmentRevisionId
+            if rev_object_ids:
+                ws_sess_rev_query = {
+                    "$or": [
+                        {"environmentRevisionId": {"$in": rev_object_ids}},
+                        {"computeClusterEnvironmentRevisionId": {"$in": rev_object_ids}},
+                    ]
+                }
+                used_rev_ids = set()
+                used_rev_ids.update(db["workspace_session"].distinct("environmentRevisionId", ws_sess_rev_query))
+                used_rev_ids.update(db["workspace_session"].distinct("computeClusterEnvironmentRevisionId", ws_sess_rev_query))
+                for oid in used_rev_ids:
+                    if oid is not None:
+                        in_use[str(oid)] = True
+
+            return in_use
+        finally:
+            mongo_client.close()
     
     def list_tags_for_image(self, image: str) -> List[str]:
         """List tags for a specific image using skopeo"""
@@ -230,7 +308,8 @@ class ArchivedTagsFinder:
             
             for tag in tags:
                 for obj_id in archived_set:
-                    if obj_id in tag:
+                    # Use prefix matching (not substring) since tags format is: <objectid>-<version/revision>
+                    if tag.startswith(obj_id + '-') or tag == obj_id:
                         full_image = f"{self.registry_url}/{self.repository}/{image_type}:{tag}"
                         tag_info = ArchivedTagInfo(
                             object_id=obj_id,
@@ -250,6 +329,10 @@ class ArchivedTagsFinder:
         This method uses ImageAnalyzer to properly account for shared layers.
         Only layers that would have no remaining references after deletion are counted.
         
+        IMPORTANT: This analyzes ALL images in the registry (not just archived ones)
+        to get accurate reference counts. This ensures we don't overestimate freed space
+        by accounting for shared layers between archived and non-archived images.
+        
         Args:
             archived_tags: List of archived tags to analyze
             
@@ -260,18 +343,17 @@ class ArchivedTagsFinder:
             return 0
         
         try:
-            self.logger.info("Analyzing Docker images to calculate freed space...")
+            self.logger.info(f"Analyzing ALL Docker images to calculate accurate freed space (using {self.max_workers} workers)...")
+            self.logger.info("This analyzes all images (not just archived) to count shared layer references correctly.")
             
             # Create ImageAnalyzer
             analyzer = ImageAnalyzer(self.registry_url, self.repository)
             
-            # Get unique ObjectIDs from archived tags
-            unique_ids = list(set(tag.object_id for tag in archived_tags))
-            
-            # Analyze images filtered by archived ObjectIDs
+            # CRITICAL FIX: Analyze ALL images (not just archived ones) to get accurate reference counts
+            # This ensures that shared layers between archived and non-archived images are properly accounted for
             for image_type in self.image_types:
-                self.logger.info(f"Analyzing {image_type} images...")
-                success = analyzer.analyze_image(image_type, object_ids=unique_ids)
+                self.logger.info(f"Analyzing ALL {image_type} images...")
+                success = analyzer.analyze_image(image_type, object_ids=None, max_workers=self.max_workers)
                 if not success:
                     self.logger.warning(f"Failed to analyze {image_type} images")
             
@@ -280,7 +362,8 @@ class ArchivedTagsFinder:
             image_ids = [f"{tag.image_type}:{tag.tag}" for tag in archived_tags]
             
             # Calculate freed space using ImageAnalyzer's method
-            # This properly accounts for shared layers
+            # This properly accounts for shared layers - only counts layers that would have
+            # zero references after deletion (i.e., not used by any remaining images)
             total_freed = analyzer.freed_space_if_deleted(image_ids)
             
             self.logger.info(f"Total space that would be freed: {total_freed / (1024**3):.2f} GB")
@@ -355,15 +438,29 @@ class ArchivedTagsFinder:
                     self.logger.warning("Failed to enable registry deletion - continuing anyway")
             
             try:
-                # Delete Docker images directly using skopeo
-                # Track which ObjectIDs were successfully deleted so we only clean up their MongoDB records
-                self.logger.info(f"Deleting {len(archived_tags)} Docker images from registry...")
+                # Deduplicate tags before deletion (a tag may appear multiple times if it contains multiple ObjectIDs)
+                # Build a mapping from unique tags to all their associated ObjectIDs
+                unique_tags = {}  # key: (image_type, tag), value: list of ObjectIDs
+                for tag_info in archived_tags:
+                    key = (tag_info.image_type, tag_info.tag)
+                    if key not in unique_tags:
+                        unique_tags[key] = {
+                            'tag_info': tag_info,
+                            'object_ids': []
+                        }
+                    unique_tags[key]['object_ids'].append(tag_info.object_id)
+                
+                self.logger.info(f"Deleting {len(unique_tags)} unique Docker images from registry ({len(archived_tags)} total references)...")
+                if len(unique_tags) < len(archived_tags):
+                    self.logger.info(f"  Note: {len(archived_tags) - len(unique_tags)} tags contain multiple archived ObjectIDs")
                 
                 deleted_count = 0
                 failed_deletions = []
                 successfully_deleted_object_ids = set()
                 
-                for tag_info in archived_tags:
+                for (image_type, tag), data in unique_tags.items():
+                    tag_info = data['tag_info']
+                    associated_object_ids = data['object_ids']
                     try:
                         self.logger.info(f"  Deleting: {tag_info.full_image}")
                         success = self.skopeo_client.delete_image(
@@ -372,8 +469,12 @@ class ArchivedTagsFinder:
                         )
                         if success:
                             deleted_count += 1
-                            successfully_deleted_object_ids.add(tag_info.object_id)
-                            self.logger.info(f"    ✓ Deleted successfully")
+                            # Add all ObjectIDs associated with this tag
+                            successfully_deleted_object_ids.update(associated_object_ids)
+                            if len(associated_object_ids) > 1:
+                                self.logger.info(f"    ✓ Deleted successfully (contains {len(associated_object_ids)} archived ObjectIDs)")
+                            else:
+                                self.logger.info(f"    ✓ Deleted successfully")
                         else:
                             failed_deletions.append(tag_info.full_image)
                             self.logger.warning(f"    ✗ Failed to delete - MongoDB record will NOT be cleaned")
@@ -704,9 +805,15 @@ Examples:
     )
     
     parser.add_argument(
-        '--registry-statefulset-name',
+        '--registry-statefulset',
         default='docker-registry',
         help='Name of registry StatefulSet/Deployment to modify for deletion (default: docker-registry)'
+    )
+    
+    parser.add_argument(
+        '--max-workers',
+        type=int,
+        help='Maximum number of parallel workers for tag inspection (default: from config)'
     )
     
     return parser.parse_args()
@@ -736,6 +843,7 @@ def main():
     registry_url = args.registry_url or config_manager.get_registry_url()
     repository = args.repository or config_manager.get_repository()
     output_file = args.output or config_manager.get_archived_tags_report_path()
+    max_workers = args.max_workers or config_manager.get_max_workers()
     
     try:
         # Determine operation mode
@@ -758,6 +866,7 @@ def main():
         logger.info("=" * 60)
         logger.info(f"Registry URL: {registry_url}")
         logger.info(f"Repository: {repository}")
+        logger.info(f"Max Workers: {max_workers}")
         
         if use_input_file:
             logger.info(f"Input file: {args.input}")
@@ -771,7 +880,8 @@ def main():
             process_environments=args.environment,
             process_models=args.model,
             enable_docker_deletion=args.enable_docker_deletion,
-            registry_statefulset_name=args.registry_statefulset_name
+            registry_statefulset=args.registry_statefulset,
+            max_workers=max_workers
         )
         
         # Handle different operation modes
@@ -827,6 +937,22 @@ def main():
                 logger.info(f"Empty report written to {output_file}")
                 sys.exit(0)
             
+            # Filter out archived environment/revision IDs that are still in use
+            env_ids = [oid for oid in archived_ids if id_to_type_map.get(oid) == 'environment']
+            rev_ids = [oid for oid in archived_ids if id_to_type_map.get(oid) == 'revision']
+            in_use_map = finder.get_in_use_environment_ids(env_ids, rev_ids)
+            if in_use_map:
+                # Keep IDs that are not in use
+                before = len(archived_ids)
+                archived_ids = [oid for oid in archived_ids if oid not in in_use_map]
+                after = len(archived_ids)
+                skipped = before - after
+                logger.info(f"Skipping {skipped} archived environment/revision ObjectIDs still referenced by workspaces/sessions")
+                # Also remove from id_to_type_map
+                for oid in list(id_to_type_map.keys()):
+                    if oid not in archived_ids:
+                        id_to_type_map.pop(oid, None)
+
             logger.info("Finding matching Docker tags...")
             archived_tags = finder.find_matching_tags(archived_ids, id_to_type_map)
             
