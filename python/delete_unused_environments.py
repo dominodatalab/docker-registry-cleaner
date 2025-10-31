@@ -301,6 +301,12 @@ class UnusedEnvironmentsFinder:
                 obj_id = self.extract_object_id_from_tag(record['project_default_environment_docker_tag'])
                 if obj_id:
                     used_ids.add(obj_id)
+
+            # Include distributed compute cluster environment usage if present
+            if 'compute_environment_docker_tag' in record and record['compute_environment_docker_tag']:
+                obj_id = self.extract_object_id_from_tag(record['compute_environment_docker_tag'])
+                if obj_id:
+                    used_ids.add(obj_id)
         
         # From workload report - extract ObjectIDs from running tags
         for tag in workload_data.keys():
