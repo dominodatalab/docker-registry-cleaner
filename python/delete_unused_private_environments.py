@@ -97,6 +97,60 @@ class DeactivatedUserEnvFinder:
         
         # Image types to scan (only environment images contain environment ObjectIDs)
         self.image_types = ['environment']
+
+    def _check_cloned_revision_chain(self, cloned_rev_id: str, deletion_set: set, environment_revisions_collection, visited: set = None) -> bool:
+        """Recursively verify cloned revision chains are safe: cloned revision and its environment (and nested clones) must be in deletion set."""
+        if visited is None:
+            visited = set()
+        if cloned_rev_id in visited:
+            return True
+        visited.add(cloned_rev_id)
+        if cloned_rev_id not in deletion_set:
+            return False
+        doc = environment_revisions_collection.find_one({"_id": ObjectId(cloned_rev_id)}, {"environmentId": 1, "clonedEnvironmentRevisionId": 1})
+        if not doc:
+            return False
+        env_id = doc.get("environmentId")
+        if env_id is not None and str(env_id) not in deletion_set:
+            return False
+        nested = doc.get("clonedEnvironmentRevisionId")
+        if nested is not None:
+            if not self._check_cloned_revision_chain(str(nested), deletion_set, environment_revisions_collection, visited):
+                return False
+        return True
+
+    def _filter_cloned_dependencies(self, environment_ids: List[str], revision_ids: List[str]) -> Tuple[List[str], List[str]]:
+        """Filter out revisions/environments whose cloned dependencies are not slated for deletion."""
+        if not environment_ids and not revision_ids:
+            return environment_ids, revision_ids
+        deletion_set = set(environment_ids + revision_ids)
+        mongo_client = get_mongo_client()
+        try:
+            db = mongo_client[config_manager.get_mongo_db()]
+            revs = db["environment_revisions"]
+            ids_to_skip = set()
+            # For revisions we plan to delete, ensure their cloned dependency chains are safe
+            cursor = revs.find({"_id": {"$in": [ObjectId(x) for x in revision_ids if len(x) == 24]}}, {"clonedEnvironmentRevisionId": 1, "environmentId": 1})
+            for doc in cursor:
+                rev_id_str = str(doc.get("_id"))
+                cloned = doc.get("clonedEnvironmentRevisionId")
+                if cloned is None:
+                    continue
+                if not self._check_cloned_revision_chain(str(cloned), deletion_set, revs):
+                    ids_to_skip.add(rev_id_str)
+                    env_id = doc.get("environmentId")
+                    if env_id is not None:
+                        ids_to_skip.add(str(env_id))
+            if not ids_to_skip:
+                return environment_ids, revision_ids
+            filtered_env_ids = [e for e in environment_ids if e not in ids_to_skip]
+            filtered_rev_ids = [r for r in revision_ids if r not in ids_to_skip]
+            skipped = (len(environment_ids) - len(filtered_env_ids)) + (len(revision_ids) - len(filtered_rev_ids))
+            if skipped:
+                self.logger.info(f"Filtered out {skipped} environment/revision IDs due to cloned dependencies not in deletion set")
+            return filtered_env_ids, filtered_rev_ids
+        finally:
+            mongo_client.close()
     
     def get_keycloak_client(self) -> KeycloakAdmin:
         """Initialize Keycloak client"""
@@ -230,9 +284,11 @@ class DeactivatedUserEnvFinder:
                 
                 self.logger.info(f"Found {len(revision_ids)} environment revisions for these environments")
             
+            # Apply cloned dependency filtering
+            environment_ids, revision_ids = self._filter_cloned_dependencies(environment_ids, revision_ids)
+            
             # Combine both sets of IDs
             all_ids = list(set(environment_ids + revision_ids))
-            
             self.logger.info(f"Total ObjectIDs to search for: {len(all_ids)}")
             return environment_ids, revision_ids, user_mapping
             
@@ -496,10 +552,16 @@ class DeactivatedUserEnvFinder:
                     if env_ids_to_clean:
                         self.logger.info(f"Cleaning up {len(env_ids_to_clean)} environments_v2 records from MongoDB...")
                         environments_collection = db["environments_v2"]
+                        revisions_collection = db["environment_revisions"]
                         
                         for obj_id_str in env_ids_to_clean:
                             try:
                                 obj_id = ObjectId(obj_id_str)
+                                # Only delete environment if there are no remaining revisions referencing it
+                                remaining_revs = revisions_collection.count_documents({"environmentId": obj_id}, limit=1)
+                                if remaining_revs and remaining_revs > 0:
+                                    self.logger.info(f"  ↪ Skipping environment {obj_id_str} (has remaining environment_revisions)")
+                                    continue
                                 result = environments_collection.delete_one({"_id": obj_id})
                                 if result.deleted_count > 0:
                                     self.logger.info(f"  ✓ Deleted environment: {obj_id_str}")

@@ -670,10 +670,16 @@ class ArchivedTagsFinder:
                         # Clean up environment records
                         if 'environment' in ids_by_type:
                             environments_collection = db["environments_v2"]
+                            revisions_collection_for_envs = db["environment_revisions"]
                             self.logger.info(f"Cleaning up {len(ids_by_type['environment'])} environment records from MongoDB...")
                             for obj_id_str in ids_by_type['environment']:
                                 try:
                                     obj_id = ObjectId(obj_id_str)
+                                    # Only delete environment if there are no remaining revisions referencing it
+                                    remaining_revs = revisions_collection_for_envs.count_documents({"environmentId": obj_id}, limit=1)
+                                    if remaining_revs and remaining_revs > 0:
+                                        self.logger.info(f"  ↪ Skipping environment {obj_id_str} (has remaining environment_revisions)")
+                                        continue
                                     result = environments_collection.delete_one({"_id": obj_id})
                                     if result.deleted_count > 0:
                                         self.logger.info(f"  ✓ Deleted environment: {obj_id_str}")
@@ -702,10 +708,16 @@ class ArchivedTagsFinder:
                         # Clean up model records
                         if 'model' in ids_by_type:
                             models_collection = db["models"]
+                            versions_collection_for_models = db["model_versions"]
                             self.logger.info(f"Cleaning up {len(ids_by_type['model'])} model records from MongoDB...")
                             for obj_id_str in ids_by_type['model']:
                                 try:
                                     obj_id = ObjectId(obj_id_str)
+                                    # Only delete model if there are no remaining versions referencing it
+                                    remaining_versions = versions_collection_for_models.count_documents({"modelId.value": obj_id}, limit=1)
+                                    if remaining_versions and remaining_versions > 0:
+                                        self.logger.info(f"  ↪ Skipping model {obj_id_str} (has remaining model_versions)")
+                                        continue
                                     result = models_collection.delete_one({"_id": obj_id})
                                     if result.deleted_count > 0:
                                         self.logger.info(f"  ✓ Deleted model: {obj_id_str}")

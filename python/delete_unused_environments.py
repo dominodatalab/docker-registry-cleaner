@@ -93,6 +93,60 @@ class UnusedEnvironmentsFinder:
         self.image_types = ['environment']
         # Days window to consider a run as recent (None means ignore recency filter)
         self.recent_days = recent_days
+
+    def _check_cloned_revision_chain(self, cloned_rev_id: str, deletion_set: set, environment_revisions_collection, visited: Optional[set] = None) -> bool:
+        """Recursively verify cloned revision chains are safe: cloned revision and its environment (and nested clones) must be in deletion set."""
+        if visited is None:
+            visited = set()
+        if cloned_rev_id in visited:
+            return True
+        visited.add(cloned_rev_id)
+        if cloned_rev_id not in deletion_set:
+            return False
+        doc = environment_revisions_collection.find_one({"_id": ObjectId(cloned_rev_id)}, {"environmentId": 1, "clonedEnvironmentRevisionId": 1})
+        if not doc:
+            return False
+        env_id = doc.get("environmentId")
+        if env_id is not None and str(env_id) not in deletion_set:
+            return False
+        nested = doc.get("clonedEnvironmentRevisionId")
+        if nested is not None:
+            if not self._check_cloned_revision_chain(str(nested), deletion_set, environment_revisions_collection, visited):
+                return False
+        return True
+
+    def _filter_cloned_dependencies(self, unused_envs: List[UnusedEnvInfo]) -> List[UnusedEnvInfo]:
+        """Filter out revisions/environments whose cloned dependencies are not slated for deletion."""
+        if not unused_envs:
+            return unused_envs
+        deletion_set = set(e.object_id for e in unused_envs)
+        mongo_client = get_mongo_client()
+        try:
+            db = mongo_client[config_manager.get_mongo_db()]
+            revs = db["environment_revisions"]
+            ids_to_skip = set()
+            # Load cloned info for candidates
+            cursor = revs.find({"_id": {"$in": [ObjectId(x) for x in deletion_set if len(x) == 24]}}, {"clonedEnvironmentRevisionId": 1, "environmentId": 1})
+            for doc in cursor:
+                rev_id_str = str(doc.get("_id"))
+                cloned = doc.get("clonedEnvironmentRevisionId")
+                if cloned is None:
+                    continue
+                # Require cloned chain to be safe
+                if not self._check_cloned_revision_chain(str(cloned), deletion_set, revs):
+                    ids_to_skip.add(rev_id_str)
+                    env_id = doc.get("environmentId")
+                    if env_id is not None:
+                        ids_to_skip.add(str(env_id))
+            if not ids_to_skip:
+                return unused_envs
+            filtered = [e for e in unused_envs if e.object_id not in ids_to_skip]
+            skipped = len(unused_envs) - len(filtered)
+            if skipped:
+                self.logger.info(f"Filtered out {skipped} environment/revision IDs due to cloned dependencies not in deletion set")
+            return filtered
+        finally:
+            mongo_client.close()
     
     def extract_object_id_from_tag(self, tag: str) -> str:
         """Extract ObjectID from a Docker tag.
@@ -762,13 +816,17 @@ class UnusedEnvironmentsFinder:
                                     self.logger.info(f"  ✓ Deleted environment_revision: {obj_id_str}")
                                     deletion_results['mongo_environment_revisions_cleaned'] += 1
                                 else:
-                                    # If not found in revisions, try environments_v2
-                                    result = environments_collection.delete_one({"_id": obj_id})
-                                    if result.deleted_count > 0:
-                                        self.logger.info(f"  ✓ Deleted environment: {obj_id_str}")
-                                        deletion_results['mongo_environments_cleaned'] += 1
+                                    # If not found in revisions, only delete environment if no revisions remain
+                                    remaining_revs = environment_revisions_collection.count_documents({"environmentId": obj_id}, limit=1)
+                                    if remaining_revs and remaining_revs > 0:
+                                        self.logger.info(f"  ↪ Skipping environment {obj_id_str} (has remaining environment_revisions)")
                                     else:
-                                        self.logger.warning(f"  ✗ Record not found in either collection: {obj_id_str}")
+                                        result = environments_collection.delete_one({"_id": obj_id})
+                                        if result.deleted_count > 0:
+                                            self.logger.info(f"  ✓ Deleted environment: {obj_id_str}")
+                                            deletion_results['mongo_environments_cleaned'] += 1
+                                        else:
+                                            self.logger.warning(f"  ✗ Record not found in either collection: {obj_id_str}")
                             except Exception as e:
                                 self.logger.error(f"  ✗ Error deleting MongoDB record {obj_id_str}: {e}")
                     finally:
