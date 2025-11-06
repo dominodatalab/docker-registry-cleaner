@@ -804,13 +804,24 @@ class UnusedEnvironmentsFinder:
                         # First, try to delete from environment_revisions
                         self.logger.info(f"Cleaning up MongoDB records for {len(object_ids_to_clean)} successfully deleted images...")
                         environment_revisions_collection = db["environment_revisions"]
+                        model_versions_collection = db["model_versions"]
+                        models_collection = db["models"]
                         environments_collection = db["environments_v2"]
+                        models_collection_for_envs = db["models"]
                         
                         for obj_id_str in object_ids_to_clean:
                             try:
                                 obj_id = ObjectId(obj_id_str)
                                 
-                                # Try to delete from environment_revisions first
+                                # Try to delete from environment_revisions first, but only if not referenced by versions of unarchived models
+                                # Find distinct model IDs that reference this revision
+                                model_ids = model_versions_collection.distinct("modelId.value", {"environmentRevisionId": obj_id})
+                                if model_ids:
+                                    unarchived_ref = models_collection.count_documents({"_id": {"$in": model_ids}, "isArchived": False}, limit=1)
+                                    if unarchived_ref and unarchived_ref > 0:
+                                        self.logger.info(f"  ↪ Skipping environment_revision {obj_id_str} (referenced by versions of unarchived models)")
+                                        # Do not attempt to delete from revisions; continue to next ID
+                                        continue
                                 result = environment_revisions_collection.delete_one({"_id": obj_id})
                                 if result.deleted_count > 0:
                                     self.logger.info(f"  ✓ Deleted environment_revision: {obj_id_str}")
@@ -821,12 +832,17 @@ class UnusedEnvironmentsFinder:
                                     if remaining_revs and remaining_revs > 0:
                                         self.logger.info(f"  ↪ Skipping environment {obj_id_str} (has remaining environment_revisions)")
                                     else:
-                                        result = environments_collection.delete_one({"_id": obj_id})
-                                        if result.deleted_count > 0:
-                                            self.logger.info(f"  ✓ Deleted environment: {obj_id_str}")
-                                            deletion_results['mongo_environments_cleaned'] += 1
+                                        # Ensure no non-archived models reference this environment
+                                        referencing_models = models_collection_for_envs.count_documents({"isArchived": False, "environmentId": obj_id}, limit=1)
+                                        if referencing_models and referencing_models > 0:
+                                            self.logger.info(f"  ↪ Skipping environment {obj_id_str} (referenced by non-archived models)")
                                         else:
-                                            self.logger.warning(f"  ✗ Record not found in either collection: {obj_id_str}")
+                                            result = environments_collection.delete_one({"_id": obj_id})
+                                            if result.deleted_count > 0:
+                                                self.logger.info(f"  ✓ Deleted environment: {obj_id_str}")
+                                                deletion_results['mongo_environments_cleaned'] += 1
+                                            else:
+                                                self.logger.warning(f"  ✗ Record not found in either collection: {obj_id_str}")
                             except Exception as e:
                                 self.logger.error(f"  ✗ Error deleting MongoDB record {obj_id_str}: {e}")
                     finally:
