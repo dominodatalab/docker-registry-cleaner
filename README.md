@@ -115,6 +115,24 @@ python python/main.py delete_unused_environments --apply --backup --s3-bucket my
 python python/main.py delete_unused_environments --generate-reports --apply --force
 ```
 
+#### Archive Unused Environments (Mongo-only)
+
+Marks unused environments as archived in MongoDB by setting `isArchived = true` on `environments_v2` documents, without touching Docker images:
+
+```bash
+# Dry-run: list environments that would be archived
+python python/main.py archive_unused_environments
+
+# Consider only recent runs (e.g., last 30 days) as in-use
+python python/main.py archive_unused_environments --days 30
+
+# Actually mark unused environments as archived (with confirmation)
+python python/main.py archive_unused_environments --apply
+
+# Apply without confirmation
+python python/main.py archive_unused_environments --apply --force
+```
+
 #### Delete Deactivated User Private Environments
 
 ```bash
@@ -304,17 +322,18 @@ python python/main.py --config
 
 All deletion scripts follow the same pattern and support common options:
 
+- **`python/delete_image.py`** - Intelligent deletion based on workload analysis
 - **`python/delete_archived_tags.py`** - Delete archived environments and/or models
 - **`python/delete_unused_environments.py`** - Delete environments not used anywhere
+- **`python/archive_unused_environments.py`** - Mark unused environments as archived in MongoDB (`isArchived = true` on `environments_v2`)
 - **`python/delete_unused_private_environments.py`** - Delete private environments owned by deactivated users
 - **`python/delete_unused_references.py`** - Delete MongoDB references to non-existent images
-- **`python/delete_image.py`** - Intelligent deletion based on workload analysis
 
 ### Analysis Scripts
 
-- **`python/inspect_workload.py`** - Analyze Kubernetes workloads
-- **`python/image_data_analysis.py`** - Analyze registry contents with shared layer detection
 - **`python/extract_metadata.py`** - Extract MongoDB metadata
+- **`python/image_data_analysis.py`** - Analyze registry contents with shared layer detection
+- **`python/inspect_workload.py`** - Analyze Kubernetes workloads
 - **`python/reports.py`** - Generate tag usage reports
 
 ### Utility Scripts

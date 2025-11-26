@@ -12,32 +12,34 @@ from logging_utils import setup_logging
 
 def load_script_paths():
     return {
-        "delete_all_unused_environments": None,  # Special: runs multiple scripts
-        "delete_archived_tags": "delete_archived_tags.py",
-        "delete_image": "delete_image.py",
-        "delete_unused_environments": "delete_unused_environments.py",
-        "delete_unused_private_environments": "delete_unused_private_environments.py",
-        "delete_unused_references": "delete_unused_references.py",
         "extract_metadata": "extract_metadata.py",
         "image_data_analysis": "image_data_analysis.py",
         "inspect_workload": "inspect_workload.py",
         "mongo_cleanup": "mongo_cleanup.py",
         "reports": "reports.py",
+        "delete_image": "delete_image.py",  
+        "delete_archived_tags": "delete_archived_tags.py",
+        "archive_unused_environments": "archive_unused_environments.py",
+        "delete_unused_environments": "delete_unused_environments.py",
+        "delete_unused_private_environments": "delete_unused_private_environments.py",
+        "delete_all_unused_environments": None, # Special: runs multiple scripts
+        "delete_unused_references": "delete_unused_references.py",
     }
 
 def get_script_descriptions():
     return {
-        "delete_all_unused_environments": "Run comprehensive unused environment cleanup (unused environments + deactivated user private environments)",
-        "delete_archived_tags": "Find and optionally delete Docker tags associated with archived environments and/or models",
-        "delete_image": "Delete specific Docker image or analyze/delete unused images (default: dry-run)",
-        "delete_unused_environments": "Find and optionally delete environments not used in workspaces, models, or project defaults (auto-generates reports)",
-        "delete_unused_private_environments": "Find and optionally delete private environments owned by deactivated Keycloak users",
-        "delete_unused_references": "Find and optionally delete MongoDB references to non-existent Docker images",
         "extract_metadata": "Extract metadata from MongoDB",
         "image_data_analysis": "Analyze container images and generate reports",
         "inspect_workload": "Inspect Kubernetes workload and pod information",
         "mongo_cleanup": "Simple tag/ObjectID-based Mongo cleanup (consider using delete_unused_references for advanced features)",
         "reports": "Generate tag usage reports from analysis data (auto-generates metadata)",
+        "delete_image": "Delete specific Docker image or analyze/delete unused images",
+        "delete_archived_tags": "Find and optionally delete Docker tags associated with archived environments and/or models",
+        "archive_unused_environments": "Mark unused environments as archived in MongoDB",
+        "delete_unused_environments": "Find and optionally delete environments not used in workspaces, models, or project defaults (auto-generates reports)",
+        "delete_unused_private_environments": "Find and optionally delete private environments owned by deactivated Keycloak users",
+        "delete_all_unused_environments": "Run comprehensive unused environment cleanup (unused environments + deactivated user private environments)",
+        "delete_unused_references": "Find and optionally delete MongoDB references to non-existent Docker images",
     }
 
 def run_script(script_path, args, dry_run=True):
@@ -156,17 +158,18 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Available scripts:
-  delete_all_unused_environments     - Run comprehensive unused environment cleanup (unused environments + deactivated user private environments)
-  delete_archived_tags               - Find and optionally delete Docker tags associated with archived environments and/or models
-  delete_image [image]               - Delete specific Docker image or analyze/delete unused images (default: dry-run)
-  delete_unused_environments         - Find and optionally delete environments not used in workspaces, models, or project defaults (auto-generates reports)
-  delete_unused_private_environments - Find and optionally delete private environments owned by deactivated Keycloak users
-  delete_unused_references           - Find and optionally delete MongoDB references to non-existent Docker images
   extract_metadata                   - Extract metadata from MongoDB
   image_data_analysis                - Analyze container images and generate reports
   inspect_workload                   - Inspect Kubernetes workload and pod information
   mongo_cleanup                      - Simple tag/ObjectID-based Mongo cleanup
   reports                            - Generate tag usage reports from analysis data (auto-generates metadata)
+  delete_image [image]               - Delete specific Docker image or analyze/delete unused images
+  delete_archived_tags               - Find and optionally delete Docker tags associated with archived environments and/or models
+  archive_unused_environments        - Mark unused environments as archived in MongoDB
+  delete_unused_environments         - Find and optionally delete environments not used in workspaces, models, or project defaults (auto-generates reports)
+  delete_unused_private_environments - Find and optionally delete private environments owned by deactivated Keycloak users
+  delete_all_unused_environments     - Run comprehensive unused environment cleanup (unused environments + deactivated user private environments)
+  delete_unused_references           - Find and optionally delete MongoDB references to non-existent Docker images
 
 Configuration:
   The tool uses config.yaml for default settings. You can also use environment variables:
