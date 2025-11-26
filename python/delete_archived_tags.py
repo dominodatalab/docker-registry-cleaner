@@ -533,7 +533,9 @@ class ArchivedTagsFinder:
             self.logger.error(traceback.format_exc())
             return 0
     
-    def delete_archived_tags(self, archived_tags: List[ArchivedTagInfo], backup: bool = False, s3_bucket: str = None, region: str = 'us-west-2') -> Dict[str, int]:
+    def delete_archived_tags(self, archived_tags: List[ArchivedTagInfo], backup: bool = False,
+                             s3_bucket: str = None, region: str = 'us-west-2',
+                             mongo_cleanup: bool = False) -> Dict[str, int]:
         """Delete archived Docker images and clean up MongoDB records
         
         Args:
@@ -648,121 +650,122 @@ class ArchivedTagsFinder:
                     self.logger.warning("MongoDB records for failed deletions will be preserved.")
                 
                 # Clean up MongoDB records - ONLY for successfully deleted Docker images
-                # Group ObjectIDs by their record type
-                ids_by_type = {}
-                for tag in archived_tags:
-                    if tag.object_id in successfully_deleted_object_ids:
-                        record_type = tag.record_type
-                        if record_type not in ids_by_type:
-                            ids_by_type[record_type] = []
-                        ids_by_type[record_type].append(tag.object_id)
-                
-                # Remove duplicates
-                for record_type in ids_by_type:
-                    ids_by_type[record_type] = list(set(ids_by_type[record_type]))
-                
-                if ids_by_type:
-                    mongo_client = get_mongo_client()
+                if mongo_cleanup:
+                    # Group ObjectIDs by their record type
+                    ids_by_type = {}
+                    for tag in archived_tags:
+                        if tag.object_id in successfully_deleted_object_ids:
+                            record_type = tag.record_type
+                            if record_type not in ids_by_type:
+                                ids_by_type[record_type] = []
+                            ids_by_type[record_type].append(tag.object_id)
                     
-                    try:
-                        db = mongo_client[config_manager.get_mongo_db()]
+                    # Remove duplicates
+                    for record_type in ids_by_type:
+                        ids_by_type[record_type] = list(set(ids_by_type[record_type]))
+                    
+                    if ids_by_type:
+                        mongo_client = get_mongo_client()
                         
-                        # Clean up environment records
-                        if 'environment' in ids_by_type:
-                            environments_collection = db["environments_v2"]
-                            revisions_collection_for_envs = db["environment_revisions"]
-                            models_collection_for_envs = db["models"]
-                            self.logger.info(f"Cleaning up {len(ids_by_type['environment'])} environment records from MongoDB...")
-                            for obj_id_str in ids_by_type['environment']:
-                                try:
-                                    obj_id = ObjectId(obj_id_str)
-                                    # Only delete environment if there are no remaining revisions referencing it
-                                    remaining_revs = revisions_collection_for_envs.count_documents({"environmentId": obj_id}, limit=1)
-                                    if remaining_revs and remaining_revs > 0:
-                                        self.logger.info(f"  ↪ Skipping environment {obj_id_str} (has remaining environment_revisions)")
-                                        continue
-                                    # Ensure no non-archived models reference this environment
-                                    referencing_models = models_collection_for_envs.count_documents({"isArchived": False, "environmentId": obj_id}, limit=1)
-                                    if referencing_models and referencing_models > 0:
-                                        self.logger.info(f"  ↪ Skipping environment {obj_id_str} (referenced by non-archived models)")
-                                        continue
-                                    result = environments_collection.delete_one({"_id": obj_id})
-                                    if result.deleted_count > 0:
-                                        self.logger.info(f"  ✓ Deleted environment: {obj_id_str}")
-                                        deletion_results['mongo_records_cleaned'] += 1
-                                    else:
-                                        self.logger.warning(f"  ✗ Environment not found: {obj_id_str}")
-                                except Exception as e:
-                                    self.logger.error(f"  ✗ Error deleting environment {obj_id_str}: {e}")
-                        
-                        # Clean up environment revision records
-                        if 'revision' in ids_by_type:
-                            environment_revisions_collection = db["environment_revisions"]
-                            model_versions_collection = db["model_versions"]
-                            models_collection = db["models"]
-                            self.logger.info(f"Cleaning up {len(ids_by_type['revision'])} environment_revision records from MongoDB...")
-                            for obj_id_str in ids_by_type['revision']:
-                                try:
-                                    obj_id = ObjectId(obj_id_str)
-                                    # Ensure no model_versions from unarchived models reference this environment revision
-                                    # Find distinct model IDs that reference this revision
-                                    model_ids = model_versions_collection.distinct("modelId.value", {"environmentRevisionId": obj_id})
-                                    if model_ids:
-                                        # Check if any of those models are unarchived
-                                        unarchived_ref = models_collection.count_documents({"_id": {"$in": model_ids}, "isArchived": False}, limit=1)
-                                        if unarchived_ref and unarchived_ref > 0:
-                                            self.logger.info(f"  ↪ Skipping environment_revision {obj_id_str} (referenced by versions of unarchived models)")
+                        try:
+                            db = mongo_client[config_manager.get_mongo_db()]
+                            
+                            # Clean up environment records
+                            if 'environment' in ids_by_type:
+                                environments_collection = db["environments_v2"]
+                                revisions_collection_for_envs = db["environment_revisions"]
+                                models_collection_for_envs = db["models"]
+                                self.logger.info(f"Cleaning up {len(ids_by_type['environment'])} environment records from MongoDB...")
+                                for obj_id_str in ids_by_type['environment']:
+                                    try:
+                                        obj_id = ObjectId(obj_id_str)
+                                        # Only delete environment if there are no remaining revisions referencing it
+                                        remaining_revs = revisions_collection_for_envs.count_documents({"environmentId": obj_id}, limit=1)
+                                        if remaining_revs and remaining_revs > 0:
+                                            self.logger.info(f"  ↪ Skipping environment {obj_id_str} (has remaining environment_revisions)")
                                             continue
-                                    result = environment_revisions_collection.delete_one({"_id": obj_id})
-                                    if result.deleted_count > 0:
-                                        self.logger.info(f"  ✓ Deleted environment_revision: {obj_id_str}")
-                                        deletion_results['mongo_records_cleaned'] += 1
-                                    else:
-                                        self.logger.warning(f"  ✗ Environment_revision not found: {obj_id_str}")
-                                except Exception as e:
-                                    self.logger.error(f"  ✗ Error deleting environment_revision {obj_id_str}: {e}")
-                        
-                        # Clean up model records
-                        if 'model' in ids_by_type:
-                            models_collection = db["models"]
-                            versions_collection_for_models = db["model_versions"]
-                            self.logger.info(f"Cleaning up {len(ids_by_type['model'])} model records from MongoDB...")
-                            for obj_id_str in ids_by_type['model']:
-                                try:
-                                    obj_id = ObjectId(obj_id_str)
-                                    # Only delete model if there are no remaining versions referencing it
-                                    remaining_versions = versions_collection_for_models.count_documents({"modelId.value": obj_id}, limit=1)
-                                    if remaining_versions and remaining_versions > 0:
-                                        self.logger.info(f"  ↪ Skipping model {obj_id_str} (has remaining model_versions)")
-                                        continue
-                                    result = models_collection.delete_one({"_id": obj_id})
-                                    if result.deleted_count > 0:
-                                        self.logger.info(f"  ✓ Deleted model: {obj_id_str}")
-                                        deletion_results['mongo_records_cleaned'] += 1
-                                    else:
-                                        self.logger.warning(f"  ✗ Model not found: {obj_id_str}")
-                                except Exception as e:
-                                    self.logger.error(f"  ✗ Error deleting model {obj_id_str}: {e}")
-                        
-                        # Clean up model version records
-                        if 'version' in ids_by_type:
-                            model_versions_collection = db["model_versions"]
-                            self.logger.info(f"Cleaning up {len(ids_by_type['version'])} model_version records from MongoDB...")
-                            for obj_id_str in ids_by_type['version']:
-                                try:
-                                    obj_id = ObjectId(obj_id_str)
-                                    result = model_versions_collection.delete_one({"_id": obj_id})
-                                    if result.deleted_count > 0:
-                                        self.logger.info(f"  ✓ Deleted model_version: {obj_id_str}")
-                                        deletion_results['mongo_records_cleaned'] += 1
-                                    else:
-                                        self.logger.warning(f"  ✗ Model_version not found: {obj_id_str}")
-                                except Exception as e:
-                                    self.logger.error(f"  ✗ Error deleting model_version {obj_id_str}: {e}")
-                    finally:
-                        mongo_client.close()
+                                        # Ensure no non-archived models reference this environment
+                                        referencing_models = models_collection_for_envs.count_documents({"isArchived": False, "environmentId": obj_id}, limit=1)
+                                        if referencing_models and referencing_models > 0:
+                                            self.logger.info(f"  ↪ Skipping environment {obj_id_str} (referenced by non-archived models)")
+                                            continue
+                                        result = environments_collection.delete_one({"_id": obj_id})
+                                        if result.deleted_count > 0:
+                                            self.logger.info(f"  ✓ Deleted environment: {obj_id_str}")
+                                            deletion_results['mongo_records_cleaned'] += 1
+                                        else:
+                                            self.logger.warning(f"  ✗ Environment not found: {obj_id_str}")
+                                    except Exception as e:
+                                        self.logger.error(f"  ✗ Error deleting environment {obj_id_str}: {e}")
+                            
+                            # Clean up environment revision records
+                            if 'revision' in ids_by_type:
+                                environment_revisions_collection = db["environment_revisions"]
+                                model_versions_collection = db["model_versions"]
+                                models_collection = db["models"]
+                                self.logger.info(f"Cleaning up {len(ids_by_type['revision'])} environment_revision records from MongoDB...")
+                                for obj_id_str in ids_by_type['revision']:
+                                    try:
+                                        obj_id = ObjectId(obj_id_str)
+                                        # Ensure no model_versions from unarchived models reference this environment revision
+                                        # Find distinct model IDs that reference this revision
+                                        model_ids = model_versions_collection.distinct("modelId.value", {"environmentRevisionId": obj_id})
+                                        if model_ids:
+                                            # Check if any of those models are unarchived
+                                            unarchived_ref = models_collection.count_documents({"_id": {"$in": model_ids}, "isArchived": False}, limit=1)
+                                            if unarchived_ref and unarchived_ref > 0:
+                                                self.logger.info(f"  ↪ Skipping environment_revision {obj_id_str} (referenced by versions of unarchived models)")
+                                                continue
+                                        result = environment_revisions_collection.delete_one({"_id": obj_id})
+                                        if result.deleted_count > 0:
+                                            self.logger.info(f"  ✓ Deleted environment_revision: {obj_id_str}")
+                                            deletion_results['mongo_records_cleaned'] += 1
+                                        else:
+                                            self.logger.warning(f"  ✗ Environment_revision not found: {obj_id_str}")
+                                    except Exception as e:
+                                        self.logger.error(f"  ✗ Error deleting environment_revision {obj_id_str}: {e}")
+                            
+                            # Clean up model records
+                            if 'model' in ids_by_type:
+                                models_collection = db["models"]
+                                versions_collection_for_models = db["model_versions"]
+                                self.logger.info(f"Cleaning up {len(ids_by_type['model'])} model records from MongoDB...")
+                                for obj_id_str in ids_by_type['model']:
+                                    try:
+                                        obj_id = ObjectId(obj_id_str)
+                                        # Only delete model if there are no remaining versions referencing it
+                                        remaining_versions = versions_collection_for_models.count_documents({"modelId.value": obj_id}, limit=1)
+                                        if remaining_versions and remaining_versions > 0:
+                                            self.logger.info(f"  ↪ Skipping model {obj_id_str} (has remaining model_versions)")
+                                            continue
+                                        result = models_collection.delete_one({"_id": obj_id})
+                                        if result.deleted_count > 0:
+                                            self.logger.info(f"  ✓ Deleted model: {obj_id_str}")
+                                            deletion_results['mongo_records_cleaned'] += 1
+                                        else:
+                                            self.logger.warning(f"  ✗ Model not found: {obj_id_str}")
+                                    except Exception as e:
+                                        self.logger.error(f"  ✗ Error deleting model {obj_id_str}: {e}")
+                            
+                            # Clean up model version records
+                            if 'version' in ids_by_type:
+                                model_versions_collection = db["model_versions"]
+                                self.logger.info(f"Cleaning up {len(ids_by_type['version'])} model_version records from MongoDB...")
+                                for obj_id_str in ids_by_type['version']:
+                                    try:
+                                        obj_id = ObjectId(obj_id_str)
+                                        result = model_versions_collection.delete_one({"_id": obj_id})
+                                        if result.deleted_count > 0:
+                                            self.logger.info(f"  ✓ Deleted model_version: {obj_id_str}")
+                                            deletion_results['mongo_records_cleaned'] += 1
+                                        else:
+                                            self.logger.warning(f"  ✗ Model_version not found: {obj_id_str}")
+                                    except Exception as e:
+                                        self.logger.error(f"  ✗ Error deleting model_version {obj_id_str}: {e}")
+                        finally:
+                            mongo_client.close()
                 else:
-                    self.logger.info("No MongoDB records to clean (no Docker images were successfully deleted)")
+                    self.logger.info("Skipping MongoDB cleanup (use --mongo-cleanup to enable)")
             
                 self.logger.info("Archived tag deletion completed successfully")
                 
@@ -954,7 +957,7 @@ Examples:
     parser.add_argument(
         '--apply',
         action='store_true',
-        help='Actually delete archived tags and clean up MongoDB (default: dry-run)'
+        help='Actually delete archived tags (default: dry-run)'
     )
     
     parser.add_argument(
@@ -1000,6 +1003,12 @@ Examples:
         '--max-workers',
         type=int,
         help='Maximum number of parallel workers for tag inspection (default: from config)'
+    )
+    
+    parser.add_argument(
+        '--mongo-cleanup',
+        action='store_true',
+        help='Also clean up MongoDB records after Docker image deletion (default: off)'
     )
     
     return parser.parse_args()
@@ -1217,7 +1226,8 @@ def main():
                 archived_tags,
                 backup=args.backup,
                 s3_bucket=s3_bucket,
-                region=s3_region
+                region=s3_region,
+                mongo_cleanup=args.mongo_cleanup,
             )
             
             # Print deletion summary
