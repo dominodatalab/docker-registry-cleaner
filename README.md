@@ -111,9 +111,34 @@ python python/main.py delete_unused_environments
 # Delete with S3 backup and confirmation
 python python/main.py delete_unused_environments --apply --backup --s3-bucket my-bucket
 
+# Only consider environments unused if last execution was >30 days ago
+python python/main.py delete_unused_environments --unused-since-days 30 --apply
+
 # Force regenerate reports and delete
 python python/main.py delete_unused_environments --generate-reports --apply --force
 ```
+
+**Date Range Filtering:** Use `--unused-since-days N` to only consider environments as unused if their last execution was more than N days ago. This filters based on the `last_used`, `completed`, or `started` timestamp from runs. If omitted, any historical run marks the environment as in-use.
+
+#### Archive Unused Environments (Mongo-only)
+
+Marks unused environments as archived in MongoDB by setting `isArchived = true` on `environments_v2` documents, without touching Docker images:
+
+```bash
+# Dry-run: list environments that would be archived
+python python/main.py archive_unused_environments
+
+# Only consider environments unused if last execution was >30 days ago
+python python/main.py archive_unused_environments --unused-since-days 30
+
+# Actually mark unused environments as archived (with confirmation)
+python python/main.py archive_unused_environments --apply
+
+# Archive environments unused for >60 days without confirmation
+python python/main.py archive_unused_environments --unused-since-days 60 --apply --force
+```
+
+**Date Range Filtering:** Use `--unused-since-days N` to only consider environments as unused if their last execution was more than N days ago. This filters based on the `last_used`, `completed`, or `started` timestamp from runs. If omitted, any historical run marks the environment as in-use.
 
 #### Delete Deactivated User Private Environments
 
@@ -304,17 +329,18 @@ python python/main.py --config
 
 All deletion scripts follow the same pattern and support common options:
 
+- **`python/delete_image.py`** - Intelligent deletion based on workload analysis
 - **`python/delete_archived_tags.py`** - Delete archived environments and/or models
 - **`python/delete_unused_environments.py`** - Delete environments not used anywhere
+- **`python/archive_unused_environments.py`** - Mark unused environments as archived in MongoDB (`isArchived = true` on `environments_v2`)
 - **`python/delete_unused_private_environments.py`** - Delete private environments owned by deactivated users
 - **`python/delete_unused_references.py`** - Delete MongoDB references to non-existent images
-- **`python/delete_image.py`** - Intelligent deletion based on workload analysis
 
 ### Analysis Scripts
 
-- **`python/inspect_workload.py`** - Analyze Kubernetes workloads
-- **`python/image_data_analysis.py`** - Analyze registry contents with shared layer detection
 - **`python/extract_metadata.py`** - Extract MongoDB metadata
+- **`python/image_data_analysis.py`** - Analyze registry contents with shared layer detection
+- **`python/inspect_workload.py`** - Analyze Kubernetes workloads
 - **`python/reports.py`** - Generate tag usage reports
 
 ### Utility Scripts
