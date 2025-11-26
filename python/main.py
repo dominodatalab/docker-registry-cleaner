@@ -265,7 +265,7 @@ Examples:
    python main.py delete_unused_environments --apply
 
   # Consider only recent usage in runs (e.g., last 30 days) when determining unused
-   python main.py delete_unused_environments --days 30
+   python main.py delete_unused_environments --unused-since-days 30
 
   # Full workflow: generate reports and delete
    python main.py delete_unused_environments --generate-reports --apply

@@ -1042,9 +1042,14 @@ Examples:
     )
     
     parser.add_argument(
-        '--days',
+        '--unused-since-days',
+        dest='days',
         type=int,
-        help='Only consider runs within the last N days as in-use (runs older than N days do not prevent deletion). If omitted, any historical run marks the environment as in-use.'
+        metavar='N',
+        help='Only consider environments as "in-use" if they were used in a run within the last N days. '
+             'If the last execution that used an environment was more than N days ago, it will be considered '
+             'unused and eligible for deletion. If omitted, any historical run marks the environment as in-use. '
+             'This filters based on the last_used, completed, or started timestamp from runs.'
     )
     
     parser.add_argument(

@@ -111,9 +111,14 @@ python python/main.py delete_unused_environments
 # Delete with S3 backup and confirmation
 python python/main.py delete_unused_environments --apply --backup --s3-bucket my-bucket
 
+# Only consider environments unused if last execution was >30 days ago
+python python/main.py delete_unused_environments --unused-since-days 30 --apply
+
 # Force regenerate reports and delete
 python python/main.py delete_unused_environments --generate-reports --apply --force
 ```
+
+**Date Range Filtering:** Use `--unused-since-days N` to only consider environments as unused if their last execution was more than N days ago. This filters based on the `last_used`, `completed`, or `started` timestamp from runs. If omitted, any historical run marks the environment as in-use.
 
 #### Archive Unused Environments (Mongo-only)
 
@@ -123,15 +128,17 @@ Marks unused environments as archived in MongoDB by setting `isArchived = true` 
 # Dry-run: list environments that would be archived
 python python/main.py archive_unused_environments
 
-# Consider only recent runs (e.g., last 30 days) as in-use
-python python/main.py archive_unused_environments --days 30
+# Only consider environments unused if last execution was >30 days ago
+python python/main.py archive_unused_environments --unused-since-days 30
 
 # Actually mark unused environments as archived (with confirmation)
 python python/main.py archive_unused_environments --apply
 
-# Apply without confirmation
-python python/main.py archive_unused_environments --apply --force
+# Archive environments unused for >60 days without confirmation
+python python/main.py archive_unused_environments --unused-since-days 60 --apply --force
 ```
+
+**Date Range Filtering:** Use `--unused-since-days N` to only consider environments as unused if their last execution was more than N days ago. This filters based on the `last_used`, `completed`, or `started` timestamp from runs. If omitted, any historical run marks the environment as in-use.
 
 #### Delete Deactivated User Private Environments
 

@@ -22,7 +22,7 @@ Usage examples:
   python archive_unused_environments.py --apply
 
   # Archive with recent usage window (e.g., treat runs in last 30 days as in-use)
-  python archive_unused_environments.py --days 30 --apply
+  python archive_unused_environments.py --unused-since-days 30 --apply
 """
 
 import argparse
@@ -57,7 +57,7 @@ Examples:
   python archive_unused_environments.py --generate-reports
 
   # Consider only recent usage in runs (e.g., last 30 days) when determining unused
-  python archive_unused_environments.py --days 30
+  python archive_unused_environments.py --unused-since-days 30
 
   # Actually archive the environments (requires confirmation)
   python archive_unused_environments.py --apply
@@ -94,10 +94,14 @@ Examples:
     )
 
     parser.add_argument(
-        '--days',
+        '--unused-since-days',
+        dest='days',
         type=int,
-        help='Only consider runs within the last N days as in-use when determining unused environments. '
-             'If omitted, any historical run marks the environment as in-use.'
+        metavar='N',
+        help='Only consider environments as "in-use" if they were used in a run within the last N days. '
+             'If the last execution that used an environment was more than N days ago, it will be considered '
+             'unused and eligible for archiving. If omitted, any historical run marks the environment as in-use. '
+             'This filters based on the last_used, completed, or started timestamp from runs.'
     )
 
     return parser.parse_args()
