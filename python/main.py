@@ -13,6 +13,7 @@ from logging_utils import setup_logging
 def load_script_paths():
     return {
         "extract_metadata": "extract_metadata.py",
+        "find_environment_usage": "find_environment_usage.py",
         "image_data_analysis": "image_data_analysis.py",
         "inspect_workload": "inspect_workload.py",
         "mongo_cleanup": "mongo_cleanup.py",
@@ -29,6 +30,7 @@ def load_script_paths():
 def get_script_descriptions():
     return {
         "extract_metadata": "Extract metadata from MongoDB",
+        "find_environment_usage": "Find where a specific environment ID is used (projects, jobs, workspaces, runs, workloads)",
         "image_data_analysis": "Analyze container images and generate reports",
         "inspect_workload": "Inspect Kubernetes workload and pod information",
         "mongo_cleanup": "Simple tag/ObjectID-based Mongo cleanup (consider using delete_unused_references for advanced features)",
@@ -148,6 +150,7 @@ def validate_script_requirements(script_keyword, args):
                 sys.exit(1)
             logging.info(f"Validated ObjectIDs from file '{file_arg}': {object_ids}")
 
+
 def main():
     setup_logging()
     script_paths = load_script_paths()
@@ -159,6 +162,7 @@ def main():
         epilog="""
 Available scripts:
   extract_metadata                   - Extract metadata from MongoDB
+  find_environment_usage             - Find where a specific environment ID is used (projects, jobs, workspaces, runs, workloads)
   image_data_analysis                - Analyze container images and generate reports
   inspect_workload                   - Inspect Kubernetes workload and pod information
   mongo_cleanup                      - Simple tag/ObjectID-based Mongo cleanup
@@ -281,6 +285,9 @@ Examples:
   
   # Comprehensive cleanup with backup
    python main.py delete_all_unused_environments --apply --backup --s3-bucket my-backup-bucket
+
+  # Find where a specific environment ID is used (projects, scheduler jobs, workspaces, runs, workloads)
+  python main.py find_environment_usage --environment-id 5f9d88f5b1e3c40012d3cabc
 
 Backup Examples (all delete scripts support backup to S3 before deletion):
   # Backup images to S3 before deleting archived tags

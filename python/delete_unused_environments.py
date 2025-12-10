@@ -414,7 +414,7 @@ class UnusedEnvironmentsFinder:
         return used_ids
     
     def fetch_all_environments_and_defaults(self) -> tuple:
-        """Fetch all environment IDs from MongoDB, project defaults, scheduled job environments, and app versions
+        """Fetch all environment IDs from MongoDB, project defaults, org defaults, scheduled job environments, and app versions
         
         For app versions, only includes environments from app_versions that reference unarchived model_products.
         """
@@ -476,6 +476,22 @@ class UnusedEnvironmentsFinder:
             
             self.logger.info(f"Found {len(scheduler_env_ids)} scheduled job environments")
             
+            # Get organization default environments (collection may not exist)
+            org_default_env_ids = set()
+            if "organizations" in db.list_collection_names():
+                organizations_collection = db["organizations"]
+                org_cursor = organizations_collection.find(
+                    {"defaultV2EnvironmentId": {"$ne": None}},
+                    {"defaultV2EnvironmentId": 1},
+                )
+                for doc in org_cursor:
+                    env_id = doc.get("defaultV2EnvironmentId")
+                    if env_id is not None:
+                        org_default_env_ids.add(str(env_id))
+                self.logger.info(f"Found {len(org_default_env_ids)} organization default environments")
+            else:
+                self.logger.info("Collection 'organizations' not found, skipping organization default environment check")
+            
             # Get app version environments (collection may not exist)
             app_version_env_ids = set()
             collection_names = db.list_collection_names()
@@ -519,7 +535,7 @@ class UnusedEnvironmentsFinder:
                     missing.append("app_versions")
                 self.logger.info(f"Collections not found: {', '.join(missing)}, skipping app version environment check")
             
-            return all_env_ids, all_revision_ids, default_env_ids, scheduler_env_ids, app_version_env_ids
+            return all_env_ids, all_revision_ids, default_env_ids, scheduler_env_ids, app_version_env_ids, org_default_env_ids
             
         finally:
             mongo_client.close()
@@ -539,13 +555,14 @@ class UnusedEnvironmentsFinder:
         )
         
         # Get all environments and defaults from MongoDB
-        all_env_ids, all_revision_ids, default_env_ids, scheduler_env_ids, app_version_env_ids = self.fetch_all_environments_and_defaults()
+        all_env_ids, all_revision_ids, default_env_ids, scheduler_env_ids, app_version_env_ids, org_default_env_ids = self.fetch_all_environments_and_defaults()
         
-        # Add project defaults, scheduled job environments, and app version environments to used IDs
+        # Add project defaults, scheduled job environments, org defaults, and app version environments to used IDs
         used_ids.update(default_env_ids)
         used_ids.update(scheduler_env_ids)
         used_ids.update(app_version_env_ids)
-        self.logger.info(f"Total used IDs (including project defaults, scheduled jobs, and app versions): {len(used_ids)}")
+        used_ids.update(org_default_env_ids)
+        self.logger.info(f"Total used IDs (including project defaults, org defaults, scheduled jobs, and app versions): {len(used_ids)}")
         
         # Combine all environment and revision IDs
         all_ids = {}

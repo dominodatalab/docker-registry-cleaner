@@ -178,7 +178,7 @@ class ConfigManager:
             # Run ECR authentication command
             subprocess.run(
                 [
-                    "bash",
+                    "sh",
                     "-c",
                     f"aws ecr get-login-password --region {region} | "
                     f"skopeo login --username AWS --password-stdin {registry_url}",
