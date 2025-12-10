@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: docker-registry-cleaner
+  namespace: domino-platform
+  labels:
+    app: docker-registry-cleaner
+    docker-registry-client: "true"
+spec:
+  serviceName: docker-registry-cleaner
+  replicas: 1
+  selector:
+    matchLabels:
+      app: docker-registry-cleaner
+  template:
+    metadata:
+      labels:
+        app: docker-registry-cleaner
+        docker-registry-client: "true"
+        mongodb-replicaset-client: "true"
+        keycloak-client: "true"
+    spec:
+      serviceAccountName: docker-registry-cleaner
+      containers:
+        - name: docker-registry-cleaner
+          image: quay.io/domino/docker-registry-cleaner:v0.1
+          imagePullPolicy: Always
+          command: ["/bin/sh", "-c", "--"]
+          args: ["while true; do sleep 30; done"]
+          resources: {}
+          env:
+            - name: REGISTRY_URL
+              value: "946429944765.dkr.ecr.eu-west-1.amazonaws.com"
+            - name: KEYCLOAK_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-http
+                  key: password
+            - name: MONGODB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-replicaset-admin
+                  key: password
+      imagePullSecrets:
+        - name: domino-quay-repos
+      restartPolicy: Always
+  updateStrategy:
+    type: RollingUpdate

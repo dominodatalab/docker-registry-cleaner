@@ -1,6 +1,6 @@
-FROM python:alpine3.22
+FROM python:alpine3.23
 
-RUN apk add skopeo
+RUN apk add --no-cache aws-cli skopeo
 
 COPY requirements.txt .
 COPY config-example.yaml config.yaml

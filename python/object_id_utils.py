@@ -1,6 +1,8 @@
 from logging_utils import get_logger
 from typing import List, Dict
 
+from bson import ObjectId
+
 logger = get_logger(__name__)
 
 
@@ -11,7 +13,7 @@ def read_object_ids_from_file(file_path: str) -> List[str]:
 	- "<ObjectID>" (one per line)
 	- "environment:<ObjectID>" or "model:<ObjectID>" (typed); the type is ignored here
 
-	Returns a flat list of valid IDs.
+	Returns a flat list of valid IDs (as strings).
 	"""
 	object_ids: List[str] = []
 	try:
@@ -21,18 +23,15 @@ def read_object_ids_from_file(file_path: str) -> List[str]:
 				if not line or line.startswith('#'):
 					continue
 				if ':' in line:
-					prefix, _, rest = line.partition(':')
-					obj_id = rest.strip()
+					_, _, rest = line.partition(':')
+					raw_value = rest.strip()
 				else:
-					obj_id = line
-				if len(obj_id) != 24:
-					logger.warning(f"ObjectID '{obj_id}' on line {line_num} is not 24 characters")
-					continue
+					raw_value = line
 				try:
-					int(obj_id, 16)
-					object_ids.append(obj_id)
-				except ValueError:
-					logger.warning(f"Invalid ObjectID '{obj_id}' on line {line_num}")
+					oid = validate_object_id(raw_value, field_name=f"ObjectID on line {line_num}")
+					object_ids.append(str(oid))
+				except ValueError as e:
+					logger.warning(str(e))
 		return object_ids
 	except FileNotFoundError:
 		logger.error(f"File '{file_path}' not found")
@@ -70,14 +69,11 @@ def read_typed_object_ids_from_file(file_path: str) -> Dict[str, List[str]]:
 					elif pref in ('model',):
 						kind = 'model'
 					value = rest.strip()
-				if len(value) != 24:
-					logger.warning(f"ObjectID '{value}' on line {line_num} is not 24 characters")
-					continue
 				try:
-					int(value, 16)
-					result[kind].append(value)
-				except ValueError:
-					logger.warning(f"Invalid ObjectID '{value}' on line {line_num}")
+					oid = validate_object_id(value, field_name=f"ObjectID on line {line_num}")
+					result[kind].append(str(oid))
+				except ValueError as e:
+					logger.warning(str(e))
 		# Remove empty keys
 		return {k: v for k, v in result.items() if v}
 	except FileNotFoundError:
@@ -107,3 +103,20 @@ def starts_with_any_object_id(value: str, object_ids: List[str]) -> bool:
 		if value.startswith(oid):
 			return True
 	return False
+
+
+def validate_object_id(value: str, *, field_name: str = "ObjectID") -> ObjectId:
+	"""Validate a 24-char hex ObjectId string and return a bson.ObjectId.
+
+	Raises:
+	    ValueError: if the value is empty, wrong length, or not hex.
+	"""
+	if not value:
+		raise ValueError(f"{field_name} is required")
+	if len(value) != 24:
+		raise ValueError(f"{field_name} '{value}' is not 24 characters")
+	try:
+		int(value, 16)
+	except ValueError:
+		raise ValueError(f"{field_name} '{value}' is not a valid hexadecimal ObjectId")
+	return ObjectId(value)
