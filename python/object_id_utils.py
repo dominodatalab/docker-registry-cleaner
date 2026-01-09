@@ -43,32 +43,49 @@ def read_object_ids_from_file(file_path: str) -> List[str]:
 
 def read_typed_object_ids_from_file(file_path: str) -> Dict[str, List[str]]:
 	"""Read typed ObjectIDs from file.
-
+	
 	Accepted formats per non-comment line:
 	- "environment:<ObjectID>"
+	- "environmentRevision:<ObjectID>"
 	- "model:<ObjectID>"
-	- "<ObjectID>" (placed under 'any')
-
-	Returns a dict like { 'environment': [...], 'model': [...], 'any': [...] }
+	- "modelVersion:<ObjectID>"
+	
+	Bare IDs (no prefix) are ignored to avoid ambiguity across collections.
+	
+	Returns a dict like { 'environment': [...], 'environment_revision': [...], 'model': [...], 'model_version': [...] }
 	Only includes keys that have values.
 	"""
-	result: Dict[str, List[str]] = {"environment": [], "model": [], "any": []}
+	result: Dict[str, List[str]] = {
+		"environment": [],
+		"environment_revision": [],
+		"model": [],
+		"model_version": []
+	}
 	try:
 		with open(file_path, 'r') as f:
 			for line_num, raw in enumerate(f, 1):
 				line = raw.strip()
 				if not line or line.startswith('#'):
 					continue
-				kind = 'any'
-				value = line
+				kind = None
+				value = None
 				if ':' in line:
 					prefix, _, rest = line.partition(':')
 					pref = prefix.lower().strip()
 					if pref in ('environment', 'env'):
 						kind = 'environment'
+					elif pref in ('environmentrevision', 'environment_revision', 'envrevision', 'env_rev', 'envrev'):
+						kind = 'environment_revision'
 					elif pref in ('model',):
 						kind = 'model'
+					elif pref in ('modelversion', 'model_version', 'model_ver', 'modelver'):
+						kind = 'model_version'
 					value = rest.strip()
+				if not kind:
+					logger.warning(
+						f"Line {line_num}: missing or unknown type prefix. Expected environment:, environmentRevision:, model:, or modelVersion:. Skipping."
+					)
+					continue
 				try:
 					oid = validate_object_id(value, field_name=f"ObjectID on line {line_num}")
 					result[kind].append(str(oid))

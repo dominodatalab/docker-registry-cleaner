@@ -189,25 +189,34 @@ python python/main.py delete_image environment:abc-123 --apply
 # Delete using analysis reports
 python python/main.py delete_image --apply --backup --s3-bucket my-bucket
 
-# Filter by ObjectIDs from file
+# Filter by ObjectIDs from file (prefixes required; see ObjectID Filtering)
 python python/main.py delete_image --file environments --apply
+
+# Clean up MongoDB references (opt-in)
+python python/main.py delete_image --apply --mongo-cleanup
 ```
 
 ## 🔍 ObjectID Filtering
 
-Target specific models or compute environments by ObjectID:
+Target specific models or compute environments by ObjectID. Prefixes are required to avoid ambiguity:
+- `environment:<id>`
+- `environmentRevision:<id>`
+- `model:<id>`
+- `modelVersion:<id>`
 
 ```bash
-# Create a file with ObjectIDs (one per line)
+# Create a file with ObjectIDs (one per line, prefixes required)
 cat > environments <<EOF
-# Applies to both environment and model
-62798b9bee0eb12322fc97e8
-
-# Explicitly environment-only
 environment:6286a3c76d4fd0362f8ba3ec
 
-# Explicitly model-only
+# Explicitly environment revision
+environmentRevision:6286a3c76d4fd0362f8ba3ed
+
+# Explicitly model
 model:627d94043035a63be6140e93
+
+# Explicitly model version
+modelVersion:627d94043035a63be6140e94
 EOF
 
 # Use with any analysis or deletion command

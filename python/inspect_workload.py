@@ -397,11 +397,14 @@ def main():
 	object_ids_map = None
 	if args.file:
 		object_ids_map = read_typed_object_ids_from_file(args.file)
-		any_ids = set(object_ids_map.get('any', [])) if object_ids_map else set()
-		env_ids = list(any_ids.union(object_ids_map.get('environment', []))) if object_ids_map else []
-		model_ids = list(any_ids.union(object_ids_map.get('model', []))) if object_ids_map else []
+		env_ids = set(object_ids_map.get('environment', [])) if object_ids_map else set()
+		env_ids.update(object_ids_map.get('environment_revision', []))
+		model_ids = set(object_ids_map.get('model', [])) if object_ids_map else set()
+		model_ids.update(object_ids_map.get('model_version', []))
+		env_ids = sorted(env_ids)
+		model_ids = sorted(model_ids)
 		if not (env_ids or model_ids):
-			logger.error(f"No valid ObjectIDs found in file '{args.file}'")
+			logger.error(f"No valid ObjectIDs found in file '{args.file}' (prefixes required: environment:, environmentRevision:, model:, modelVersion:)")
 			sys.exit(1)
 		logger.info(f"Filtering by ObjectIDs from file '{args.file}' (environment={len(env_ids)}, model={len(model_ids)})")
 	
@@ -423,10 +426,11 @@ def main():
 		# Combine environment and model IDs for filtering
 		combined_object_ids = None
 		if object_ids_map:
-			any_ids = set(object_ids_map.get('any', []))
-			env_ids = list(any_ids.union(object_ids_map.get('environment', [])))
-			model_ids = list(any_ids.union(object_ids_map.get('model', [])))
-			combined_object_ids = list(set(env_ids + model_ids))
+			env_ids = set(object_ids_map.get('environment', []))
+			env_ids.update(object_ids_map.get('environment_revision', []))
+			model_ids = set(object_ids_map.get('model', []))
+			model_ids.update(object_ids_map.get('model_version', []))
+			combined_object_ids = list(env_ids.union(model_ids))
 		
 		# Analyze pods
 		image_tags = inspector.analyze_pods_parallel(
