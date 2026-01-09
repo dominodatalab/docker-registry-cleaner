@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: docker-registry-cleaner-config
+  namespace: domino-platform
+data:
+  config.yaml: |
+    # Docker Registry Cleaner Configuration
+    # This file contains shared configuration for all scripts
+
+    # Registry Configuration
+    registry:
+      url: "docker-registry:5000"
+      repository: "dominodatalab"
+
+    # Kubernetes Configuration
+    kubernetes:
+      platform_namespace: "domino-platform"
+      compute_namespace: "domino-compute"
+      pod_prefixes: ["model-", "run-"]
+
+    # Mongo Configuration
+    mongo:
+      host: "mongodb-replicaset"
+      port: 27017
+      replicaset: "rs0"
+      db: "domino"
+
+    # Analysis Configuration
+    analysis:
+      max_workers: 4
+      timeout: 300
+      output_dir: "../reports"
+
+    # S3 Backup Configuration
+    s3:
+      bucket: ""  # S3 bucket for image backups (optional, can be set via --s3-bucket flag)
+      region: "us-west-2"  # AWS region for S3 and ECR operations
+
+    # Skopeo Configuration
+    skopeo:
+      use_pod: false  # Set to true to run Skopeo commands in Kubernetes pod instead of local subprocess
+
+    # Default Report Paths
+    reports:
+      deletion_analysis: "deletion-analysis.json"
+      filtered_layers: "filtered-layers.json"
+      image_analysis: "final-report.json"
+      images_report: "images-report"
+      layers_and_sizes: "layers-and-sizes.json"
+      tags_per_layer: "tags-per-layer.json"
+      tag_sums: "tag-sums.json"
+      unused_references: "unused-references.json"
+      workload_report: "workload-report.json"
+      runs_env_usage: "runs_env_usage_output.json"
+
+    # Security Configuration
+    security:
+      dry_run_by_default: true
+      require_confirmation: true 
+
+
