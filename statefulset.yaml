@@ -41,8 +41,16 @@ spec:
                 secretKeyRef:
                   name: mongodb-replicaset-admin
                   key: password
+          volumeMounts:
+            - name: docker-registry-cleaner-config
+              mountPath: /config.yaml
+              subPath: config.yaml
       imagePullSecrets:
         - name: domino-quay-repos
       restartPolicy: Always
+      volumes:
+        - name: docker-registry-cleaner-config
+          configMap:
+            name: docker-registry-cleaner-config
   updateStrategy:
     type: RollingUpdate

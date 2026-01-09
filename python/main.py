@@ -78,14 +78,25 @@ def run_script(script_path, args, dry_run=True):
         sys.exit(1)
 
 def read_object_ids_from_file(file_path: str) -> List[str]:
-    """Read ObjectIDs from a file, one per line (comments starting with # are ignored)."""
+    """Read ObjectIDs from a file, one per line (comments starting with # are ignored).
+    
+    Supports both formats:
+    - Plain ObjectID: <ObjectID>
+    - Typed format: environment:<ObjectID> or model:<ObjectID> (extracts the ObjectID part)
+    """
     object_ids = []
     try:
         with open(file_path, 'r') as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if line and not line.startswith('#'):  # Skip empty lines and comments
-                    obj_id = line
+                    # Extract ObjectID from typed format (e.g., "environment:<ObjectID>")
+                    if ':' in line:
+                        _, _, obj_id = line.partition(':')
+                        obj_id = obj_id.strip()
+                    else:
+                        obj_id = line
+                    
                     if len(obj_id) == 24:
                         try:
                             int(obj_id, 16)  # Validate hexadecimal
@@ -120,7 +131,7 @@ def validate_script_requirements(script_keyword, args):
     
     elif script_keyword == "delete_image":
         # Check if password is provided (argument, env var, or config)
-        has_password_arg = any(arg.startswith('--password') for arg in args.additional_args)
+        has_password_arg = any(arg.startswith('--password') for arg in args)
         has_password = config_manager.get_registry_password() is not None
         
         # Check if using ECR (which doesn't need a password)

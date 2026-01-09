@@ -398,7 +398,7 @@ Examples:
         """
     )
     
-    parser.add_argument("--file", help="File containing ObjectIDs (first column) to filter images")
+    parser.add_argument("--file", help="File containing ObjectIDs (first column) to filter images (requires prefixes: environment:, environmentRevision:, model:, or modelVersion:)")
     parser.add_argument("--max-workers", type=int, help="Maximum number of parallel workers (default: from config)")
     parser.add_argument("images", nargs="*", help="Images to analyze (default: environment, model)")
     
@@ -413,17 +413,17 @@ Examples:
     object_ids_map = None
     if args.file:
         object_ids_map = read_typed_object_ids_from_file(args.file)
-        # Build per-image lists, including 'any'
-        any_ids = set(object_ids_map.get('any', []))
-        env_ids = list(any_ids.union(object_ids_map.get('environment', []))) if object_ids_map else None
-        model_ids = list(any_ids.union(object_ids_map.get('model', []))) if object_ids_map else None
+        env_ids = set(object_ids_map.get('environment', [])) if object_ids_map else set()
+        env_ids.update(object_ids_map.get('environment_revision', []))
+        model_ids = set(object_ids_map.get('model', [])) if object_ids_map else set()
+        model_ids.update(object_ids_map.get('model_version', []))
         # Store back into a map keyed by image name
         object_ids_map = {
-            'environment': env_ids or [],
-            'model': model_ids or [],
+            'environment': sorted(env_ids),
+            'model': sorted(model_ids),
         }
         if not any(object_ids_map.values()):
-            logger.error(f"No valid ObjectIDs found in file '{args.file}'")
+            logger.error(f"No valid ObjectIDs found in file '{args.file}' (prefixes required: environment:, environmentRevision:, model:, modelVersion:)")
             sys.exit(1)
         logger.info(f"Filtering images by ObjectIDs from file '{args.file}': {object_ids_map}")
     

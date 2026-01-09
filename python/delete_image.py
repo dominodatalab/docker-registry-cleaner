@@ -36,17 +36,14 @@ Usage examples:
   # Optional: Back up images to S3 with custom bucket and region
   python delete_image.py --apply --backup --s3-bucket my-backup-bucket --region us-east-1
 
-  # Optional: Filter by ObjectIDs from file
+  # Optional: Filter by ObjectIDs from file (requires prefixes: environment:, environmentRevision:, model:, or modelVersion:)
   python delete_image.py --apply --file object_ids.txt
 
   # Optional: Custom report paths
   python delete_image.py --workload-report reports/workload.json --image-analysis reports/analysis.json
 
-  # Optional: Skip MongoDB cleanup after deletion
-  python delete_image.py --apply --skip-cleanup-mongo
-
-  # MongoDB cleanup (automatically cleans up environment_revisions and/or model_versions collections)
-  python delete_image.py --apply
+# Optional: Clean up MongoDB references after deletion (disabled by default)
+python delete_image.py --apply --mongo-cleanup
 """
 
 import argparse
@@ -56,7 +53,7 @@ import subprocess
 import sys
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from backup_restore import process_backup
 from config_manager import config_manager, SkopeoClient, ConfigManager
@@ -127,12 +124,29 @@ class IntelligentImageDeleter:
             self.logger.error(f"Invalid JSON in image analysis report: {e}")
             return {}
 
-    def analyze_image_usage(self, workload_report: Dict, image_analysis: Dict, object_ids: Optional[List[str]] = None) -> WorkloadAnalysis:
-        """Analyze which images are used vs unused based on workload and image analysis"""
+    def analyze_image_usage(self, workload_report: Dict, image_analysis: Dict, object_ids: Optional[List[str]] = None, object_ids_map: Optional[Dict[str, List[str]]] = None) -> WorkloadAnalysis:
+        """Analyze which images are used vs unused based on workload and image analysis
+        
+        Args:
+            workload_report: Workload analysis report
+            image_analysis: Image analysis report
+            object_ids: List of ObjectIDs to filter by (merged from all types)
+            object_ids_map: Dict mapping image types to ObjectID lists (e.g., {'environment': [...], 'model': [...]})
+        """
         used_images = set()
         unused_images = set()
         total_size_saved = 0
         image_usage_stats = {}
+        
+        # Build mapping from ObjectID to image type if object_ids_map is provided
+        oid_to_type = {}
+        if object_ids_map:
+            for img_type, oids in object_ids_map.items():
+                # Map both 'environment' and 'environment_revision' to 'environment'
+                # Map both 'model' and 'model_version' to 'model'
+                repo_type = 'environment' if img_type in ('environment', 'environment_revision') else 'model'
+                for oid in oids:
+                    oid_to_type[oid] = repo_type
         
         # Get used images from workload report
         # Support both formats:
@@ -162,38 +176,62 @@ class IntelligentImageDeleter:
         for layer_id, layer_info in image_analysis.items():
             layer_tags = layer_info.get('tags', [])
             
-            # Filter tags by ObjectIDs if provided
+            # Filter tags by ObjectIDs if provided and determine image type
             if object_ids:
                 original_tag_count = len(layer_tags)
                 filtered_tags = []
                 for tag in layer_tags:
+                    matched = False
+                    matched_type = None
                     for obj_id in object_ids:
                         if tag.startswith(obj_id):
                             filtered_tags.append(tag)
+                            matched = True
+                            # Determine image type from object_ids_map if available
+                            if object_ids_map:
+                                matched_type = oid_to_type.get(obj_id)
                             break
+                    # Store tag with type prefix if we know the type
+                    if matched and matched_type:
+                        all_tags.add(f"{matched_type}:{tag}")
+                    elif matched:
+                        all_tags.add(tag)
                 layer_tags = filtered_tags
                 if len(filtered_tags) < original_tag_count:
                     self.logger.info(f"Filtered layer {layer_id}: {len(filtered_tags)}/{original_tag_count} tags match ObjectIDs")
-            
-            # Track all observed tags
-            for tag in layer_tags:
-                all_tags.add(tag)
+            else:
+                # No filtering - just add all tags (we don't know the type)
+                for tag in layer_tags:
+                    all_tags.add(tag)
             
             # Freed space: sum sizes of layers that have no used tags
             if layer_tags and not any(tag in used_images for tag in layer_tags):
                 freed_bytes += layer_info.get('size', 0)
         
         # Deletion candidates: all tags not referenced by workloads
-        unused_images = all_tags - used_images
+        # For tags with type prefix, compare just the tag part
+        unused_images = set()
+        for full_tag in all_tags:
+            # Extract just the tag name for comparison with used_images
+            if ':' in full_tag:
+                tag_name = full_tag.split(':', 1)[1]
+            else:
+                tag_name = full_tag
+            
+            if tag_name not in used_images:
+                unused_images.add(full_tag)
+        
         total_size_saved = freed_bytes
         
         # Minimal per-tag stats (do not double-count layer sizes here)
-        for tag in all_tags:
-            image_usage_stats[tag] = {
+        for full_tag in all_tags:
+            # Extract tag name for stats lookup
+            tag_name = full_tag.split(':', 1)[1] if ':' in full_tag else full_tag
+            image_usage_stats[full_tag] = {
                 'size': 0,
                 'layer_id': '',
-                'status': 'used' if tag in used_images else 'unused',
-                'pods_using': workload_map.get(tag, {}).get('pods', []) if tag in used_images and isinstance(workload_map, dict) else []
+                'status': 'used' if tag_name in used_images else 'unused',
+                'pods_using': workload_map.get(tag_name, {}).get('pods', []) if tag_name in used_images and isinstance(workload_map, dict) else []
             }
         
         return WorkloadAnalysis(
@@ -279,12 +317,15 @@ class IntelligentImageDeleter:
             print(f"\n📦 Backing up {len(analysis.unused_images)} images to S3 bucket: {s3_bucket}")
             
             # Extract tags from unused images
-            # Unused images are in format: repository/image:tag
+            # Unused images are in format: type:tag (e.g., "environment:abc123...") or just "tag" (legacy)
             tags_to_backup = []
             for image_tag in analysis.unused_images:
-                parts = image_tag.split(':')
-                if len(parts) == 2:
-                    tags_to_backup.append(parts[1])
+                # Handle format: "type:tag" or just "tag"
+                if ':' in image_tag:
+                    tag = image_tag.split(':', 1)[1]
+                else:
+                    tag = image_tag
+                tags_to_backup.append(tag)
             
             full_repo = f"{self.registry_url}/{self.repository}"
             
@@ -321,41 +362,63 @@ class IntelligentImageDeleter:
         deleted_tags = []
         
         for image_tag in analysis.unused_images:
-            # Extract repository and tag from image tag
-            # Assuming format: repository/image:tag
-            parts = image_tag.split(':')
-            if len(parts) != 2:
+            # Extract repository type and tag from image tag
+            # Format can be:
+            # - "type:tag" (e.g., "environment:abc123def456...")
+            # - "tag" (legacy format, try both repositories)
+            parts = image_tag.split(':', 1)
+            if len(parts) == 2:
+                # Format: "type:tag"
+                repo_type, tag = parts
+                repository = f"{self.repository}/{repo_type}"
+            elif len(parts) == 1:
+                # Legacy format: just tag name, try both environment and model
+                tag = parts[0]
+                # Try environment first, then model if it fails
+                # We'll try both in the deletion loop
+                repository = None
+            else:
                 self.logger.warning(f"Invalid image tag format: {image_tag}")
                 failed_deletions += 1
                 continue
-            
-            repository_tag = parts[0]
-            tag = parts[1]
-            
-            # Extract repository name (remove registry URL if present)
-            if '/' in repository_tag:
-                repository = repository_tag.split('/', 1)[1]  # Remove registry URL
-            else:
-                repository = repository_tag
             
             stats = analysis.image_usage_stats.get(image_tag, {})
             size = stats.get('size', 0)
             
             if dry_run:
-                print(f"  Would delete: {image_tag} ({size / (1024**3):.2f} GB)")
+                if repository:
+                    print(f"  Would delete: {repository}:{tag} ({size / (1024**3):.2f} GB)")
+                else:
+                    print(f"  Would delete: environment:{tag} or model:{tag} ({size / (1024**3):.2f} GB)")
                 total_size_deleted += size
             else:
-                print(f"  Deleting: {image_tag} ({size / (1024**3):.2f} GB)")
-                
-                # Use standardized Skopeo client for deletion
-                if self.skopeo_client.delete_image(repository, tag):
-                    print(f"    ✅ Deleted successfully")
-                    successful_deletions += 1
-                    total_size_deleted += size
-                    deleted_tags.append(image_tag)
+                if repository:
+                    print(f"  Deleting: {repository}:{tag} ({size / (1024**3):.2f} GB)")
+                    # Use standardized Skopeo client for deletion
+                    if self.skopeo_client.delete_image(repository, tag):
+                        print(f"    ✅ Deleted successfully")
+                        successful_deletions += 1
+                        total_size_deleted += size
+                        deleted_tags.append(f"{repository}:{tag}")
+                    else:
+                        print(f"    ❌ Failed to delete")
+                        failed_deletions += 1
                 else:
-                    print(f"    ❌ Failed to delete")
-                    failed_deletions += 1
+                    # Try both environment and model repositories
+                    deleted = False
+                    for repo_type in ['environment', 'model']:
+                        try_repo = f"{self.repository}/{repo_type}"
+                        print(f"  Trying to delete: {try_repo}:{tag}")
+                        if self.skopeo_client.delete_image(try_repo, tag):
+                            print(f"    ✅ Deleted successfully from {try_repo}")
+                            successful_deletions += 1
+                            total_size_deleted += size
+                            deleted_tags.append(f"{try_repo}:{tag}")
+                            deleted = True
+                            break
+                    if not deleted:
+                        print(f"    ❌ Failed to delete from both environment and model repositories")
+                        failed_deletions += 1
         
         print(f"\n📊 Deletion Summary:")
         print(f"   {'Would delete' if dry_run else 'Successfully deleted'}: {successful_deletions} images")
@@ -454,8 +517,8 @@ def parse_arguments():
     parser.add_argument("--image-analysis", default=config_manager.get_image_analysis_path(), help="Path to image analysis report")
     parser.add_argument("--output-report", default=config_manager.get_deletion_analysis_path(), help="Path for deletion analysis report")
     parser.add_argument("--skip-analysis", action="store_true", help="Skip workload analysis and use traditional environments file")
-    parser.add_argument("--file", help="File containing ObjectIDs (one per line) to filter images")
-    parser.add_argument("--skip-cleanup-mongo", action="store_true", help="Skip MongoDB cleanup after deleting images (automatically cleans environment_revisions and/or model_versions based on image type)")
+    parser.add_argument("--file", help="File containing ObjectIDs (one per line) to filter images (supports prefixes: environment:, environmentRevision:, model:, modelVersion:, or bare IDs)")
+    parser.add_argument("--mongo-cleanup", action="store_true", help="Also clean up MongoDB records after deleting images (disabled by default)")
     parser.add_argument(
         '--backup',
         action='store_true',
@@ -520,13 +583,14 @@ def main():
     object_ids_map = None
     if args.file:
         object_ids_map = read_typed_object_ids_from_file(args.file)
-        any_ids = set(object_ids_map.get('any', [])) if object_ids_map else set()
-        env_ids = list(any_ids.union(object_ids_map.get('environment', []))) if object_ids_map else []
-        model_ids = list(any_ids.union(object_ids_map.get('model', []))) if object_ids_map else []
-        if not (env_ids or model_ids):
-            print(f"Error: No valid ObjectIDs found in file '{args.file}'")
+        env_ids = list(object_ids_map.get('environment', [])) if object_ids_map else []
+        env_rev_ids = list(object_ids_map.get('environment_revision', [])) if object_ids_map else []
+        model_ids = list(object_ids_map.get('model', [])) if object_ids_map else []
+        model_ver_ids = list(object_ids_map.get('model_version', [])) if object_ids_map else []
+        if not (env_ids or env_rev_ids or model_ids or model_ver_ids):
+            print(f"Error: No valid ObjectIDs found in file '{args.file}' (prefixes required: environment:, environmentRevision:, model:, modelVersion:)")
             sys.exit(1)
-        print(f"Filtering images by ObjectIDs from file '{args.file}': environment={len(env_ids)}, model={len(model_ids)}")
+        print(f"Filtering images by ObjectIDs from file '{args.file}': environment={len(env_ids)}, environmentRevision={len(env_rev_ids)}, model={len(model_ids)}, modelVersion={len(model_ver_ids)}")
     
     # Get password with priority: CLI arg > env var > config
     password = args.password or os.environ.get('REGISTRY_PASSWORD') or config_manager.get_registry_password()
@@ -626,19 +690,24 @@ def main():
             merged_ids = None
             if object_ids_map:
                 merged = set()
-                merged.update(object_ids_map.get('any', []))
                 merged.update(object_ids_map.get('environment', []))
+                merged.update(object_ids_map.get('environment_revision', []))
                 merged.update(object_ids_map.get('model', []))
+                merged.update(object_ids_map.get('model_version', []))
                 merged_ids = sorted(merged)
                 print(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
-            analysis = deleter.analyze_image_usage(workload_report, image_analysis, merged_ids)
+            analysis = deleter.analyze_image_usage(workload_report, image_analysis, merged_ids, object_ids_map)
 
             # Prepare tags to backup
+            # Unused images are in format: type:tag (e.g., "environment:abc123...") or just "tag" (legacy)
             tags_to_backup = []
             for image_tag in analysis.unused_images:
-                parts = image_tag.split(':')
-                if len(parts) == 2:
-                    tags_to_backup.append(parts[1])
+                # Handle format: "type:tag" or just "tag"
+                if ':' in image_tag:
+                    tag = image_tag.split(':', 1)[1]
+                else:
+                    tag = image_tag
+                tags_to_backup.append(tag)
             if not tags_to_backup:
                 print("No unused images found to back up.")
                 sys.exit(0)
@@ -684,12 +753,13 @@ def main():
             merged_ids = None
             if object_ids_map:
                 merged = set()
-                merged.update(object_ids_map.get('any', []))
                 merged.update(object_ids_map.get('environment', []))
+                merged.update(object_ids_map.get('environment_revision', []))
                 merged.update(object_ids_map.get('model', []))
+                merged.update(object_ids_map.get('model_version', []))
                 merged_ids = sorted(merged)
                 print(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
-            analysis = deleter.analyze_image_usage(workload_report, image_analysis, merged_ids)
+            analysis = deleter.analyze_image_usage(workload_report, image_analysis, merged_ids, object_ids_map)
             
             # Generate deletion report
             deleter.generate_deletion_report(analysis, args.output_report)
@@ -711,8 +781,8 @@ def main():
                     region=s3_region
                 )
                 
-                # Clean up Mongo references for deleted tags (enabled by default, can be skipped with --skip-cleanup-mongo)
-                if deleted_tags and not dry_run and not args.skip_cleanup_mongo:
+                # Clean up Mongo references for deleted tags (opt-in via --mongo-cleanup)
+                if deleted_tags and not dry_run and args.mongo_cleanup:
                     deleter.cleanup_mongo_references(deleted_tags)
             
             finally:
