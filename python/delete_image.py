@@ -57,6 +57,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from backup_restore import process_backup
 from config_manager import config_manager, SkopeoClient, ConfigManager
+from image_data_analysis import ImageAnalyzer
 from logging_utils import setup_logging, get_logger
 from object_id_utils import read_typed_object_ids_from_file
 from report_utils import save_json
@@ -172,7 +173,6 @@ class IntelligentImageDeleter:
         # Analyze image layers from image analysis
         # Support format produced by image_data_analysis (mapping of layer_id -> { size, tags, environments })
         all_tags = set()
-        freed_bytes = 0
         for layer_id, layer_info in image_analysis.items():
             layer_tags = layer_info.get('tags', [])
             
@@ -204,9 +204,8 @@ class IntelligentImageDeleter:
                 for tag in layer_tags:
                     all_tags.add(tag)
             
-            # Freed space: sum sizes of layers that have no used tags
-            if layer_tags and not any(tag in used_images for tag in layer_tags):
-                freed_bytes += layer_info.get('size', 0)
+            # NOTE: We don't calculate freed_bytes here anymore - it's calculated separately
+            # using ImageAnalyzer to properly account for shared layers
         
         # Deletion candidates: all tags not referenced by workloads
         # For tags with type prefix, compare just the tag part
@@ -221,7 +220,8 @@ class IntelligentImageDeleter:
             if tag_name not in used_images:
                 unused_images.add(full_tag)
         
-        total_size_saved = freed_bytes
+        # Calculate freed space correctly using ImageAnalyzer (accounts for shared layers)
+        total_size_saved = self._calculate_freed_space_correctly(unused_images, object_ids_map)
         
         # Minimal per-tag stats (do not double-count layer sizes here)
         for full_tag in all_tags:
@@ -240,6 +240,75 @@ class IntelligentImageDeleter:
             total_size_saved=total_size_saved,
             image_usage_stats=image_usage_stats
         )
+
+    def _calculate_freed_space_correctly(self, unused_images: Set[str], object_ids_map: Optional[Dict[str, List[str]]] = None) -> int:
+        """Calculate freed space correctly using ImageAnalyzer, accounting for shared layers.
+        
+        This method analyzes ALL images (not just unused ones) to get accurate reference counts,
+        then calculates what would be freed by deleting the unused images. Only layers that would
+        have zero references after deletion are counted.
+        
+        Args:
+            unused_images: Set of unused image tags (format: "type:tag" or just "tag")
+            object_ids_map: Optional map of image types to ObjectID lists (for logging)
+        
+        Returns:
+            Total bytes that would be freed (0 if calculation fails)
+        """
+        if not unused_images:
+            return 0
+        
+        try:
+            max_workers = config_manager.get_max_workers()
+            self.logger.info(f"Calculating accurate freed space using ImageAnalyzer (analyzing ALL images)...")
+            self.logger.info("This ensures shared layers between unused and used images are properly accounted for.")
+            
+            # Create ImageAnalyzer
+            analyzer = ImageAnalyzer(self.registry_url, self.repository)
+            
+            # CRITICAL: Analyze ALL images (not just unused ones) to get accurate reference counts
+            # This ensures that shared layers between unused and used images are properly accounted for
+            image_types = ['environment', 'model']
+            for image_type in image_types:
+                self.logger.info(f"Analyzing ALL {image_type} images...")
+                success = analyzer.analyze_image(image_type, object_ids=None, max_workers=max_workers)
+                if not success:
+                    self.logger.warning(f"Failed to analyze {image_type} images")
+            
+            # Build list of image_ids from unused images
+            # ImageAnalyzer uses format "image_type:tag" as image_id
+            image_ids = []
+            skipped_tags = []
+            for full_tag in unused_images:
+                if ':' in full_tag:
+                    # Format: "type:tag"
+                    image_ids.append(full_tag)
+                else:
+                    # Legacy format: just tag name, we don't know the type
+                    # Skip these or try both - for now, skip with a warning
+                    skipped_tags.append(full_tag)
+            
+            if skipped_tags:
+                self.logger.warning(f"Skipping {len(skipped_tags)} tags without type prefix for freed space calculation")
+            
+            if not image_ids:
+                self.logger.warning("No tags with type information found, cannot calculate freed space accurately")
+                return 0
+            
+            # Calculate freed space using ImageAnalyzer's method
+            # This properly accounts for shared layers - only counts layers that would have
+            # zero references after deletion (i.e., not used by any remaining images)
+            total_freed = analyzer.freed_space_if_deleted(image_ids)
+            
+            self.logger.info(f"Total space that would be freed: {total_freed / (1024**3):.2f} GB")
+            
+            return total_freed
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating freed space: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return 0
 
     def generate_deletion_report(self, analysis: WorkloadAnalysis, output_file: str = "deletion-analysis.json") -> None:
         """Generate a detailed deletion analysis report"""
@@ -390,6 +459,7 @@ class IntelligentImageDeleter:
                     print(f"  Would delete: {repository}:{tag} ({size / (1024**3):.2f} GB)")
                 else:
                     print(f"  Would delete: environment:{tag} or model:{tag} ({size / (1024**3):.2f} GB)")
+                successful_deletions += 1
                 total_size_deleted += size
             else:
                 if repository:
@@ -424,7 +494,10 @@ class IntelligentImageDeleter:
         print(f"   {'Would delete' if dry_run else 'Successfully deleted'}: {successful_deletions} images")
         if not dry_run:
             print(f"   Failed deletions: {failed_deletions} images")
-        print(f"   {'Would save' if dry_run else 'Saved'}: {total_size_deleted / (1024**3):.2f} GB")
+        # Use total_size_saved from analysis for accurate freed space (accounts for shared layers)
+        # This is calculated correctly using ImageAnalyzer, while individual tag sizes may be 0
+        summary_size = analysis.total_size_saved if analysis.total_size_saved > 0 else total_size_deleted
+        print(f"   {'Would save' if dry_run else 'Saved'}: {summary_size / (1024**3):.2f} GB")
         
         return deleted_tags
 
