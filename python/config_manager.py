@@ -15,6 +15,9 @@ import yaml
 
 from typing import Dict, Any, Optional, List, Tuple
 
+from retry_utils import retry_with_backoff, is_retryable_error
+from cache_utils import cached_image_inspect, cached_tag_list, get_image_inspect_cache, get_tag_list_cache
+
 
 def _load_kubernetes_config():
     """Helper function to load Kubernetes configuration.
@@ -81,6 +84,14 @@ class ConfigManager:
                 'timeout': 300,
                 'output_dir': 'reports'
             },
+            'retry': {
+                'max_retries': 3,
+                'initial_delay': 1.0,
+                'max_delay': 60.0,
+                'exponential_base': 2.0,
+                'jitter': True,
+                'timeout': 300  # Timeout for subprocess calls in seconds
+            },
             's3': {
                 'bucket': '',
                 'region': 'us-west-2'
@@ -104,6 +115,28 @@ class ConfigManager:
             'security': {
                 'dry_run_by_default': True,
                 'require_confirmation': True
+            },
+            'cache': {
+                'enabled': True,
+                'tag_list_ttl': 1800,
+                'tag_list_max_size': 100,
+                'image_inspect_ttl': 3600,
+                'image_inspect_max_size': 1000,
+                'mongo_query_ttl': 600,
+                'mongo_query_max_size': 500,
+                'layer_calc_ttl': 7200,
+                'layer_calc_max_size': 2000
+            },
+            'cache': {
+                'enabled': True,
+                'tag_list_ttl': 1800,
+                'tag_list_max_size': 100,
+                'image_inspect_ttl': 3600,
+                'image_inspect_max_size': 1000,
+                'mongo_query_ttl': 600,
+                'mongo_query_max_size': 500,
+                'layer_calc_ttl': 7200,
+                'layer_calc_max_size': 2000
             }
         }
         
@@ -219,6 +252,44 @@ class ConfigManager:
     def get_output_dir(self) -> str:
         """Get output directory from config"""
         return self.config['analysis']['output_dir']
+    
+    # Retry configuration
+    def get_max_retries(self) -> int:
+        """Get max retries from config"""
+        return self.config.get('retry', {}).get('max_retries', 3)
+    
+    def get_retry_initial_delay(self) -> float:
+        """Get initial retry delay from config"""
+        return self.config.get('retry', {}).get('initial_delay', 1.0)
+    
+    def get_retry_max_delay(self) -> float:
+        """Get max retry delay from config"""
+        return self.config.get('retry', {}).get('max_delay', 60.0)
+    
+    def get_retry_exponential_base(self) -> float:
+        """Get exponential base for retry backoff from config"""
+        return self.config.get('retry', {}).get('exponential_base', 2.0)
+    
+    def get_retry_jitter(self) -> bool:
+        """Get whether to use jitter in retry delays from config"""
+        return self.config.get('retry', {}).get('jitter', True)
+    
+    def get_retry_timeout(self) -> int:
+        """Get timeout for subprocess calls from config"""
+        return self.config.get('retry', {}).get('timeout', 300)
+    
+    # Cache configuration
+    def is_cache_enabled(self) -> bool:
+        """Get cache enabled setting from config"""
+        return self.config.get('cache', {}).get('enabled', True)
+    
+    def get_cache_tag_list_ttl(self) -> int:
+        """Get tag list cache TTL from config"""
+        return self.config.get('cache', {}).get('tag_list_ttl', 1800)
+    
+    def get_cache_image_inspect_ttl(self) -> int:
+        """Get image inspect cache TTL from config"""
+        return self.config.get('cache', {}).get('image_inspect_ttl', 3600)
     
     # S3 Configuration
     def get_s3_bucket(self) -> Optional[str]:
@@ -532,53 +603,103 @@ class SkopeoClient:
             return self._run_skopeo_local(subcommand, args)
     
     def _run_skopeo_local(self, subcommand: str, args: List[str]) -> Optional[str]:
-        """Run Skopeo command locally using subprocess"""
+        """Run Skopeo command locally using subprocess with retry logic"""
+        cmd = self._build_skopeo_command(subcommand, args)
+        timeout = self.config_manager.get_retry_timeout()
+        
+        @retry_with_backoff(
+            max_retries=self.config_manager.get_max_retries(),
+            initial_delay=self.config_manager.get_retry_initial_delay(),
+            max_delay=self.config_manager.get_retry_max_delay(),
+            exponential_base=self.config_manager.get_retry_exponential_base(),
+            jitter=self.config_manager.get_retry_jitter()
+        )
+        def _execute():
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=timeout
+                )
+                return result.stdout
+            except subprocess.TimeoutExpired as e:
+                logging.error(f"Skopeo command timed out after {timeout}s: {' '.join(cmd)}")
+                raise
+            except subprocess.CalledProcessError as e:
+                logging.error(f"Skopeo command failed: {' '.join(cmd)}")
+                logging.error(f"Error: {e.stderr}")
+                raise
+            except Exception as e:
+                logging.error(f"Unexpected error running Skopeo: {e}")
+                raise
+        
         try:
-            cmd = self._build_skopeo_command(subcommand, args)
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            return result.stdout
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Skopeo command failed: {' '.join(cmd)}")
-            logging.error(f"Error: {e.stderr}")
-            return None
+            return _execute()
         except Exception as e:
-            logging.error(f"Unexpected error running Skopeo: {e}")
+            # Check if error is retryable - if not, return None immediately
+            is_retryable, error_type = is_retryable_error(e)
+            if not is_retryable:
+                logging.error(f"Non-retryable error in Skopeo command: {e}")
             return None
     
     def _run_skopeo_in_pod(self, subcommand: str, args: List[str]) -> Optional[str]:
-        """Run Skopeo command in Kubernetes pod"""
-        try:
-            from kubernetes.client.rest import ApiException
-            
-            cmd = self._build_skopeo_command(subcommand, args)
-            
-            response = self.core_v1_client.connect_get_namespaced_pod_exec(
-                name="skopeo",
-                namespace=self.namespace,
-                command=cmd,
-                container="skopeo",
-                stderr=True,
-                stdout=True,
-                stdin=False,
-                tty=False
-            )
-            
-            if response:
-                return response
-            else:
-                logging.error(f"Empty response from skopeo command: {' '.join(cmd)}")
-                return None
+        """Run Skopeo command in Kubernetes pod with retry logic"""
+        from kubernetes.client.rest import ApiException
+        
+        cmd = self._build_skopeo_command(subcommand, args)
+        
+        @retry_with_backoff(
+            max_retries=self.config_manager.get_max_retries(),
+            initial_delay=self.config_manager.get_retry_initial_delay(),
+            max_delay=self.config_manager.get_retry_max_delay(),
+            exponential_base=self.config_manager.get_retry_exponential_base(),
+            jitter=self.config_manager.get_retry_jitter()
+        )
+        def _execute():
+            try:
+                response = self.core_v1_client.connect_get_namespaced_pod_exec(
+                    name="skopeo",
+                    namespace=self.namespace,
+                    command=cmd,
+                    container="skopeo",
+                    stderr=True,
+                    stdout=True,
+                    stdin=False,
+                    tty=False
+                )
                 
-        except ApiException as e:
-            if e.status == 404:
-                logging.error(f"Skopeo pod not found in namespace {self.namespace}")
-            else:
-                logging.error(f"API error executing skopeo command: {e}")
-            return None
+                if response:
+                    return response
+                else:
+                    # Empty response might be transient, raise to trigger retry
+                    raise RuntimeError(f"Empty response from skopeo command: {' '.join(cmd)}")
+                    
+            except ApiException as e:
+                if e.status == 404:
+                    # Pod not found - might be transient if pod is starting up
+                    # But usually this is permanent, so we'll check
+                    logging.error(f"Skopeo pod not found in namespace {self.namespace}")
+                    # For 404, we'll still retry in case pod is being created
+                    raise
+                else:
+                    logging.error(f"API error executing skopeo command: {e}")
+                    raise
+            except Exception as e:
+                logging.error(f"Unexpected error executing skopeo command: {e}")
+                raise
+        
+        try:
+            return _execute()
         except Exception as e:
-            logging.error(f"Unexpected error executing skopeo command: {e}")
+            # Check if error is retryable - if not, return None immediately
+            is_retryable, error_type = is_retryable_error(e)
+            if not is_retryable:
+                logging.error(f"Non-retryable error in Skopeo pod command: {e}")
             return None
     
+    @cached_tag_list(ttl_seconds=1800)  # Cache for 30 minutes
     def list_tags(self, repository: Optional[str] = None) -> List[str]:
         """List all tags for a repository.
         If repository is provided, it should be the full path under the registry
@@ -597,6 +718,7 @@ class SkopeoClient:
                 return []
         return []
     
+    @cached_image_inspect(ttl_seconds=3600)  # Cache for 1 hour
     def inspect_image(self, repository: Optional[str], tag: str) -> Optional[Dict]:
         """Inspect a specific image tag.
         repository should be the full path under the registry (e.g., "dominodatalab/environment").

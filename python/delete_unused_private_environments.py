@@ -840,9 +840,11 @@ def main():
         
         logger.info("=" * 60)
         if is_delete_mode:
-            logger.info("   Deleting Private Environments (Deactivated Users)")
+            logger.info("   🗑️  DELETION MODE: Deleting Private Environments (Deactivated Users)")
+            logger.warning("⚠️  Images WILL be deleted from the registry!")
         else:
-            logger.info("   Finding Private Environments (Deactivated Users)")
+            logger.info("   🔍 DRY RUN MODE (default): Finding Private Environments (Deactivated Users)")
+            logger.info("   No images will be deleted. Use --apply to actually delete images.")
         logger.info("=" * 60)
         logger.info(f"Registry URL: {registry_url}")
         logger.info(f"Repository: {repository}")
@@ -1024,12 +1026,15 @@ def main():
             if deactivated_user_tags:
                 logger.warning(f"\n⚠️  Found {len(deactivated_user_tags)} tags for private environments owned by deactivated users!")
                 logger.info("Review the detailed report to identify affected environments.")
-                logger.info("Use --apply flag to delete these images and clean up MongoDB records.")
+                logger.info("\n" + "=" * 60)
+                logger.info("🔍 DRY RUN MODE COMPLETED")
+                logger.info("=" * 60)
+                logger.info("No images were deleted. Use --apply to actually delete images:")
+                logger.info("  python delete_unused_private_environments.py --apply")
                 logger.info("Or use --apply --input <file> to delete from a saved report.")
             else:
                 logger.info("\n✅ No private environments found for deactivated users!")
-            
-            logger.info("\n✅ Analysis completed successfully!")
+                logger.info("\n✅ Analysis completed successfully!")
         
     except KeyboardInterrupt:
         logger.warning("\n⚠️  Operation interrupted by user")

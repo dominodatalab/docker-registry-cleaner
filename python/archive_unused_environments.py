@@ -249,9 +249,11 @@ def main():
 
     logger.info("=" * 60)
     if is_apply_mode:
-        logger.info("   Archiving unused environments (MongoDB isArchived = true)")
+        logger.info("   📝 ARCHIVING MODE: Archiving unused environments")
+        logger.warning("⚠️  MongoDB records WILL be updated (isArchived = True)!")
     else:
-        logger.info("   DRY RUN: Listing environments that would be archived")
+        logger.info("   🔍 DRY RUN MODE (default): Listing environments that would be archived")
+        logger.info("   No MongoDB records will be modified. Use --apply to actually archive environments.")
     logger.info("=" * 60)
 
     try:
@@ -324,7 +326,11 @@ def main():
         if is_apply_mode:
             logger.info("\n✅ Archiving of unused environments completed.")
         else:
-            logger.info("\n✅ Dry-run analysis of unused environments completed. Use --apply to perform archiving.")
+            logger.info("\n" + "=" * 60)
+            logger.info("🔍 DRY RUN MODE COMPLETED")
+            logger.info("=" * 60)
+            logger.info("No MongoDB records were modified. Use --apply to actually archive environments:")
+            logger.info("  python archive_unused_environments.py --apply")
 
     except KeyboardInterrupt:
         logger.warning("\n⚠️  Operation interrupted by user")

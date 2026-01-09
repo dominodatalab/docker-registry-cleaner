@@ -779,9 +779,16 @@ class UnusedEnvironmentsFinder:
                 failed_deletions = []
                 successfully_deleted_object_ids = set()
                 
-                for (image_type, tag), data in unique_tags.items():
+                # Parallelize deletion operations
+                import concurrent.futures
+                max_workers = min(config_manager.get_max_workers(), len(unique_tags), 10)  # Cap at 10
+                
+                def delete_single_tag(tag_key_data):
+                    """Delete a single tag and return result"""
+                    (image_type, tag), data = tag_key_data
                     tag_info = data['tag_info']
                     associated_object_ids = data['object_ids']
+                    
                     try:
                         self.logger.info(f"  Deleting: {tag_info.full_image}")
                         success = self.skopeo_client.delete_image(
@@ -789,19 +796,48 @@ class UnusedEnvironmentsFinder:
                             tag_info.tag
                         )
                         if success:
-                            deleted_count += 1
-                            # Add all ObjectIDs associated with this tag
-                            successfully_deleted_object_ids.update(associated_object_ids)
                             if len(associated_object_ids) > 1:
                                 self.logger.info(f"    ✓ Deleted successfully (contains {len(associated_object_ids)} unused ObjectIDs)")
                             else:
                                 self.logger.info(f"    ✓ Deleted successfully")
+                            return ('success', tag_info.full_image, associated_object_ids)
                         else:
-                            failed_deletions.append(tag_info.full_image)
                             self.logger.warning(f"    ✗ Failed to delete - MongoDB record will NOT be cleaned")
+                            return ('failed', tag_info.full_image, None)
                     except Exception as e:
-                        failed_deletions.append(tag_info.full_image)
                         self.logger.error(f"    ✗ Error deleting: {e} - MongoDB record will NOT be cleaned")
+                        return ('failed', tag_info.full_image, None)
+                
+                # Process deletions in parallel
+                if max_workers > 1 and len(unique_tags) > 1:
+                    self.logger.info(f"Deleting {len(unique_tags)} images using {max_workers} parallel workers...")
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        future_to_tag = {
+                            executor.submit(delete_single_tag, item): item
+                            for item in unique_tags.items()
+                        }
+                        
+                        for future in concurrent.futures.as_completed(future_to_tag):
+                            try:
+                                result = future.result()
+                                status, full_image, object_ids = result
+                                if status == 'success':
+                                    deleted_count += 1
+                                    successfully_deleted_object_ids.update(object_ids)
+                                else:
+                                    failed_deletions.append(full_image)
+                            except Exception as e:
+                                self.logger.error(f"Error processing deletion result: {e}")
+                else:
+                    # Sequential deletion for small batches or single worker
+                    for (image_type, tag), data in unique_tags.items():
+                        result = delete_single_tag(((image_type, tag), data))
+                        status, full_image, object_ids = result
+                        if status == 'success':
+                            deleted_count += 1
+                            successfully_deleted_object_ids.update(object_ids)
+                        else:
+                            failed_deletions.append(full_image)
             
                 deletion_results['docker_images_deleted'] = deleted_count
                 
@@ -1117,9 +1153,11 @@ def main():
         
         logger.info("=" * 60)
         if is_delete_mode:
-            logger.info("   Deleting unused environment tags")
+            logger.info("   🗑️  DELETION MODE: Deleting unused environment tags")
+            logger.warning("⚠️  Images WILL be deleted from the registry!")
         else:
-            logger.info("   Finding unused environment tags")
+            logger.info("   🔍 DRY RUN MODE (default): Finding unused environment tags")
+            logger.info("   No images will be deleted. Use --apply to actually delete images.")
         logger.info("=" * 60)
         logger.info(f"Registry URL: {registry_url}")
         logger.info(f"Repository: {repository}")
@@ -1315,12 +1353,15 @@ def main():
             if unused_tags:
                 logger.warning(f"\n⚠️  Found {len(unused_tags)} unused environment tags that may need cleanup!")
                 logger.info("Review the detailed report to identify which Docker images are not being used.")
-                logger.info("Use --apply flag to delete these images and clean up MongoDB records.")
+                logger.info("\n" + "=" * 60)
+                logger.info("🔍 DRY RUN MODE COMPLETED")
+                logger.info("=" * 60)
+                logger.info("No images were deleted. Use --apply to actually delete images:")
+                logger.info("  python delete_unused_environments.py --apply")
                 logger.info("Or use --apply --input <file> to delete from a saved report.")
             else:
                 logger.info("\n✅ No unused environment tags found!")
-            
-            logger.info("\n✅ Unused environments analysis completed successfully!")
+                logger.info("\n✅ Unused environments analysis completed successfully!")
         
     except KeyboardInterrupt:
         logger.warning("\n⚠️  Operation interrupted by user")

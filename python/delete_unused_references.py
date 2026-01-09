@@ -605,9 +605,11 @@ def main():
         
         logger.info("=" * 60)
         if is_delete_mode:
-            logger.info("   Deleting unused Docker image references")
+            logger.info("   🗑️  DELETION MODE: Deleting unused Docker image references")
+            logger.warning("⚠️  MongoDB records WILL be deleted!")
         else:
-            logger.info("   Finding unused Docker image references")
+            logger.info("   🔍 DRY RUN MODE (default): Finding unused Docker image references")
+            logger.info("   No MongoDB records will be deleted. Use --apply to actually delete records.")
         logger.info("=" * 60)
         logger.info(f"Registry URL: {registry_url}")
         logger.info(f"Repository: {repository}")
@@ -698,11 +700,15 @@ def main():
             if unused_refs:
                 logger.warning(f"\n⚠️  Found {len(unused_refs)} unused references that may need cleanup!")
                 logger.info("Review the detailed report to identify which MongoDB records reference non-existent Docker images.")
-                logger.info("Use --apply flag to delete these records, or --apply --input <file> to delete from a saved report.")
+                logger.info("\n" + "=" * 60)
+                logger.info("🔍 DRY RUN MODE COMPLETED")
+                logger.info("=" * 60)
+                logger.info("No MongoDB records were deleted. Use --apply to actually delete records:")
+                logger.info("  python delete_unused_references.py --apply")
+                logger.info("Or use --apply --input <file> to delete from a saved report.")
             else:
                 logger.info("\n✅ No unused references found - all MongoDB image references exist in Docker registry!")
-            
-            logger.info("\n✅ Unused references analysis completed successfully!")
+                logger.info("\n✅ Unused references analysis completed successfully!")
         
     except KeyboardInterrupt:
         logger.warning("\n⚠️  Operation interrupted by user")

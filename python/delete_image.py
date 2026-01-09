@@ -51,9 +51,10 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from backup_restore import process_backup
 from config_manager import config_manager, SkopeoClient, ConfigManager
@@ -221,14 +222,17 @@ class IntelligentImageDeleter:
                 unused_images.add(full_tag)
         
         # Calculate freed space correctly using ImageAnalyzer (accounts for shared layers)
-        total_size_saved = self._calculate_freed_space_correctly(unused_images, object_ids_map)
+        # This also returns individual tag sizes
+        total_size_saved, individual_tag_sizes = self._calculate_freed_space_correctly(unused_images, object_ids_map)
         
-        # Minimal per-tag stats (do not double-count layer sizes here)
+        # Build per-tag stats with accurate sizes
         for full_tag in all_tags:
             # Extract tag name for stats lookup
             tag_name = full_tag.split(':', 1)[1] if ':' in full_tag else full_tag
+            # Get individual size from calculation (0 if not found)
+            tag_size = individual_tag_sizes.get(full_tag, 0)
             image_usage_stats[full_tag] = {
-                'size': 0,
+                'size': tag_size,
                 'layer_id': '',
                 'status': 'used' if tag_name in used_images else 'unused',
                 'pods_using': workload_map.get(tag_name, {}).get('pods', []) if tag_name in used_images and isinstance(workload_map, dict) else []
@@ -241,7 +245,7 @@ class IntelligentImageDeleter:
             image_usage_stats=image_usage_stats
         )
 
-    def _calculate_freed_space_correctly(self, unused_images: Set[str], object_ids_map: Optional[Dict[str, List[str]]] = None) -> int:
+    def _calculate_freed_space_correctly(self, unused_images: Set[str], object_ids_map: Optional[Dict[str, List[str]]] = None) -> Tuple[int, Dict[str, int]]:
         """Calculate freed space correctly using ImageAnalyzer, accounting for shared layers.
         
         This method analyzes ALL images (not just unused ones) to get accurate reference counts,
@@ -253,10 +257,11 @@ class IntelligentImageDeleter:
             object_ids_map: Optional map of image types to ObjectID lists (for logging)
         
         Returns:
-            Total bytes that would be freed (0 if calculation fails)
+            Tuple of (total_bytes_freed, dict mapping image_tag to individual_bytes_freed)
+            Returns (0, {}) if calculation fails
         """
         if not unused_images:
-            return 0
+            return 0, {}
         
         try:
             max_workers = config_manager.get_max_workers()
@@ -279,10 +284,12 @@ class IntelligentImageDeleter:
             # ImageAnalyzer uses format "image_type:tag" as image_id
             image_ids = []
             skipped_tags = []
+            tag_mapping = {}  # Map image_id back to original full_tag for size reporting
             for full_tag in unused_images:
                 if ':' in full_tag:
                     # Format: "type:tag"
                     image_ids.append(full_tag)
+                    tag_mapping[full_tag] = full_tag
                 else:
                     # Legacy format: just tag name, we don't know the type
                     # Skip these or try both - for now, skip with a warning
@@ -293,22 +300,30 @@ class IntelligentImageDeleter:
             
             if not image_ids:
                 self.logger.warning("No tags with type information found, cannot calculate freed space accurately")
-                return 0
+                return 0, {}
             
-            # Calculate freed space using ImageAnalyzer's method
+            # Calculate individual tag sizes first (layers unique to each image)
+            self.logger.info(f"Calculating individual image sizes for {len(image_ids)} images...")
+            individual_sizes = {}
+            for image_id in image_ids:
+                # Calculate what would be freed if only this image was deleted
+                size_bytes = analyzer.freed_space_if_deleted([image_id])
+                individual_sizes[tag_mapping[image_id]] = size_bytes
+            
+            # Calculate total freed space using ImageAnalyzer's method
             # This properly accounts for shared layers - only counts layers that would have
             # zero references after deletion (i.e., not used by any remaining images)
             total_freed = analyzer.freed_space_if_deleted(image_ids)
             
             self.logger.info(f"Total space that would be freed: {total_freed / (1024**3):.2f} GB")
             
-            return total_freed
+            return total_freed, individual_sizes
             
         except Exception as e:
             self.logger.error(f"Error calculating freed space: {e}")
             import traceback
             self.logger.error(traceback.format_exc())
-            return 0
+            return 0, {}
 
     def generate_deletion_report(self, analysis: WorkloadAnalysis, output_file: str = "deletion-analysis.json") -> None:
         """Generate a detailed deletion analysis report"""
@@ -318,7 +333,7 @@ class IntelligentImageDeleter:
                 "used_images": len(analysis.used_images),
                 "unused_images": len(analysis.unused_images),
                 "total_size_saved": analysis.total_size_saved,
-                "total_size_saved_gb": analysis.total_size_saved / (1024**3)
+                "total_size_saved_gb": round(analysis.total_size_saved / (1024**3), 2)
             },
             "unused_images": []
         }
@@ -326,10 +341,11 @@ class IntelligentImageDeleter:
         # Add details for each unused image
         for image_tag in analysis.unused_images:
             stats = analysis.image_usage_stats.get(image_tag, {})
+            size_bytes = stats.get('size', 0)
             report["unused_images"].append({
                 "tag": image_tag,
-                "size": stats.get('size', 0),
-                "size_gb": stats.get('size', 0) / (1024**3),
+                "size_bytes": size_bytes,
+                "size_gb": round(size_bytes / (1024**3), 2),
                 "layer_id": stats.get('layer_id', ''),
                 "status": stats.get('status', 'unused'),
                 "pods_using": stats.get('pods_using', [])
@@ -347,6 +363,90 @@ class IntelligentImageDeleter:
         print(f"   Images in use: {report['summary']['used_images']}")
         print(f"   Images unused: {report['summary']['unused_images']}")
         print(f"   Potential space saved: {report['summary']['total_size_saved_gb']:.2f} GB")
+
+    def save_deletion_results(self, analysis: WorkloadAnalysis, deleted_tags: List[str], 
+                              successful_deletions: int, failed_deletions: int, 
+                              total_size_deleted: int, dry_run: bool, output_file: str = None) -> str:
+        """Save deletion results to a JSON file.
+        
+        Args:
+            analysis: WorkloadAnalysis object with image usage information
+            deleted_tags: List of successfully deleted image tags
+            successful_deletions: Number of successful deletions
+            failed_deletions: Number of failed deletions
+            total_size_deleted: Total size of deleted images (bytes)
+            dry_run: Whether this was a dry run
+            output_file: Optional path for output file (defaults to config-managed path)
+        
+        Returns:
+            Path to the saved JSON file
+        """
+        if output_file is None:
+            if dry_run:
+                output_file = config_manager.get_output_dir() + "/deletion-dry-run-results.json"
+            else:
+                output_file = config_manager.get_output_dir() + "/deletion-results.json"
+        
+        # Build results report
+        results = {
+            "dry_run": dry_run,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "summary": {
+                "total_images_analyzed": len(analysis.used_images) + len(analysis.unused_images),
+                "used_images": len(analysis.used_images),
+                "unused_images": len(analysis.unused_images),
+                "successful_deletions": successful_deletions,
+                "failed_deletions": failed_deletions,
+                "total_size_deleted_bytes": total_size_deleted,
+                "total_size_deleted_gb": round(total_size_deleted / (1024**3), 2),
+                "total_size_saved_bytes": analysis.total_size_saved,
+                "total_size_saved_gb": round(analysis.total_size_saved / (1024**3), 2)
+            },
+            "deleted_images": [],
+            "failed_deletions": []
+        }
+        
+        # Add successfully deleted images
+        # deleted_tags are in format "repository/type:tag", need to match with image_tag format "type:tag"
+        deleted_tags_normalized = set()
+        for dt in deleted_tags:
+            # Extract the "type:tag" part from "repository/type:tag"
+            if '/' in dt and ':' in dt:
+                parts = dt.split('/', 1)
+                if ':' in parts[1]:
+                    deleted_tags_normalized.add(parts[1])  # Add "type:tag"
+            elif ':' in dt:
+                deleted_tags_normalized.add(dt)  # Already in "type:tag" format
+            else:
+                deleted_tags_normalized.add(dt)  # Legacy format
+        
+        for image_tag in sorted(analysis.unused_images):
+            stats = analysis.image_usage_stats.get(image_tag, {})
+            size_bytes = stats.get('size', 0)
+            
+            # Check if this image was successfully deleted
+            # For dry_run, all unused images are considered "would be deleted"
+            is_deleted = (image_tag in deleted_tags_normalized) if not dry_run else True
+            
+            image_result = {
+                "tag": image_tag,
+                "size_bytes": size_bytes,
+                "size_gb": round(size_bytes / (1024**3), 2),
+                "status": "deleted" if is_deleted else "failed"
+            }
+            
+            if image_result["status"] == "deleted":
+                results["deleted_images"].append(image_result)
+            else:
+                results["failed_deletions"].append(image_result)
+        
+        try:
+            save_json(output_file, results)
+            self.logger.info(f"Deletion results saved to: {output_file}")
+            return output_file
+        except Exception as e:
+            self.logger.error(f"Failed to save deletion results: {e}")
+            return output_file
 
     def enable_deletion_of_docker_images(self):
         """Enable deletion of Docker images in the registry"""
@@ -495,9 +595,20 @@ class IntelligentImageDeleter:
         if not dry_run:
             print(f"   Failed deletions: {failed_deletions} images")
         # Use total_size_saved from analysis for accurate freed space (accounts for shared layers)
-        # This is calculated correctly using ImageAnalyzer, while individual tag sizes may be 0
+        # This is calculated correctly using ImageAnalyzer
         summary_size = analysis.total_size_saved if analysis.total_size_saved > 0 else total_size_deleted
         print(f"   {'Would save' if dry_run else 'Saved'}: {summary_size / (1024**3):.2f} GB")
+        
+        # Save results to JSON file
+        results_file = self.save_deletion_results(
+            analysis=analysis,
+            deleted_tags=deleted_tags,
+            successful_deletions=successful_deletions,
+            failed_deletions=failed_deletions,
+            total_size_deleted=total_size_deleted,
+            dry_run=dry_run
+        )
+        print(f"   Results saved to: {results_file}")
         
         return deleted_tags
 
