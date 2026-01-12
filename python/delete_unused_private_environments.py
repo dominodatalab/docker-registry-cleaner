@@ -60,6 +60,7 @@ from image_data_analysis import ImageAnalyzer
 from logging_utils import setup_logging, get_logger
 from mongo_utils import get_mongo_client
 from report_utils import save_json
+from usage_tracker import ImageUsageTracker
 
 # Disable SSL warnings for Keycloak
 requests.packages.urllib3.disable_warnings()
@@ -483,11 +484,42 @@ class DeactivatedUserEnvFinder:
                 
                 deleted_count = 0
                 failed_deletions = []
+                failed_deletions_with_reason = {}  # Maps tag -> reason (usage info)
                 successfully_deleted_object_ids = set()
+                
+                # Check which tags are in use before attempting deletion
+                usage_tracker = ImageUsageTracker()
+                tags_to_check = [tag_info.tag for tag_info in deactivated_user_tags]
+                in_use_tags, usage_info = usage_tracker.check_tags_in_use(tags_to_check)
+                
+                if in_use_tags:
+                    self.logger.warning(f"⚠️  Found {len(in_use_tags)} tags that are currently in use - these will be skipped")
+                    for tag in in_use_tags:
+                        usage = usage_info.get(tag, {})
+                        usage_summary = usage_tracker.generate_usage_summary(usage)
+                        self.logger.warning(f"  • {tag}: {usage_summary}")
+                        failed_deletions_with_reason[tag] = {
+                            'reason': 'in_use',
+                            'usage_summary': usage_summary,
+                            'usage': usage
+                        }
                 
                 for (image_type, tag), data in unique_tags.items():
                     tag_info = data['tag_info']
                     associated_object_ids = data['object_ids']
+                    
+                    # Skip if tag is in use
+                    if tag_info.tag in in_use_tags:
+                        usage = usage_info.get(tag_info.tag, {})
+                        usage_summary = usage_tracker.generate_usage_summary(usage)
+                        self.logger.warning(f"  Skipping {tag_info.full_image} (user: {tag_info.user_email}, in use: {usage_summary})")
+                        failed_deletions.append(tag_info.full_image)
+                        failed_deletions_with_reason[tag_info.full_image] = {
+                            'reason': 'in_use',
+                            'usage_summary': usage_summary
+                        }
+                        continue
+                    
                     try:
                         self.logger.info(f"  Deleting: {tag_info.full_image} (user: {tag_info.user_email})")
                         success = self.skopeo_client.delete_image(
@@ -504,17 +536,37 @@ class DeactivatedUserEnvFinder:
                                 self.logger.info(f"    ✓ Deleted successfully")
                         else:
                             failed_deletions.append(tag_info.full_image)
+                            failed_deletions_with_reason[tag_info.full_image] = {
+                                'reason': 'deletion_failed'
+                            }
                             self.logger.warning(f"    ✗ Failed to delete - MongoDB record will NOT be cleaned")
                     except Exception as e:
                         failed_deletions.append(tag_info.full_image)
+                        failed_deletions_with_reason[tag_info.full_image] = {
+                            'reason': 'deletion_failed'
+                        }
                         self.logger.error(f"    ✗ Error deleting: {e} - MongoDB record will NOT be cleaned")
             
                 deletion_results['docker_images_deleted'] = deleted_count
                 
                 if failed_deletions:
-                    self.logger.warning(f"Failed to delete {len(failed_deletions)} Docker images:")
-                    for img in failed_deletions:
-                        self.logger.warning(f"  - {img}")
+                    in_use_count = sum(1 for r in failed_deletions_with_reason.values() if r.get('reason') == 'in_use')
+                    failed_count = len(failed_deletions) - in_use_count
+                    
+                    self.logger.warning(f"Could not delete {len(failed_deletions)} Docker images:")
+                    if in_use_count > 0:
+                        self.logger.warning(f"  {in_use_count} image(s) are currently in use:")
+                        for img in failed_deletions:
+                            if img in failed_deletions_with_reason:
+                                reason_info = failed_deletions_with_reason[img]
+                                if reason_info.get('reason') == 'in_use':
+                                    usage_summary = reason_info.get('usage_summary', 'Unknown usage')
+                                    self.logger.warning(f"    • {img}: {usage_summary}")
+                    if failed_count > 0:
+                        self.logger.warning(f"  {failed_count} image(s) failed to delete:")
+                        for img in failed_deletions:
+                            if img not in failed_deletions_with_reason or failed_deletions_with_reason[img].get('reason') != 'in_use':
+                                self.logger.warning(f"    • {img}")
                     self.logger.warning("MongoDB records for failed deletions will be preserved.")
                 
                 # Clean up MongoDB records directly - ONLY for successfully deleted Docker images

@@ -21,6 +21,7 @@ from config_manager import config_manager
 from logging_utils import setup_logging
 from mongo_utils import get_mongo_client
 from object_id_utils import validate_object_id
+from usage_tracker import ImageUsageTracker
 
 
 def find_environment_usage(env_id: str) -> None:
@@ -111,76 +112,52 @@ def find_environment_usage(env_id: str) -> None:
             )
         )
 
-        # Load auxiliary JSON reports (if present)
-        output_dir = config_manager.get_output_dir()
-        workspace_usage_path = os.path.join(output_dir, "workspace_env_usage_output.json")
-        runs_usage_path = config_manager.get_runs_env_usage_path()
-        workload_report_path = config_manager.get_workload_report_path()
+        # Load auxiliary JSON reports using usage_tracker
+        usage_tracker = ImageUsageTracker()
+        mongodb_reports = usage_tracker.load_mongodb_usage_reports()
+        workload_report = usage_tracker.load_workload_report()
+        
+        workspace_usages = mongodb_reports.get('workspaces', [])
+        runs_usages = mongodb_reports.get('runs', [])
 
-        workspace_usages: List[Dict] = []
-        if os.path.exists(workspace_usage_path):
-            try:
-                with open(workspace_usage_path, "r") as f:
-                    workspace_usages = json.load(f)
-            except Exception as e:
-                logging.warning(f"Could not parse workspace environment usage file: {e}")
-
-        runs_usages: List[Dict] = []
-        if os.path.exists(runs_usage_path):
-            try:
-                with open(runs_usage_path, "r") as f:
-                    runs_usages = json.load(f)
-            except Exception as e:
-                logging.warning(f"Could not parse runs environment usage file: {e}")
-
-        workload_report: Dict[str, Dict] = {}
-        if os.path.exists(workload_report_path):
-            try:
-                with open(workload_report_path, "r") as f:
-                    workload_report = json.load(f)
-            except Exception as e:
-                logging.warning(f"Could not parse workload report file: {e}")
-
-        # Helper to match tags that embed any of our IDs (env or revision)
-        def _tag_matches_ids(tag: str) -> bool:
-            if not tag or len(tag) < 24:
-                return False
-            prefix = tag[:24]
-            return prefix in all_ids
-
-        # Find workspace references (from workspace_env_usage_output.json)
+        # Use usage_tracker to find usage for all environment/revision IDs
+        usage_by_id = usage_tracker.find_usage_for_environment_ids(
+            all_ids,
+            mongodb_reports=mongodb_reports,
+            workload_report=workload_report
+        )
+        
+        # Aggregate results across all IDs
+        all_matching_tags: Set[str] = set()
         matching_workspaces: List[Dict] = []
-        for rec in workspace_usages:
-            tags: List[str] = []
-            for key in [
-                "environment_docker_tag",
-                "project_default_environment_docker_tag",
-                "compute_environment_docker_tag",
-                "session_environment_docker_tag",
-                "session_compute_environment_docker_tag",
-            ]:
-                val = rec.get(key)
-                if isinstance(val, str) and val:
-                    tags.append(val)
-            if any(_tag_matches_ids(tag) for tag in tags):
-                matching_workspaces.append(rec)
-
-        # Find execution / runs references (from runs_env_usage_output.json)
         matching_runs: List[Dict] = []
-        for rec in runs_usages:
-            env_id_val = str(rec.get("environment_id") or "")
-            rev_id_val = str(rec.get("environment_revision_id") or "")
-            tag = rec.get("environment_docker_tag")
-            if env_id_val in all_ids or rev_id_val in all_ids or (
-                isinstance(tag, str) and _tag_matches_ids(tag)
-            ):
-                matching_runs.append(rec)
-
-        # Find running workloads still using this environment (from workload-report.json)
         matching_workloads: Dict[str, Dict] = {}
-        for tag, info in workload_report.items():
-            if _tag_matches_ids(tag):
-                matching_workloads[tag] = info
+        seen_workspace_ids: Set[str] = set()
+        seen_run_ids: Set[str] = set()
+        
+        for env_id, usage_info in usage_by_id.items():
+            # Collect matching tags
+            all_matching_tags.update(usage_info['matching_tags'])
+            
+            # Collect workspaces (deduplicate by workspace_id)
+            for ws in usage_info['workspaces']:
+                ws_id = str(ws.get('workspace_id') or ws.get('_id') or ws.get('workspaceId') or '')
+                if ws_id and ws_id not in seen_workspace_ids:
+                    matching_workspaces.append(ws)
+                    seen_workspace_ids.add(ws_id)
+            
+            # Collect runs (deduplicate by run_id)
+            for run in usage_info['runs']:
+                run_id = str(run.get('run_id') or run.get('_id') or run.get('runId') or '')
+                if run_id and run_id not in seen_run_ids:
+                    matching_runs.append(run)
+                    seen_run_ids.add(run_id)
+        
+        # Build workload map from matching tags (includes pod information)
+        workload_map = workload_report.get('image_tags', workload_report)
+        for tag in all_matching_tags:
+            if tag in workload_map:
+                matching_workloads[tag] = workload_map[tag]
 
         # ------- Summary output -------
         logging.info("\n===== Environment Metadata =====")
