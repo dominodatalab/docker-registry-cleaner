@@ -51,7 +51,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -62,6 +62,8 @@ from image_data_analysis import ImageAnalyzer
 from logging_utils import setup_logging, get_logger
 from object_id_utils import read_typed_object_ids_from_file
 from report_utils import save_json
+from pathlib import Path
+import extract_metadata
 
 
 @dataclass
@@ -125,8 +127,138 @@ class IntelligentImageDeleter:
         except json.JSONDecodeError as e:
             self.logger.error(f"Invalid JSON in image analysis report: {e}")
             return {}
+    
+    def load_mongodb_usage_reports(self) -> Dict[str, List[Dict]]:
+        """Load MongoDB usage reports (runs, workspaces, models) that contain Docker image tag references
+        
+        Returns:
+            Dict with keys: 'runs', 'workspaces', 'models' containing lists of records
+        """
+        output_dir = config_manager.get_output_dir()
+        reports = {
+            'runs': [],
+            'workspaces': [],
+            'models': []
+        }
+        
+        # Load runs environment usage
+        runs_file = Path(output_dir) / config_manager.get_runs_env_usage_path()
+        if runs_file.exists():
+            try:
+                with open(runs_file, 'r') as f:
+                    content = f.read()
+                    # Try to parse as JSON
+                    try:
+                        reports['runs'] = json.loads(content)
+                        if not isinstance(reports['runs'], list):
+                            reports['runs'] = [reports['runs']] if reports['runs'] else []
+                    except json.JSONDecodeError:
+                        # Might be MongoDB extended JSON, try to parse it
+                        reports['runs'] = self._parse_mongodb_json(content)
+                self.logger.info(f"Loaded {len(reports['runs'])} runs environment records")
+            except Exception as e:
+                self.logger.warning(f"Could not load runs environment usage: {e}")
+        else:
+            self.logger.warning(f"Runs environment usage file not found: {runs_file}")
+            self.logger.info("  Tip: Run 'python main.py extract_metadata' to generate this report")
+        
+        # Load workspace environment usage
+        workspace_file = Path(output_dir) / "workspace_env_usage_output.json"
+        if workspace_file.exists():
+            try:
+                with open(workspace_file, 'r') as f:
+                    content = f.read()
+                    try:
+                        reports['workspaces'] = json.loads(content)
+                        if not isinstance(reports['workspaces'], list):
+                            reports['workspaces'] = [reports['workspaces']] if reports['workspaces'] else []
+                    except json.JSONDecodeError:
+                        reports['workspaces'] = self._parse_mongodb_json(content)
+                self.logger.info(f"Loaded {len(reports['workspaces'])} workspace environment records")
+            except Exception as e:
+                self.logger.warning(f"Could not load workspace environment usage: {e}")
+        else:
+            self.logger.warning(f"Workspace environment usage file not found: {workspace_file}")
+        
+        # Load model environment usage
+        model_file = Path(output_dir) / "model_env_usage_output.json"
+        if model_file.exists():
+            try:
+                with open(model_file, 'r') as f:
+                    content = f.read()
+                    try:
+                        reports['models'] = json.loads(content)
+                        if not isinstance(reports['models'], list):
+                            reports['models'] = [reports['models']] if reports['models'] else []
+                    except json.JSONDecodeError:
+                        reports['models'] = self._parse_mongodb_json(content)
+                self.logger.info(f"Loaded {len(reports['models'])} model environment records")
+            except Exception as e:
+                self.logger.warning(f"Could not load model environment usage: {e}")
+        else:
+            self.logger.warning(f"Model environment usage file not found: {model_file}")
+        
+        return reports
+    
+    def _parse_mongodb_json(self, content: str) -> List[dict]:
+        """Parse MongoDB extended JSON format to extract data"""
+        # First try to parse as a standard JSON array
+        try:
+            # Try to clean and parse
+            cleaned = content.strip()
+            # Remove MongoDB-specific syntax if present
+            cleaned = cleaned.replace('ObjectId(', '').replace('ISODate(', '').replace(')', '')
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, list):
+                return parsed
+            elif isinstance(parsed, dict):
+                return [parsed]
+        except:
+            pass
+        
+        # If that fails, return empty list
+        return []
+    
+    def extract_docker_tags_from_mongodb_reports(self, mongodb_reports: Dict[str, List[Dict]]) -> Set[str]:
+        """Extract Docker image tags from MongoDB usage reports
+        
+        Args:
+            mongodb_reports: Dict with 'runs', 'workspaces', 'models' keys containing lists of records
+        
+        Returns:
+            Set of Docker image tags (without type prefix, just the tag name)
+        """
+        tags = set()
+        
+        # Extract tags from runs
+        for record in mongodb_reports.get('runs', []):
+            # Runs have 'environment_docker_tag' field
+            if 'environment_docker_tag' in record and record['environment_docker_tag']:
+                tags.add(record['environment_docker_tag'])
+        
+        # Extract tags from workspaces
+        for record in mongodb_reports.get('workspaces', []):
+            # Workspaces can have multiple tag fields
+            tag_fields = [
+                'environment_docker_tag',
+                'project_default_environment_docker_tag',
+                'compute_environment_docker_tag',
+                'session_environment_docker_tag',
+                'session_compute_environment_docker_tag'
+            ]
+            for field in tag_fields:
+                if field in record and record[field]:
+                    tags.add(record[field])
+        
+        # Extract tags from models
+        for record in mongodb_reports.get('models', []):
+            # Models have 'environment_docker_tag' field
+            if 'environment_docker_tag' in record and record['environment_docker_tag']:
+                tags.add(record['environment_docker_tag'])
+        
+        return tags
 
-    def analyze_image_usage(self, workload_report: Dict, image_analysis: Dict, object_ids: Optional[List[str]] = None, object_ids_map: Optional[Dict[str, List[str]]] = None) -> WorkloadAnalysis:
+    def analyze_image_usage(self, workload_report: Dict, image_analysis: Dict, object_ids: Optional[List[str]] = None, object_ids_map: Optional[Dict[str, List[str]]] = None, mongodb_reports: Optional[Dict[str, List[Dict]]] = None) -> WorkloadAnalysis:
         """Analyze which images are used vs unused based on workload and image analysis
         
         Args:
@@ -150,7 +282,7 @@ class IntelligentImageDeleter:
                 for oid in oids:
                     oid_to_type[oid] = repo_type
         
-        # Get used images from workload report
+        # Get used images from workload report (running Kubernetes pods)
         # Support both formats:
         # - { "image_tags": { tag: {...} } }
         # - { tag: {...} }
@@ -158,6 +290,21 @@ class IntelligentImageDeleter:
         for tag, tag_info in workload_map.items():
             if tag_info.get('count', 0) > 0:
                 used_images.add(tag)
+        
+        # Get used images from MongoDB reports (runs, workspaces, models)
+        # This ensures we don't delete images referenced in execution history
+        if mongodb_reports:
+            mongodb_tags = self.extract_docker_tags_from_mongodb_reports(mongodb_reports)
+            if mongodb_tags:
+                original_count = len(used_images)
+                used_images.update(mongodb_tags)
+                added_count = len(used_images) - original_count
+                if added_count > 0:
+                    self.logger.info(f"Found {added_count} additional used images from MongoDB (runs/workspaces/models)")
+            else:
+                self.logger.info("No Docker tags found in MongoDB reports")
+        else:
+            self.logger.warning("MongoDB reports not provided - images referenced in runs/workspaces/models may be incorrectly marked as unused")
         
         # Filter by ObjectIDs if provided
         if object_ids:
@@ -390,7 +537,7 @@ class IntelligentImageDeleter:
         # Build results report
         results = {
             "dry_run": dry_run,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
             "summary": {
                 "total_images_analyzed": len(analysis.used_images) + len(analysis.unused_images),
                 "used_images": len(analysis.used_images),
@@ -871,6 +1018,21 @@ def main():
             if not workload_report or not image_analysis:
                 print("❌ Missing analysis reports. Run inspect-workload.py and image-data-analysis.py first.")
                 sys.exit(1)
+            
+            # Load MongoDB usage reports
+            print("📊 Loading MongoDB usage reports (runs, workspaces, models)...")
+            mongodb_reports = deleter.load_mongodb_usage_reports()
+            if not any(mongodb_reports.values()):
+                print("⚠️  Warning: No MongoDB usage reports found. Images referenced in runs/workspaces/models may be incorrectly marked as unused.")
+                print("   To ensure safety, run: python main.py extract_metadata")
+                response = input("   Continue anyway? (yes/no): ").lower().strip()
+                if response not in ['yes', 'y']:
+                    print("Operation cancelled. Please generate MongoDB reports first.")
+                    sys.exit(0)
+            else:
+                total_records = sum(len(v) for v in mongodb_reports.values())
+                print(f"   ✓ Loaded {total_records} MongoDB records")
+            
             merged_ids = None
             if object_ids_map:
                 merged = set()
@@ -880,7 +1042,7 @@ def main():
                 merged.update(object_ids_map.get('model_version', []))
                 merged_ids = sorted(merged)
                 print(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
-            analysis = deleter.analyze_image_usage(workload_report, image_analysis, merged_ids, object_ids_map)
+            analysis = deleter.analyze_image_usage(workload_report, image_analysis, merged_ids, object_ids_map, mongodb_reports)
 
             # Prepare tags to backup
             # Unused images are in format: type:tag (e.g., "environment:abc123...") or just "tag" (legacy)
@@ -931,6 +1093,22 @@ def main():
                 print("   Or use --skip-analysis to use traditional environments file method.")
                 sys.exit(1)
             
+            # Load MongoDB usage reports (runs, workspaces, models)
+            print("📊 Loading MongoDB usage reports (runs, workspaces, models)...")
+            mongodb_reports = deleter.load_mongodb_usage_reports()
+            
+            # Check if MongoDB reports are missing and suggest generating them
+            if not any(mongodb_reports.values()):
+                print("⚠️  Warning: No MongoDB usage reports found. Images referenced in runs/workspaces/models may be incorrectly marked as unused.")
+                print("   To ensure safety, run: python main.py extract_metadata")
+                response = input("   Continue anyway? (yes/no): ").lower().strip()
+                if response not in ['yes', 'y']:
+                    print("Operation cancelled. Please generate MongoDB reports first.")
+                    sys.exit(0)
+            else:
+                total_records = sum(len(v) for v in mongodb_reports.values())
+                print(f"   ✓ Loaded {total_records} MongoDB records (runs: {len(mongodb_reports['runs'])}, workspaces: {len(mongodb_reports['workspaces'])}, models: {len(mongodb_reports['models'])})")
+            
             # Analyze image usage
             print("🔍 Analyzing image usage patterns...")
             # For deletion, merge all typed IDs to a single set since we evaluate tags after registry prefix removal
@@ -943,7 +1121,7 @@ def main():
                 merged.update(object_ids_map.get('model_version', []))
                 merged_ids = sorted(merged)
                 print(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
-            analysis = deleter.analyze_image_usage(workload_report, image_analysis, merged_ids, object_ids_map)
+            analysis = deleter.analyze_image_usage(workload_report, image_analysis, merged_ids, object_ids_map, mongodb_reports)
             
             # Generate deletion report
             deleter.generate_deletion_report(analysis, args.output_report)
