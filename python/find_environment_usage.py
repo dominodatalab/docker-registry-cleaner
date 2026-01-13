@@ -4,14 +4,11 @@ Find usage of a given environment (or its revisions) across Domino.
 
 This script/function inspects:
   - MongoDB: environments_v2, environment_revisions, projects, scheduler_jobs, app_versions
-  - Pre-generated reports (if present): workspace_env_usage_output.json, runs_env_usage_output.json,
-    workload-report.json
+  - Pre-generated reports (if present): workspace_env_usage_output.json, runs_env_usage_output.json
 """
 
 import argparse
-import json
 import logging
-import os
 import sys
 from typing import Dict, List, Set
 
@@ -30,8 +27,7 @@ def find_environment_usage(env_id: str) -> None:
 
     This inspects:
       - MongoDB: environments_v2, environment_revisions, projects, scheduler_jobs, app_versions
-      - Pre-generated reports (if present): workspace_env_usage_output.json, runs_env_usage_output.json,
-        workload-report.json
+      - Pre-generated reports (if present): workspace_env_usage_output.json, runs_env_usage_output.json
     """
     setup_logging()
     logging.info(f"Finding usage for environment ID: {env_id}")
@@ -92,7 +88,6 @@ def find_environment_usage(env_id: str) -> None:
         
         # Load Docker tag usage reports
         mongodb_reports = usage_tracker.load_mongodb_usage_reports()
-        workload_report = usage_tracker.load_workload_report()
         
         workspace_usages = mongodb_reports.get('workspaces', [])
         runs_usages = mongodb_reports.get('runs', [])
@@ -100,15 +95,13 @@ def find_environment_usage(env_id: str) -> None:
         # Use usage_tracker to find usage for all environment/revision IDs
         usage_by_id = usage_tracker.find_usage_for_environment_ids(
             all_ids,
-            mongodb_reports=mongodb_reports,
-            workload_report=workload_report
+            mongodb_reports=mongodb_reports
         )
         
         # Aggregate results across all IDs
         all_matching_tags: Set[str] = set()
         matching_workspaces: List[Dict] = []
         matching_runs: List[Dict] = []
-        matching_workloads: Dict[str, Dict] = {}
         seen_workspace_ids: Set[str] = set()
         seen_run_ids: Set[str] = set()
         
@@ -129,12 +122,6 @@ def find_environment_usage(env_id: str) -> None:
                 if run_id and run_id not in seen_run_ids:
                     matching_runs.append(run)
                     seen_run_ids.add(run_id)
-        
-        # Build workload map from matching tags (includes pod information)
-        workload_map = workload_report.get('image_tags', workload_report)
-        for tag in all_matching_tags:
-            if tag in workload_map:
-                matching_workloads[tag] = workload_map[tag]
 
         # ------- Summary output -------
         logging.info("\n===== Environment Metadata =====")
@@ -233,18 +220,6 @@ def find_environment_usage(env_id: str) -> None:
                 )
         else:
             logging.info("No run usage records found for this environment.")
-
-        logging.info("\n===== Active Workloads (from workload-report.json) =====")
-        if matching_workloads:
-            logging.info(f"Found {len(matching_workloads)} workload image tags currently running.")
-            for tag, info in matching_workloads.items():
-                pods = info.get("pods", [])
-                labels = info.get("labels", [])
-                logging.info(
-                    f"Tag {tag} -> pods={pods} labels={labels}"
-                )
-        else:
-            logging.info("No active workloads found using this environment's image tags.")
 
         logging.info("\n✅ Environment usage lookup completed.")
     finally:

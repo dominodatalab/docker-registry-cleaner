@@ -40,7 +40,7 @@ Usage examples:
   python delete_image.py --apply --file object_ids.txt
 
   # Optional: Custom report paths
-  python delete_image.py --workload-report reports/workload.json --image-analysis reports/analysis.json
+  python delete_image.py --image-analysis reports/analysis.json
 
 # Optional: Clean up MongoDB references after deletion (disabled by default)
 python delete_image.py --apply --mongo-cleanup
@@ -63,7 +63,6 @@ from logging_utils import setup_logging, get_logger
 from object_id_utils import read_typed_object_ids_from_file
 from report_utils import save_json
 from pathlib import Path
-import extract_metadata
 
 
 @dataclass
@@ -312,16 +311,12 @@ class IntelligentImageDeleter:
         """Generate a human-readable summary of why an image is in use
         
         Args:
-            usage: Usage dictionary with 'pods', 'runs', 'workspaces', 'models' info
+            usage: Usage dictionary with 'runs', 'workspaces', 'models', 'scheduler_jobs', 'projects' info
         
         Returns:
             Human-readable string describing usage
         """
         reasons = []
-        
-        if usage.get('pods'):
-            pod_count = len(usage['pods'])
-            reasons.append(f"{pod_count} running pod{'s' if pod_count > 1 else ''}")
         
         if usage.get('runs_count', 0) > 0:
             run_count = usage['runs_count']
@@ -335,16 +330,23 @@ class IntelligentImageDeleter:
             model_count = usage['models_count']
             reasons.append(f"{model_count} model{'s' if model_count > 1 else ''}")
         
+        if usage.get('scheduler_jobs'):
+            scheduler_count = len(usage['scheduler_jobs'])
+            reasons.append(f"{scheduler_count} scheduler job{'s' if scheduler_count > 1 else ''}")
+        
+        if usage.get('projects'):
+            project_count = len(usage['projects'])
+            reasons.append(f"{project_count} project{'s' if project_count > 1 else ''} using as default")
+        
         if not reasons:
             return "Referenced in system (source unknown)"
         
         return ", ".join(reasons)
 
-    def analyze_image_usage(self, workload_report: Dict, image_analysis: Dict, object_ids: Optional[List[str]] = None, object_ids_map: Optional[Dict[str, List[str]]] = None, mongodb_reports: Optional[Dict[str, List[Dict]]] = None) -> WorkloadAnalysis:
-        """Analyze which images are used vs unused based on workload and image analysis
+    def analyze_image_usage(self, image_analysis: Dict, object_ids: Optional[List[str]] = None, object_ids_map: Optional[Dict[str, List[str]]] = None, mongodb_reports: Optional[Dict[str, List[Dict]]] = None) -> WorkloadAnalysis:
+        """Analyze which images are used vs unused based on MongoDB reports and image analysis
         
         Args:
-            workload_report: Workload analysis report
             image_analysis: Image analysis report
             object_ids: List of ObjectIDs to filter by (merged from all types)
             object_ids_map: Dict mapping image types to ObjectID lists (e.g., {'environment': [...], 'model': [...]})
@@ -367,29 +369,7 @@ class IntelligentImageDeleter:
         # Track usage sources for each image
         usage_sources = {}  # Maps tag -> dict with usage info
         
-        # Get used images from workload report (running Kubernetes pods)
-        # Support both formats:
-        # - { "image_tags": { tag: {...} } }
-        # - { tag: {...} }
-        workload_map = workload_report.get('image_tags', workload_report)
-        for tag, tag_info in workload_map.items():
-            if tag_info.get('count', 0) > 0:
-                used_images.add(tag)
-                if tag not in usage_sources:
-                    usage_sources[tag] = {
-                        'pods': [],
-                        'runs': [],
-                        'workspaces': [],
-                        'models': []
-                    }
-                # Store pod information
-                pods_using = tag_info.get('pods', [])
-                if isinstance(pods_using, list):
-                    usage_sources[tag]['pods'] = pods_using
-                elif isinstance(pods_using, str):
-                    usage_sources[tag]['pods'] = [pods_using]
-        
-        # Get used images from MongoDB reports (runs, workspaces, models)
+        # Get used images from MongoDB reports (runs, workspaces, models, scheduler_jobs, projects)
         # This ensures we don't delete images referenced in execution history
         if mongodb_reports:
             mongodb_tags, mongodb_usage_info = self.extract_docker_tags_with_usage_info_from_mongodb_reports(mongodb_reports)
@@ -407,11 +387,15 @@ class IntelligentImageDeleter:
                             'pods': [],
                             'runs': [],
                             'workspaces': [],
-                            'models': []
+                            'models': [],
+                            'scheduler_jobs': [],
+                            'projects': []
                         }
                     usage_sources[tag]['runs'].extend(usage_info.get('runs', []))
                     usage_sources[tag]['workspaces'].extend(usage_info.get('workspaces', []))
                     usage_sources[tag]['models'].extend(usage_info.get('models', []))
+                    usage_sources[tag]['scheduler_jobs'].extend(usage_info.get('scheduler_jobs', []))
+                    usage_sources[tag]['projects'].extend(usage_info.get('projects', []))
             else:
                 self.logger.info("No Docker tags found in MongoDB reports")
         else:
@@ -503,16 +487,15 @@ class IntelligentImageDeleter:
                 'layer_id': '',
                 'status': 'used' if tag_name in used_images else 'unused',
                 'usage': {
-                    'pods': tag_usage['pods'],
                     'runs_count': len(tag_usage['runs']),
                     'runs': tag_usage['runs'][:5],  # Limit to first 5 for display
                     'workspaces_count': len(tag_usage['workspaces']),
                     'workspaces': tag_usage['workspaces'][:5],  # Limit to first 5 for display
                     'models_count': len(tag_usage['models']),
-                    'models': tag_usage['models'][:5]  # Limit to first 5 for display
-                },
-                # Keep legacy 'pods_using' for backward compatibility
-                'pods_using': tag_usage['pods']
+                    'models': tag_usage['models'][:5],  # Limit to first 5 for display
+                    'scheduler_jobs': tag_usage.get('scheduler_jobs', []),
+                    'projects': tag_usage.get('projects', [])
+                }
             }
         
         # Also create stats entries for tags in used_images that aren't in all_tags
@@ -536,7 +519,9 @@ class IntelligentImageDeleter:
                     'pods': [],
                     'runs': [],
                     'workspaces': [],
-                    'models': []
+                    'models': [],
+                    'scheduler_jobs': [],
+                    'projects': []
                 })
                 
                 image_usage_stats[used_tag] = {
@@ -550,7 +535,9 @@ class IntelligentImageDeleter:
                         'workspaces_count': len(tag_usage['workspaces']),
                         'workspaces': tag_usage['workspaces'][:5],
                         'models_count': len(tag_usage['models']),
-                        'models': tag_usage['models'][:5]
+                        'models': tag_usage['models'][:5],
+                        'scheduler_jobs': tag_usage.get('scheduler_jobs', []),
+                        'projects': tag_usage.get('projects', [])
                     },
                     'pods_using': tag_usage['pods']
                 }
@@ -966,7 +953,8 @@ class IntelligentImageDeleter:
                 usage = stats.get('usage', {})
                 # Check if usage dict is actually empty (all lists are empty)
                 if usage and (usage.get('pods') or usage.get('runs_count', 0) > 0 or 
-                             usage.get('workspaces_count', 0) > 0 or usage.get('models_count', 0) > 0):
+                             usage.get('workspaces_count', 0) > 0 or usage.get('models_count', 0) > 0 or
+                             usage.get('scheduler_jobs') or usage.get('projects')):
                     usage_summary = self._generate_usage_summary(usage)
                 else:
                     usage_summary = "Referenced in system (source unknown)"
@@ -1081,7 +1069,6 @@ def parse_arguments():
     parser.add_argument("--password", help="Password for registry access (optional; defaults to REGISTRY_PASSWORD env var or config.yaml)")
     parser.add_argument("--apply", action="store_true", help="Actually apply changes and delete images (default is dry-run)")
     parser.add_argument("--force", action="store_true", help="Skip confirmation prompt when using --apply")
-    parser.add_argument("--workload-report", default=config_manager.get_workload_report_path(), help="Path to workload analysis report")
     parser.add_argument("--image-analysis", default=config_manager.get_image_analysis_path(), help="Path to image analysis report")
     parser.add_argument("--output-report", default=config_manager.get_deletion_analysis_path(), help="Path for deletion analysis report")
     parser.add_argument("--skip-analysis", action="store_true", help="Skip workload analysis and use traditional environments file")
@@ -1279,7 +1266,7 @@ def main():
                 merged.update(object_ids_map.get('model_version', []))
                 merged_ids = sorted(merged)
                 print(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
-            analysis = deleter.analyze_image_usage(workload_report, image_analysis, merged_ids, object_ids_map, mongodb_reports)
+            analysis = deleter.analyze_image_usage(image_analysis, merged_ids, object_ids_map, mongodb_reports)
 
             # Prepare tags to backup
             # Unused images are in format: type:tag (e.g., "environment:abc123...") or just "tag" (legacy)
@@ -1358,7 +1345,7 @@ def main():
                 merged.update(object_ids_map.get('model_version', []))
                 merged_ids = sorted(merged)
                 print(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
-            analysis = deleter.analyze_image_usage(workload_report, image_analysis, merged_ids, object_ids_map, mongodb_reports)
+            analysis = deleter.analyze_image_usage(image_analysis, merged_ids, object_ids_map, mongodb_reports)
             
             # Generate deletion report
             deleter.generate_deletion_report(analysis, args.output_report)
