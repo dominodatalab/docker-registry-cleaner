@@ -15,9 +15,7 @@ data:
 
     # Kubernetes Configuration
     kubernetes:
-      platform_namespace: "domino-platform"
-      compute_namespace: "domino-compute"
-      pod_prefixes: ["model-", "run-"]
+      domino_platform_namespace: "domino-platform"
 
     # Mongo Configuration
     mongo:
@@ -32,6 +30,26 @@ data:
       timeout: 300
       output_dir: "../reports"
 
+    # Retry Configuration
+    retry:
+      max_retries: 3          # Maximum number of retry attempts for network operations
+      initial_delay: 1.0      # Initial delay in seconds before first retry
+      max_delay: 60.0         # Maximum delay between retries in seconds
+      exponential_base: 2.0   # Base for exponential backoff (delay = initial_delay * (base ^ attempt))
+      jitter: true            # Add random jitter to prevent thundering herd
+      timeout: 300            # Timeout for subprocess calls in seconds
+
+    # Cache Configuration
+    cache:
+      enabled: true           # Enable caching for expensive operations
+      tag_list_ttl: 1800      # Tag list cache TTL in seconds (30 minutes)
+      tag_list_max_size: 100  # Maximum number of cached tag lists
+      image_inspect_ttl: 3600 # Image inspection cache TTL in seconds (1 hour)
+      image_inspect_max_size: 1000  # Maximum number of cached image inspections
+      mongo_query_ttl: 600    # MongoDB query cache TTL in seconds (10 minutes)
+      mongo_query_max_size: 500  # Maximum number of cached MongoDB queries
+      layer_calc_ttl: 7200    # Layer calculation cache TTL in seconds (2 hours)
+      layer_calc_max_size: 2000  # Maximum number of cached layer calculations
     # S3 Backup Configuration
     s3:
       bucket: ""  # S3 bucket for image backups (optional, can be set via --s3-bucket flag)
@@ -51,8 +69,9 @@ data:
       tags_per_layer: "tags-per-layer.json"
       tag_sums: "tag-sums.json"
       unused_references: "unused-references.json"
-      workload_report: "workload-report.json"
       runs_env_usage: "runs_env_usage_output.json"
+      model_env_usage: "model_env_usage_output.json"
+      workspace_env_usage: "workspace_env_usage_output.json"
 
     # Security Configuration
     security:

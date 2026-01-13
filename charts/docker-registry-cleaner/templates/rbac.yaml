@@ -1,0 +1,47 @@
+{{- $saName := default (include "docker-registry-cleaner.fullname" .) .Values.serviceAccount.name -}}
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $saName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "docker-registry-cleaner.name" . }}
+    helm.sh/chart: {{ include "docker-registry-cleaner.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "docker-registry-cleaner.fullname" . }}-registry
+  namespace: {{ .Values.dominoPlatformNamespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "docker-registry-cleaner.name" . }}
+    helm.sh/chart: {{ include "docker-registry-cleaner.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "docker-registry-cleaner.fullname" . }}-registry
+  namespace: {{ .Values.dominoPlatformNamespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "docker-registry-cleaner.name" . }}
+    helm.sh/chart: {{ include "docker-registry-cleaner.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "docker-registry-cleaner.fullname" . }}-registry
+subjects:
+  - kind: ServiceAccount
+    name: {{ $saName }}
+    namespace: {{ .Release.Namespace }}

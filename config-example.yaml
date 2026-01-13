@@ -8,9 +8,7 @@ registry:
 
 # Kubernetes Configuration
 kubernetes:
-  platform_namespace: "domino-platform"
-  compute_namespace: "domino-compute"
-  pod_prefixes: ["model-", "run-"]
+  domino_platform_namespace: "domino-platform"
 
 # Mongo Configuration
 mongo:
@@ -65,8 +63,9 @@ reports:
   tags_per_layer: "tags-per-layer.json"
   tag_sums: "tag-sums.json"
   unused_references: "unused-references.json"
-  workload_report: "workload-report.json"
   runs_env_usage: "runs_env_usage_output.json"
+  model_env_usage: "model_env_usage_output.json"
+  workspace_env_usage: "workspace_env_usage_output.json"
 
 # Security Configuration
 security:

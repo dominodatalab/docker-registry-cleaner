@@ -91,7 +91,7 @@ class IntelligentImageDeleter:
                  enable_docker_deletion: bool = False, registry_statefulset: str = None):
         self.registry_url = registry_url or config_manager.get_registry_url()
         self.repository = repository or config_manager.get_repository()
-        self.namespace = namespace or config_manager.get_platform_namespace()
+        self.namespace = namespace or config_manager.get_domino_platform_namespace()
         self.logger = get_logger(__name__)
         
         # Initialize Skopeo client for local execution (same as other delete scripts)
@@ -103,8 +103,10 @@ class IntelligentImageDeleter:
             registry_statefulset=registry_statefulset
         )
     
-    def load_image_analysis_report(self, report_path: str = "final-report.json") -> Dict:
+    def load_image_analysis_report(self, report_path: Optional[str] = None) -> Dict:
         """Load image analysis report from JSON file"""
+        if report_path is None:
+            report_path = config_manager.get_image_analysis_path()
         try:
             with open(report_path, 'r') as f:
                 return json.load(f)
@@ -121,7 +123,6 @@ class IntelligentImageDeleter:
         Returns:
             Dict with keys: 'runs', 'workspaces', 'models' containing lists of records
         """
-        output_dir = config_manager.get_output_dir()
         reports = {
             'runs': [],
             'workspaces': [],
@@ -129,7 +130,7 @@ class IntelligentImageDeleter:
         }
         
         # Load runs environment usage
-        runs_file = Path(output_dir) / config_manager.get_runs_env_usage_path()
+        runs_file = Path(config_manager.get_runs_env_usage_path())
         if runs_file.exists():
             try:
                 with open(runs_file, 'r') as f:
@@ -150,7 +151,7 @@ class IntelligentImageDeleter:
             self.logger.info("  Tip: Run 'python main.py extract_metadata' to generate this report")
         
         # Load workspace environment usage
-        workspace_file = Path(output_dir) / "workspace_env_usage_output.json"
+        workspace_file = Path(config_manager.get_workspace_env_usage_path())
         if workspace_file.exists():
             try:
                 with open(workspace_file, 'r') as f:
@@ -168,7 +169,7 @@ class IntelligentImageDeleter:
             self.logger.warning(f"Workspace environment usage file not found: {workspace_file}")
         
         # Load model environment usage
-        model_file = Path(output_dir) / "model_env_usage_output.json"
+        model_file = Path(config_manager.get_model_env_usage_path())
         if model_file.exists():
             try:
                 with open(model_file, 'r') as f:

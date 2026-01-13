@@ -4,7 +4,6 @@ Archive unused environments in MongoDB (set isArchived = true on environments_v2
 
 This script reuses the unused-environment detection logic from delete_unused_environments.py
 to identify environments that are not used by:
-- Workloads (via inspect_workload / workload-report)
 - Project defaults (projects.overrideV2EnvironmentId)
 as well as other known usage locations (workspaces, models, runs, scheduled jobs, app versions).
 
@@ -90,7 +89,7 @@ Examples:
     parser.add_argument(
         '--generate-reports',
         action='store_true',
-        help='Generate required metadata reports (extract_metadata + inspect_workload) before analysis'
+        help='Generate required metadata reports (extract_metadata) before analysis'
     )
 
     parser.add_argument(
@@ -124,11 +123,9 @@ def find_unused_environment_docs(recent_days: int | None, generate_reports: bool
     )
 
     # Ensure metadata reports exist if requested
-    output_dir = config_manager.get_output_dir()
     reports_exist = all([
-        (Path(output_dir) / "model_env_usage_output.json").exists(),
-        (Path(output_dir) / "workspace_env_usage_output.json").exists(),
-        (Path(output_dir) / "workload-report.json").exists()
+        Path(config_manager.get_model_env_usage_path()).exists(),
+        Path(config_manager.get_workspace_env_usage_path()).exists()
     ])
 
     if generate_reports or not reports_exist:

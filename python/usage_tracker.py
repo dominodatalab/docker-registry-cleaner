@@ -31,7 +31,7 @@ class ImageUsageTracker:
         }
         
         # Load runs environment usage
-        runs_file = Path(output_dir) / config_manager.get_runs_env_usage_path()
+        runs_file = Path(config_manager.get_runs_env_usage_path())
         if runs_file.exists():
             try:
                 with open(runs_file, 'r') as f:
@@ -49,7 +49,7 @@ class ImageUsageTracker:
             self.logger.warning(f"Runs environment usage file not found: {runs_file}")
         
         # Load workspace environment usage
-        workspace_file = Path(output_dir) / "workspace_env_usage_output.json"
+        workspace_file = Path(config_manager.get_workspace_env_usage_path())
         if workspace_file.exists():
             try:
                 with open(workspace_file, 'r') as f:
@@ -65,7 +65,7 @@ class ImageUsageTracker:
                 self.logger.warning(f"Could not load workspace environment usage: {e}")
         
         # Load model environment usage
-        model_file = Path(output_dir) / "model_env_usage_output.json"
+        model_file = Path(config_manager.get_model_env_usage_path())
         if model_file.exists():
             try:
                 with open(model_file, 'r') as f:

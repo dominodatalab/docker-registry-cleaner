@@ -4,7 +4,7 @@ Find usage of a given environment (or its revisions) across Domino.
 
 This script/function inspects:
   - MongoDB: environments_v2, environment_revisions, projects, scheduler_jobs, app_versions
-  - Pre-generated reports (if present): workspace_env_usage_output.json, runs_env_usage_output.json
+  - Pre-generated reports (if present): workspace_env_usage and runs_env_usage (from config)
 """
 
 import argparse
@@ -27,7 +27,7 @@ def find_environment_usage(env_id: str) -> None:
 
     This inspects:
       - MongoDB: environments_v2, environment_revisions, projects, scheduler_jobs, app_versions
-      - Pre-generated reports (if present): workspace_env_usage_output.json, runs_env_usage_output.json
+      - Pre-generated reports (if present): workspace_env_usage and runs_env_usage (from config)
     """
     setup_logging()
     logging.info(f"Finding usage for environment ID: {env_id}")
@@ -189,7 +189,7 @@ def find_environment_usage(env_id: str) -> None:
         else:
             logging.info("No environment_revisions found that clone from this environment's revisions.")
 
-        logging.info("\n===== Workspace Usage (from workspace_env_usage_output.json) =====")
+        logging.info("\n===== Workspace Usage =====")
         if matching_workspaces:
             logging.info(f"Found {len(matching_workspaces)} workspace records referencing this environment.")
             # Print a concise line per record if possible
@@ -203,7 +203,7 @@ def find_environment_usage(env_id: str) -> None:
         else:
             logging.info("No workspace usage records found for this environment.")
 
-        logging.info("\n===== Run / Execution Usage (from runs_env_usage_output.json) =====")
+        logging.info("\n===== Run / Execution Usage =====")
         if matching_runs:
             logging.info(f"Found {len(matching_runs)} run records referencing this environment.")
             for rec in matching_runs[:50]:

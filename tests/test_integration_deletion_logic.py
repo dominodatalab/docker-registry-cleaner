@@ -26,12 +26,13 @@ class TestDeletionLogic:
     
     def test_analyze_image_usage_identifies_unused_images(self):
         """Test that analyze_image_usage correctly identifies unused images"""
-        # Mock workload report - tag1 is used, tag2 is not
-        workload_report = {
-            "image_tags": {
-                "tag1": {"count": 1, "pods": ["pod1"]},
-                "tag2": {"count": 0, "pods": []}
-            }
+        # Mock MongoDB reports - tag1 is used in a run, tag2 is not
+        mongodb_reports = {
+            "runs": [
+                {"environment_docker_tag": "tag1", "run_id": "run1"}
+            ],
+            "workspaces": [],
+            "models": []
         }
         
         # Mock image analysis - both tags exist
@@ -43,7 +44,7 @@ class TestDeletionLogic:
             }
         }
         
-        analysis = self.deleter.analyze_image_usage(workload_report, image_analysis)
+        analysis = self.deleter.analyze_image_usage(image_analysis, mongodb_reports=mongodb_reports)
         
         assert "tag1" in analysis.used_images
         assert "tag2" not in analysis.used_images
@@ -51,14 +52,6 @@ class TestDeletionLogic:
     
     def test_analyze_image_usage_with_object_id_filtering(self):
         """Test that ObjectID filtering works correctly"""
-        workload_report = {
-            "image_tags": {
-                "507f1f77bcf86cd799439011": {"count": 1},
-                "507f1f77bcf86cd799439012": {"count": 0},
-                "507f1f77bcf86cd799439999": {"count": 0}  # Different ObjectID
-            }
-        }
-        
         image_analysis = {
             "layer1": {
                 "size": 1000,
@@ -71,7 +64,6 @@ class TestDeletionLogic:
         object_ids_map = {"environment": ["507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012"]}
         
         analysis = self.deleter.analyze_image_usage(
-            workload_report, 
             image_analysis, 
             object_ids=object_ids,
             object_ids_map=object_ids_map
@@ -292,12 +284,13 @@ class TestDeletionFlowIntegration:
         )
         deleter.skopeo_client = mock_skopeo
         
-        # Create workload and image analysis
-        workload_report = {
-            "image_tags": {
-                "tag1": {"count": 1},
-                "tag2": {"count": 0}
-            }
+        # Create MongoDB reports and image analysis
+        mongodb_reports = {
+            "runs": [
+                {"environment_docker_tag": "tag1", "run_id": "run1"}
+            ],
+            "workspaces": [],
+            "models": []
         }
         
         image_analysis = {
@@ -309,7 +302,7 @@ class TestDeletionFlowIntegration:
         }
         
         # Analyze
-        analysis = deleter.analyze_image_usage(workload_report, image_analysis)
+        analysis = deleter.analyze_image_usage(image_analysis, mongodb_reports=mongodb_reports)
         
         # Verify unused images identified
         assert "tag2" in [tag.split(':')[1] if ':' in tag else tag for tag in analysis.unused_images]
@@ -322,7 +315,6 @@ class TestDeletionFlowIntegration:
     
     def test_object_id_type_mapping(self):
         """Test that ObjectID type mapping works correctly"""
-        workload_report = {"image_tags": {}}
         image_analysis = {
             "layer1": {
                 "size": 1000,
@@ -337,7 +329,6 @@ class TestDeletionFlowIntegration:
         }
         
         analysis = self.deleter.analyze_image_usage(
-            workload_report,
             image_analysis,
             object_ids=object_ids,
             object_ids_map=object_ids_map

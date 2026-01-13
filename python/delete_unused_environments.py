@@ -2,13 +2,12 @@
 """
 Find and optionally delete unused environment tags in MongoDB and Docker registry.
 
-This script analyzes metadata from extract_metadata.py and inspect_workload.py to identify
+This script analyzes metadata from extract_metadata.py to identify
 environments that are not being used in workspaces, models, project defaults, scheduled jobs, or app versions.
 
 Workflow:
 - Auto-generate required reports if they don't exist (or use --generate-reports to force)
   - Extract model and workspace environment usage from MongoDB
-  - Inspect Kubernetes workloads to find running containers
 - Query MongoDB for all environments, project defaults, scheduled job environments, and app version environments
 - Identify environments NOT being used anywhere
 - Find Docker tags containing these unused environment ObjectIDs
@@ -55,7 +54,6 @@ from typing import Dict, List, Optional, Set
 import extract_metadata
 from config_manager import config_manager, SkopeoClient
 from image_data_analysis import ImageAnalyzer
-from inspect_workload import WorkloadInspector
 from logging_utils import setup_logging, get_logger
 from mongo_utils import get_mongo_client
 from report_utils import save_json
@@ -165,7 +163,7 @@ class UnusedEnvironmentsFinder:
         return ""
     
     def generate_required_reports(self) -> None:
-        """Generate required metadata reports by calling extract_metadata and inspect_workload"""
+        """Generate required metadata reports by calling extract_metadata"""
         self.logger.info("Generating required metadata reports...")
         
         # Generate metadata from MongoDB
@@ -176,38 +174,11 @@ class UnusedEnvironmentsFinder:
         except Exception as e:
             self.logger.error(f"Failed to extract metadata: {e}")
             raise
-        
-        # Generate workload report from Kubernetes
-        self.logger.info("Inspecting Kubernetes workloads...")
-        try:
-            inspector = WorkloadInspector(
-                registry_url=self.registry_url,
-                prefix_to_remove=f"{self.registry_url}/",
-                namespace=config_manager.get_compute_namespace()
-            )
-            
-            image_tags = inspector.analyze_pods_parallel(
-                pod_prefixes=config_manager.get_pod_prefixes(),
-                max_workers=config_manager.get_max_workers(),
-                object_ids=None
-            )
-            
-            # Generate report using config-managed path
-            workload_json = Path(config_manager.get_workload_report_path())
-            workload_base = str(workload_json.parent / workload_json.stem)
-            inspector.generate_report(image_tags, workload_base)
-            
-            self.logger.info("✓ Workload inspection completed")
-        except Exception as e:
-            self.logger.error(f"Failed to inspect workloads: {e}")
-            raise
     
     def load_metadata_files(self) -> tuple:
-        """Load metadata files from extract_metadata.py and inspect_workload.py"""
-        output_dir = config_manager.get_output_dir()
-        
+        """Load metadata files from extract_metadata.py"""
         # Load model environment usage
-        model_env_file = Path(output_dir) / "model_env_usage_output.json"
+        model_env_file = Path(config_manager.get_model_env_usage_path())
         model_env_data = []
         if model_env_file.exists():
             try:
@@ -223,7 +194,7 @@ class UnusedEnvironmentsFinder:
             self.logger.warning(f"Model environment usage file not found: {model_env_file}")
         
         # Load workspace environment usage
-        workspace_env_file = Path(output_dir) / "workspace_env_usage_output.json"
+        workspace_env_file = Path(config_manager.get_workspace_env_usage_path())
         workspace_env_data = []
         if workspace_env_file.exists():
             try:
@@ -236,21 +207,8 @@ class UnusedEnvironmentsFinder:
         else:
             self.logger.warning(f"Workspace environment usage file not found: {workspace_env_file}")
         
-        # Load workload report
-        workload_file = Path(output_dir) / "workload-report.json"
-        workload_data = {}
-        if workload_file.exists():
-            try:
-                with open(workload_file, 'r') as f:
-                    workload_data = json.load(f)
-                self.logger.info(f"Loaded {len(workload_data)} workload tags")
-            except Exception as e:
-                self.logger.warning(f"Could not load workload report: {e}")
-        else:
-            self.logger.warning(f"Workload report file not found: {workload_file}")
-        
         # Load runs usage file (new)
-        runs_env_file = Path(output_dir) / "runs_env_usage_output.json"
+        runs_env_file = Path(config_manager.get_runs_env_usage_path())
         runs_env_data = []
         if runs_env_file.exists():
             try:
@@ -262,7 +220,7 @@ class UnusedEnvironmentsFinder:
         else:
             self.logger.warning(f"Runs environment usage file not found: {runs_env_file}")
 
-        return model_env_data, workspace_env_data, workload_data, runs_env_data
+        return model_env_data, workspace_env_data, runs_env_data
     
     def _parse_mongodb_json(self, content: str) -> List[dict]:
         """Parse MongoDB extended JSON format to extract data"""
@@ -329,7 +287,6 @@ class UnusedEnvironmentsFinder:
     
     def extract_used_environment_ids(self, model_env_data: List[dict], 
                                      workspace_env_data: List[dict],
-                                     workload_data: Dict,
                                      runs_env_data: List[dict],
                                      recent_days: Optional[int]) -> Set[str]:
         """Extract all environment and revision IDs that are currently in use"""
@@ -373,12 +330,6 @@ class UnusedEnvironmentsFinder:
                 obj_id = self.extract_object_id_from_tag(record['session_compute_environment_docker_tag'])
                 if obj_id:
                     used_ids.add(obj_id)
-        
-        # From workload report - extract ObjectIDs from running tags
-        for tag in workload_data.keys():
-            obj_id = self.extract_object_id_from_tag(tag)
-            if obj_id:
-                used_ids.add(obj_id)
 
         # From runs history - add environmentId and environmentRevisionId
         # If recent_days is provided, only count runs whose 'started' is within the window
@@ -549,14 +500,13 @@ class UnusedEnvironmentsFinder:
         after this analysis (e.g., new pods, runs, or workspaces).
         """
         # Load metadata files
-        model_env_data, workspace_env_data, workload_data, runs_env_data = self.load_metadata_files()
+        model_env_data, workspace_env_data, runs_env_data = self.load_metadata_files()
         
         # Extract IDs that are in use
         # Note: This is based on the reports at analysis time. Real-time check happens before deletion.
         used_ids = self.extract_used_environment_ids(
             model_env_data,
             workspace_env_data,
-            workload_data,
             runs_env_data,
             recent_days=self.recent_days
         )
@@ -1147,7 +1097,7 @@ Examples:
     parser.add_argument(
         '--generate-reports',
         action='store_true',
-        help='Generate required metadata reports (extract_metadata + inspect_workload) before analysis'
+        help='Generate required metadata reports (extract_metadata) before analysis'
     )
     
     parser.add_argument(
@@ -1249,11 +1199,9 @@ def main():
         )
         
         # Check if reports need to be generated
-        output_dir = config_manager.get_output_dir()
         reports_exist = all([
-            (Path(output_dir) / "model_env_usage_output.json").exists(),
-            (Path(output_dir) / "workspace_env_usage_output.json").exists(),
-            (Path(output_dir) / "workload-report.json").exists()
+            Path(config_manager.get_model_env_usage_path()).exists(),
+            Path(config_manager.get_workspace_env_usage_path()).exists()
         ])
         
         # Generate reports if requested or if they don't exist

@@ -234,7 +234,6 @@ def runs_env_usage_pipeline() -> List[dict]:
 def run(target: str) -> None:
 	mongo_uri = config_manager.get_mongo_connection_string()
 	mongo_db = config_manager.get_mongo_db()
-	output_dir = config_manager.get_output_dir()
 
 	client = get_mongo_client()
 	try:
@@ -242,15 +241,15 @@ def run(target: str) -> None:
 		if target in ("model", "all"):
 			logger.info("Running model environment usage aggregation...")
 			model_results = list(db.models.aggregate(model_env_usage_pipeline()))
-			save_json(os.path.join(output_dir, "model_env_usage_output.json"), bson_to_jsonable(model_results))
+			save_json(config_manager.get_model_env_usage_path(), bson_to_jsonable(model_results))
 		if target in ("workspace", "all"):
 			logger.info("Running workspace environment usage aggregation...")
 			workspace_results = list(db.workspace.aggregate(workspace_env_usage_pipeline()))
-			save_json(os.path.join(output_dir, "workspace_env_usage_output.json"), bson_to_jsonable(workspace_results))
+			save_json(config_manager.get_workspace_env_usage_path(), bson_to_jsonable(workspace_results))
 		if target in ("runs", "all"):
 			logger.info("Running runs environment usage aggregation...")
 			runs_results = list(db.runs.aggregate(runs_env_usage_pipeline()))
-			save_json(os.path.join(output_dir, "runs_env_usage_output.json"), bson_to_jsonable(runs_results))
+			save_json(config_manager.get_runs_env_usage_path(), bson_to_jsonable(runs_results))
 	finally:
 		client.close()
 
