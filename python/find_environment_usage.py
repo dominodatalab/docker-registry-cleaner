@@ -49,8 +49,6 @@ def find_environment_usage(env_id: str) -> None:
         # Base environment document
         envs_coll = db["environments_v2"]
         revs_coll = db["environment_revisions"]
-        projects_coll = db["projects"]
-        scheduler_coll = db["scheduler_jobs"]
 
         environment = envs_coll.find_one({"_id": env_obj_id})
         if not environment:
@@ -66,44 +64,6 @@ def find_environment_usage(env_id: str) -> None:
 
         all_ids: Set[str] = {env_id} | revision_ids
 
-        # Projects using this environment as default
-        projects = list(
-            projects_coll.find(
-                {"overrideV2EnvironmentId": env_obj_id},
-                {"_id": 1, "name": 1, "ownerId": 1},
-            )
-        )
-
-        # Scheduler jobs using this environment override
-        scheduler_jobs = list(
-            scheduler_coll.find(
-                {"jobDataPlain.overrideEnvironmentId": env_obj_id},
-                {"_id": 1, "jobName": 1, "projectId": 1},
-            )
-        )
-
-        # Organizations using this environment as default (if collection exists)
-        organizations: List[Dict] = []
-        if "organizations" in db.list_collection_names():
-            orgs_coll = db["organizations"]
-            organizations = list(
-                orgs_coll.find(
-                    {"defaultV2EnvironmentId": env_obj_id},
-                    {"_id": 1, "name": 1},
-                )
-            )
-
-        # App versions that directly reference this environment (if collection exists)
-        app_versions: List[Dict] = []
-        if "app_versions" in db.list_collection_names():
-            app_versions_coll = db["app_versions"]
-            app_versions = list(
-                app_versions_coll.find(
-                    {"environmentId": env_obj_id},
-                    {"_id": 1, "appId": 1, "versionNumber": 1},
-                )
-            )
-
         # Other environments / revisions that depend on these revisions via cloning
         cloned_from_revs = list(
             revs_coll.find(
@@ -114,6 +74,23 @@ def find_environment_usage(env_id: str) -> None:
 
         # Load auxiliary JSON reports using usage_tracker
         usage_tracker = ImageUsageTracker()
+        
+        # Find direct environment ID usage in MongoDB collections (projects, scheduler_jobs, etc.)
+        direct_usage = usage_tracker.find_direct_environment_id_usage(all_ids)
+        
+        # Aggregate direct usage results
+        projects: List[Dict] = []
+        scheduler_jobs: List[Dict] = []
+        organizations: List[Dict] = []
+        app_versions: List[Dict] = []
+        
+        for env_id, usage_info in direct_usage.items():
+            projects.extend(usage_info['projects'])
+            scheduler_jobs.extend(usage_info['scheduler_jobs'])
+            organizations.extend(usage_info['organizations'])
+            app_versions.extend(usage_info['app_versions'])
+        
+        # Load Docker tag usage reports
         mongodb_reports = usage_tracker.load_mongodb_usage_reports()
         workload_report = usage_tracker.load_workload_report()
         

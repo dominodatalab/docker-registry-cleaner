@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from config_manager import config_manager
+from mongo_utils import get_mongo_client
 
 logger = logging.getLogger(__name__)
 
@@ -383,5 +384,102 @@ class ImageUsageTracker:
                 for env_id in environment_ids:
                     if env_id in tag:
                         usage_by_id[env_id]['models'].append(rec)
+        
+        return usage_by_id
+    
+    def find_direct_environment_id_usage(self, environment_ids: Set[str]) -> Dict[str, Dict]:
+        """Find direct environment ID usage in MongoDB collections (not via Docker tags)
+        
+        This checks collections that reference environment IDs directly:
+        - projects (overrideV2EnvironmentId)
+        - scheduler_jobs (jobDataPlain.overrideEnvironmentId)
+        - organizations (defaultV2EnvironmentId)
+        - app_versions (environmentId)
+        
+        Args:
+            environment_ids: Set of environment ObjectIDs to check
+        
+        Returns:
+            Dict mapping each environment_id to its direct usage:
+            {
+                'environment_id': {
+                    'projects': [...],           # Projects using as default
+                    'scheduler_jobs': [...],     # Scheduler jobs using as override
+                    'organizations': [...],      # Organizations using as default
+                    'app_versions': [...]        # App versions referencing
+                }
+            }
+        """
+        mongo_client = get_mongo_client()
+        db = mongo_client[config_manager.get_mongo_db()]
+        
+        usage_by_id = {env_id: {
+            'projects': [],
+            'scheduler_jobs': [],
+            'organizations': [],
+            'app_versions': []
+        } for env_id in environment_ids}
+        
+        try:
+            # Check projects collection
+            projects_coll = db["projects"]
+            for doc in projects_coll.find(
+                {"overrideV2EnvironmentId": {"$in": [env_id for env_id in environment_ids]}},
+                {"_id": 1, "name": 1, "ownerId": 1, "overrideV2EnvironmentId": 1}
+            ):
+                env_id = str(doc.get("overrideV2EnvironmentId", ""))
+                if env_id in usage_by_id:
+                    usage_by_id[env_id]['projects'].append({
+                        '_id': doc.get('_id'),
+                        'name': doc.get('name', ''),
+                        'ownerId': doc.get('ownerId')
+                    })
+            
+            # Check scheduler_jobs collection
+            scheduler_coll = db["scheduler_jobs"]
+            for doc in scheduler_coll.find(
+                {"jobDataPlain.overrideEnvironmentId": {"$in": [env_id for env_id in environment_ids]}},
+                {"_id": 1, "jobName": 1, "projectId": 1, "jobDataPlain.overrideEnvironmentId": 1}
+            ):
+                job_data = doc.get("jobDataPlain", {})
+                env_id = str(job_data.get("overrideEnvironmentId", ""))
+                if env_id in usage_by_id:
+                    usage_by_id[env_id]['scheduler_jobs'].append({
+                        '_id': doc.get('_id'),
+                        'jobName': doc.get('jobName', ''),
+                        'projectId': doc.get('projectId')
+                    })
+            
+            # Check organizations collection (if it exists)
+            if "organizations" in db.list_collection_names():
+                orgs_coll = db["organizations"]
+                for doc in orgs_coll.find(
+                    {"defaultV2EnvironmentId": {"$in": [env_id for env_id in environment_ids]}},
+                    {"_id": 1, "name": 1, "defaultV2EnvironmentId": 1}
+                ):
+                    env_id = str(doc.get("defaultV2EnvironmentId", ""))
+                    if env_id in usage_by_id:
+                        usage_by_id[env_id]['organizations'].append({
+                            '_id': doc.get('_id'),
+                            'name': doc.get('name', '')
+                        })
+            
+            # Check app_versions collection (if it exists)
+            if "app_versions" in db.list_collection_names():
+                app_versions_coll = db["app_versions"]
+                for doc in app_versions_coll.find(
+                    {"environmentId": {"$in": [env_id for env_id in environment_ids]}},
+                    {"_id": 1, "appId": 1, "versionNumber": 1, "environmentId": 1}
+                ):
+                    env_id = str(doc.get("environmentId", ""))
+                    if env_id in usage_by_id:
+                        usage_by_id[env_id]['app_versions'].append({
+                            '_id': doc.get('_id'),
+                            'appId': doc.get('appId'),
+                            'versionNumber': doc.get('versionNumber')
+                        })
+        
+        finally:
+            mongo_client.close()
         
         return usage_by_id
