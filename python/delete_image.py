@@ -103,18 +103,6 @@ class IntelligentImageDeleter:
             registry_statefulset=registry_statefulset
         )
     
-    def load_workload_report(self, report_path: str = "workload-report.json") -> Dict:
-        """Load workload analysis report from JSON file"""
-        try:
-            with open(report_path, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            self.logger.error(f"Workload report not found: {report_path}")
-            return {}
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Invalid JSON in workload report: {e}")
-            return {}
-    
     def load_image_analysis_report(self, report_path: str = "final-report.json") -> Dict:
         """Load image analysis report from JSON file"""
         try:
@@ -1236,11 +1224,10 @@ def main():
                     sys.exit(0)
 
             # Load reports for analysis
-            print("📊 Loading workload and image analysis reports...")
-            workload_report = deleter.load_workload_report(args.workload_report)
+            print("📊 Loading image analysis report...")
             image_analysis = deleter.load_image_analysis_report(args.image_analysis)
-            if not workload_report or not image_analysis:
-                print("❌ Missing analysis reports. Run inspect-workload.py and image-data-analysis.py first.")
+            if not image_analysis:
+                print("❌ Missing image analysis report. Run image-data-analysis.py first.")
                 sys.exit(1)
             
             # Load MongoDB usage reports
@@ -1308,12 +1295,11 @@ def main():
 
         if not args.skip_analysis:
             # Load analysis reports
-            print("📊 Loading workload and image analysis reports...")
-            workload_report = deleter.load_workload_report(args.workload_report)
+            print("📊 Loading image analysis report...")
             image_analysis = deleter.load_image_analysis_report(args.image_analysis)
             
-            if not workload_report or not image_analysis:
-                print("❌ Missing analysis reports. Run inspect-workload.py and image-data-analysis.py first.")
+            if not image_analysis:
+                print("❌ Missing image analysis report. Run image-data-analysis.py first.")
                 print("   Or use --skip-analysis to use traditional environments file method.")
                 sys.exit(1)
             
