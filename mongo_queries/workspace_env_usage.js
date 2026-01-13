@@ -1,12 +1,9 @@
 db.workspace.aggregate([
-    // {
-    //     "$match": {
-    //         "state": {"$ne": "Running"}
-    //     }
-    // },
+    // Exclude deleted workspaces - they won't be restarted, so images linked to them can be cleaned up
+    // Include all other workspace states (Running, Stopped, etc.) - preserve images for workspaces that could be restarted
     {
         "$match": {
-            "state": {"$in": ["Stopped", "Deleted"]}
+            "state": {"$ne": "Deleted"}
         }
     },    
     {
