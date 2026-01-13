@@ -220,7 +220,7 @@ class IntelligentImageDeleter:
         return []
     
     def extract_docker_tags_from_mongodb_reports(self, mongodb_reports: Dict[str, List[Dict]]) -> Set[str]:
-        """Extract Docker image tags from MongoDB usage reports
+        """Extract Docker image tags from MongoDB usage reports (legacy method, kept for compatibility)
         
         Args:
             mongodb_reports: Dict with 'runs', 'workspaces', 'models' keys containing lists of records
@@ -228,35 +228,117 @@ class IntelligentImageDeleter:
         Returns:
             Set of Docker image tags (without type prefix, just the tag name)
         """
+        tags, _ = self.extract_docker_tags_with_usage_info_from_mongodb_reports(mongodb_reports)
+        return tags
+    
+    def extract_docker_tags_with_usage_info_from_mongodb_reports(self, mongodb_reports: Dict[str, List[Dict]]) -> Tuple[Set[str], Dict[str, Dict]]:
+        """Extract Docker image tags from MongoDB usage reports with detailed usage information
+        
+        Args:
+            mongodb_reports: Dict with 'runs', 'workspaces', 'models' keys containing lists of records
+        
+        Returns:
+            Tuple of (set of Docker image tags, dict mapping tag -> usage info)
+            Usage info contains: {'runs': [...], 'workspaces': [...], 'models': [...]}
+        """
         tags = set()
+        usage_info = {}  # Maps tag -> dict with usage details
         
         # Extract tags from runs
         for record in mongodb_reports.get('runs', []):
             # Runs have 'environment_docker_tag' field
             if 'environment_docker_tag' in record and record['environment_docker_tag']:
-                tags.add(record['environment_docker_tag'])
+                tag = record['environment_docker_tag']
+                tags.add(tag)
+                if tag not in usage_info:
+                    usage_info[tag] = {'runs': [], 'workspaces': [], 'models': []}
+                # Store run info
+                run_info = {
+                    'run_id': record.get('run_id') or record.get('_id', 'unknown'),
+                    'project_id': record.get('project_id', 'unknown'),
+                    'status': record.get('status', 'unknown'),
+                    'started': record.get('started') or record.get('any_started'),
+                    'completed': record.get('completed') or record.get('any_completed') or record.get('last_used')
+                }
+                usage_info[tag]['runs'].append(run_info)
         
         # Extract tags from workspaces
         for record in mongodb_reports.get('workspaces', []):
             # Workspaces can have multiple tag fields
+            workspace_id = record.get('workspace_id') or record.get('_id', 'unknown')
+            workspace_name = record.get('workspace_name', 'unknown')
+            project_name = record.get('project_name', 'unknown')
+            
             tag_fields = [
-                'environment_docker_tag',
-                'project_default_environment_docker_tag',
-                'compute_environment_docker_tag',
-                'session_environment_docker_tag',
-                'session_compute_environment_docker_tag'
+                ('environment_docker_tag', 'environment'),
+                ('project_default_environment_docker_tag', 'project_default'),
+                ('compute_environment_docker_tag', 'compute_cluster'),
+                ('session_environment_docker_tag', 'session'),
+                ('session_compute_environment_docker_tag', 'session_compute')
             ]
-            for field in tag_fields:
+            for field, usage_type in tag_fields:
                 if field in record and record[field]:
-                    tags.add(record[field])
+                    tag = record[field]
+                    tags.add(tag)
+                    if tag not in usage_info:
+                        usage_info[tag] = {'runs': [], 'workspaces': [], 'models': []}
+                    workspace_usage = {
+                        'workspace_id': workspace_id,
+                        'workspace_name': workspace_name,
+                        'project_name': project_name,
+                        'usage_type': usage_type
+                    }
+                    usage_info[tag]['workspaces'].append(workspace_usage)
         
         # Extract tags from models
         for record in mongodb_reports.get('models', []):
             # Models have 'environment_docker_tag' field
             if 'environment_docker_tag' in record and record['environment_docker_tag']:
-                tags.add(record['environment_docker_tag'])
+                tag = record['environment_docker_tag']
+                tags.add(tag)
+                if tag not in usage_info:
+                    usage_info[tag] = {'runs': [], 'workspaces': [], 'models': []}
+                # Store model info
+                model_info = {
+                    'model_id': record.get('model_id') or record.get('_id', 'unknown'),
+                    'model_name': record.get('model_name', 'unknown'),
+                    'version_id': record.get('model_version_id', 'unknown')
+                }
+                usage_info[tag]['models'].append(model_info)
         
-        return tags
+        return tags, usage_info
+    
+    def _generate_usage_summary(self, usage: Dict) -> str:
+        """Generate a human-readable summary of why an image is in use
+        
+        Args:
+            usage: Usage dictionary with 'pods', 'runs', 'workspaces', 'models' info
+        
+        Returns:
+            Human-readable string describing usage
+        """
+        reasons = []
+        
+        if usage.get('pods'):
+            pod_count = len(usage['pods'])
+            reasons.append(f"{pod_count} running pod{'s' if pod_count > 1 else ''}")
+        
+        if usage.get('runs_count', 0) > 0:
+            run_count = usage['runs_count']
+            reasons.append(f"{run_count} execution{'s' if run_count > 1 else ''} in MongoDB")
+        
+        if usage.get('workspaces_count', 0) > 0:
+            ws_count = usage['workspaces_count']
+            reasons.append(f"{ws_count} workspace{'s' if ws_count > 1 else ''}")
+        
+        if usage.get('models_count', 0) > 0:
+            model_count = usage['models_count']
+            reasons.append(f"{model_count} model{'s' if model_count > 1 else ''}")
+        
+        if not reasons:
+            return "Referenced in system (source unknown)"
+        
+        return ", ".join(reasons)
 
     def analyze_image_usage(self, workload_report: Dict, image_analysis: Dict, object_ids: Optional[List[str]] = None, object_ids_map: Optional[Dict[str, List[str]]] = None, mongodb_reports: Optional[Dict[str, List[Dict]]] = None) -> WorkloadAnalysis:
         """Analyze which images are used vs unused based on workload and image analysis
@@ -282,6 +364,9 @@ class IntelligentImageDeleter:
                 for oid in oids:
                     oid_to_type[oid] = repo_type
         
+        # Track usage sources for each image
+        usage_sources = {}  # Maps tag -> dict with usage info
+        
         # Get used images from workload report (running Kubernetes pods)
         # Support both formats:
         # - { "image_tags": { tag: {...} } }
@@ -290,17 +375,43 @@ class IntelligentImageDeleter:
         for tag, tag_info in workload_map.items():
             if tag_info.get('count', 0) > 0:
                 used_images.add(tag)
+                if tag not in usage_sources:
+                    usage_sources[tag] = {
+                        'pods': [],
+                        'runs': [],
+                        'workspaces': [],
+                        'models': []
+                    }
+                # Store pod information
+                pods_using = tag_info.get('pods', [])
+                if isinstance(pods_using, list):
+                    usage_sources[tag]['pods'] = pods_using
+                elif isinstance(pods_using, str):
+                    usage_sources[tag]['pods'] = [pods_using]
         
         # Get used images from MongoDB reports (runs, workspaces, models)
         # This ensures we don't delete images referenced in execution history
         if mongodb_reports:
-            mongodb_tags = self.extract_docker_tags_from_mongodb_reports(mongodb_reports)
+            mongodb_tags, mongodb_usage_info = self.extract_docker_tags_with_usage_info_from_mongodb_reports(mongodb_reports)
             if mongodb_tags:
                 original_count = len(used_images)
                 used_images.update(mongodb_tags)
                 added_count = len(used_images) - original_count
                 if added_count > 0:
                     self.logger.info(f"Found {added_count} additional used images from MongoDB (runs/workspaces/models)")
+                
+                # Merge MongoDB usage info into usage_sources
+                for tag, usage_info in mongodb_usage_info.items():
+                    if tag not in usage_sources:
+                        usage_sources[tag] = {
+                            'pods': [],
+                            'runs': [],
+                            'workspaces': [],
+                            'models': []
+                        }
+                    usage_sources[tag]['runs'].extend(usage_info.get('runs', []))
+                    usage_sources[tag]['workspaces'].extend(usage_info.get('workspaces', []))
+                    usage_sources[tag]['models'].extend(usage_info.get('models', []))
             else:
                 self.logger.info("No Docker tags found in MongoDB reports")
         else:
@@ -372,17 +483,36 @@ class IntelligentImageDeleter:
         # This also returns individual tag sizes
         total_size_saved, individual_tag_sizes = self._calculate_freed_space_correctly(unused_images, object_ids_map)
         
-        # Build per-tag stats with accurate sizes
+        # Build per-tag stats with accurate sizes and usage information
         for full_tag in all_tags:
             # Extract tag name for stats lookup
             tag_name = full_tag.split(':', 1)[1] if ':' in full_tag else full_tag
             # Get individual size from calculation (0 if not found)
             tag_size = individual_tag_sizes.get(full_tag, 0)
+            
+            # Get usage information for this tag
+            tag_usage = usage_sources.get(tag_name, {
+                'pods': [],
+                'runs': [],
+                'workspaces': [],
+                'models': []
+            })
+            
             image_usage_stats[full_tag] = {
                 'size': tag_size,
                 'layer_id': '',
                 'status': 'used' if tag_name in used_images else 'unused',
-                'pods_using': workload_map.get(tag_name, {}).get('pods', []) if tag_name in used_images and isinstance(workload_map, dict) else []
+                'usage': {
+                    'pods': tag_usage['pods'],
+                    'runs_count': len(tag_usage['runs']),
+                    'runs': tag_usage['runs'][:5],  # Limit to first 5 for display
+                    'workspaces_count': len(tag_usage['workspaces']),
+                    'workspaces': tag_usage['workspaces'][:5],  # Limit to first 5 for display
+                    'models_count': len(tag_usage['models']),
+                    'models': tag_usage['models'][:5]  # Limit to first 5 for display
+                },
+                # Keep legacy 'pods_using' for backward compatibility
+                'pods_using': tag_usage['pods']
             }
         
         return WorkloadAnalysis(
@@ -489,14 +619,40 @@ class IntelligentImageDeleter:
         for image_tag in analysis.unused_images:
             stats = analysis.image_usage_stats.get(image_tag, {})
             size_bytes = stats.get('size', 0)
+            usage = stats.get('usage', {})
             report["unused_images"].append({
                 "tag": image_tag,
                 "size_bytes": size_bytes,
                 "size_gb": round(size_bytes / (1024**3), 2),
                 "layer_id": stats.get('layer_id', ''),
                 "status": stats.get('status', 'unused'),
-                "pods_using": stats.get('pods_using', [])
+                "pods_using": stats.get('pods_using', []),
+                "usage": usage
             })
+        
+        # Add details for each used image (images that can't be deleted)
+        report["used_images"] = []
+        for image_tag in analysis.used_images:
+            # Find matching stats - need to search through all stats
+            matching_stats = None
+            for full_tag, stats in analysis.image_usage_stats.items():
+                tag_name = full_tag.split(':', 1)[1] if ':' in full_tag else full_tag
+                if tag_name == image_tag:
+                    matching_stats = stats
+                    break
+            
+            if matching_stats:
+                size_bytes = matching_stats.get('size', 0)
+                usage = matching_stats.get('usage', {})
+                report["used_images"].append({
+                    "tag": image_tag,
+                    "size_bytes": size_bytes,
+                    "size_gb": round(size_bytes / (1024**3), 2),
+                    "status": "used",
+                    "usage": usage,
+                    "pods_using": matching_stats.get('pods_using', []),
+                    "why_cannot_delete": self._generate_usage_summary(usage)
+                })
         
         try:
             save_json(output_file, report)
@@ -741,6 +897,24 @@ class IntelligentImageDeleter:
         print(f"   {'Would delete' if dry_run else 'Successfully deleted'}: {successful_deletions} images")
         if not dry_run:
             print(f"   Failed deletions: {failed_deletions} images")
+        
+        # Show images that couldn't be deleted and why
+        used_images_count = len(analysis.used_images)
+        if used_images_count > 0:
+            print(f"\n🔒 Images in use (not deleted): {used_images_count}")
+            # Show a few examples
+            shown_count = 0
+            for image_tag in list(analysis.used_images)[:5]:
+                stats = analysis.image_usage_stats.get(image_tag, {})
+                usage = stats.get('usage', {})
+                usage_summary = self._generate_usage_summary(usage) if usage else "Unknown usage"
+                # Extract tag name for display
+                tag_name = image_tag.split(':', 1)[1] if ':' in image_tag else image_tag
+                print(f"   • {tag_name}: {usage_summary}")
+                shown_count += 1
+            if used_images_count > shown_count:
+                print(f"   ... and {used_images_count - shown_count} more (see report file for details)")
+        
         # Use total_size_saved from analysis for accurate freed space (accounts for shared layers)
         # This is calculated correctly using ImageAnalyzer
         summary_size = analysis.total_size_saved if analysis.total_size_saved > 0 else total_size_deleted

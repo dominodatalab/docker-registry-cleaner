@@ -59,6 +59,7 @@ from inspect_workload import WorkloadInspector
 from logging_utils import setup_logging, get_logger
 from mongo_utils import get_mongo_client
 from report_utils import save_json
+from usage_tracker import ImageUsageTracker
 
 logger = get_logger(__name__)
 
@@ -541,11 +542,17 @@ class UnusedEnvironmentsFinder:
             mongo_client.close()
     
     def find_unused_environments(self) -> List[str]:
-        """Find environment and revision IDs that are not being used anywhere"""
+        """Find environment and revision IDs that are not being used anywhere
+        
+        Note: This analysis is based on point-in-time reports. A real-time usage check
+        is performed right before deletion to catch any images that became in-use
+        after this analysis (e.g., new pods, runs, or workspaces).
+        """
         # Load metadata files
         model_env_data, workspace_env_data, workload_data, runs_env_data = self.load_metadata_files()
         
         # Extract IDs that are in use
+        # Note: This is based on the reports at analysis time. Real-time check happens before deletion.
         used_ids = self.extract_used_environment_ids(
             model_env_data,
             workspace_env_data,
@@ -777,7 +784,33 @@ class UnusedEnvironmentsFinder:
                 
                 deleted_count = 0
                 failed_deletions = []
+                failed_deletions_with_reason = {}  # Maps tag -> reason (usage info)
                 successfully_deleted_object_ids = set()
+                
+                # Check which tags are in use before attempting deletion
+                # This is a REAL-TIME check that happens right before deletion to catch:
+                # - New pods that started after the initial analysis
+                # - New runs/workspaces that were created after report generation
+                # - Any race conditions between analysis and deletion
+                self.logger.info("Performing real-time usage check before deletion...")
+                usage_tracker = ImageUsageTracker()
+                tags_to_check = [tag_info.tag for tag_info in unused_tags]
+                in_use_tags, usage_info = usage_tracker.check_tags_in_use(tags_to_check)
+                
+                if in_use_tags:
+                    self.logger.warning(f"⚠️  Found {len(in_use_tags)} tags that are CURRENTLY in use (real-time check) - these will be skipped")
+                    self.logger.warning("   This may include images that became in-use after the initial analysis.")
+                    for tag in in_use_tags:
+                        usage = usage_info.get(tag, {})
+                        usage_summary = usage_tracker.generate_usage_summary(usage)
+                        self.logger.warning(f"  • {tag}: {usage_summary}")
+                        failed_deletions_with_reason[tag] = {
+                            'reason': 'in_use',
+                            'usage_summary': usage_summary,
+                            'usage': usage
+                        }
+                else:
+                    self.logger.info("✓ Real-time usage check: All tags confirmed as unused")
                 
                 # Parallelize deletion operations
                 import concurrent.futures
@@ -788,6 +821,13 @@ class UnusedEnvironmentsFinder:
                     (image_type, tag), data = tag_key_data
                     tag_info = data['tag_info']
                     associated_object_ids = data['object_ids']
+                    
+                    # Skip if tag is in use
+                    if tag_info.tag in in_use_tags:
+                        usage = usage_info.get(tag_info.tag, {})
+                        usage_summary = usage_tracker.generate_usage_summary(usage)
+                        self.logger.warning(f"  Skipping {tag_info.full_image} (in use: {usage_summary})")
+                        return ('skipped_in_use', tag_info.full_image, None, usage_summary)
                     
                     try:
                         self.logger.info(f"  Deleting: {tag_info.full_image}")
@@ -800,13 +840,13 @@ class UnusedEnvironmentsFinder:
                                 self.logger.info(f"    ✓ Deleted successfully (contains {len(associated_object_ids)} unused ObjectIDs)")
                             else:
                                 self.logger.info(f"    ✓ Deleted successfully")
-                            return ('success', tag_info.full_image, associated_object_ids)
+                            return ('success', tag_info.full_image, associated_object_ids, None)
                         else:
                             self.logger.warning(f"    ✗ Failed to delete - MongoDB record will NOT be cleaned")
-                            return ('failed', tag_info.full_image, None)
+                            return ('failed', tag_info.full_image, None, None)
                     except Exception as e:
                         self.logger.error(f"    ✗ Error deleting: {e} - MongoDB record will NOT be cleaned")
-                        return ('failed', tag_info.full_image, None)
+                        return ('failed', tag_info.full_image, None, None)
                 
                 # Process deletions in parallel
                 if max_workers > 1 and len(unique_tags) > 1:
@@ -820,31 +860,63 @@ class UnusedEnvironmentsFinder:
                         for future in concurrent.futures.as_completed(future_to_tag):
                             try:
                                 result = future.result()
-                                status, full_image, object_ids = result
+                                status, full_image, object_ids, usage_summary = result
                                 if status == 'success':
                                     deleted_count += 1
                                     successfully_deleted_object_ids.update(object_ids)
+                                elif status == 'skipped_in_use':
+                                    failed_deletions.append(full_image)
+                                    failed_deletions_with_reason[full_image] = {
+                                        'reason': 'in_use',
+                                        'usage_summary': usage_summary
+                                    }
                                 else:
                                     failed_deletions.append(full_image)
+                                    failed_deletions_with_reason[full_image] = {
+                                        'reason': 'deletion_failed'
+                                    }
                             except Exception as e:
                                 self.logger.error(f"Error processing deletion result: {e}")
                 else:
                     # Sequential deletion for small batches or single worker
                     for (image_type, tag), data in unique_tags.items():
                         result = delete_single_tag(((image_type, tag), data))
-                        status, full_image, object_ids = result
+                        status, full_image, object_ids, usage_summary = result
                         if status == 'success':
                             deleted_count += 1
                             successfully_deleted_object_ids.update(object_ids)
+                        elif status == 'skipped_in_use':
+                            failed_deletions.append(full_image)
+                            failed_deletions_with_reason[full_image] = {
+                                'reason': 'in_use',
+                                'usage_summary': usage_summary
+                            }
                         else:
                             failed_deletions.append(full_image)
+                            failed_deletions_with_reason[full_image] = {
+                                'reason': 'deletion_failed'
+                            }
             
                 deletion_results['docker_images_deleted'] = deleted_count
                 
                 if failed_deletions:
-                    self.logger.warning(f"Failed to delete {len(failed_deletions)} Docker images:")
-                    for img in failed_deletions:
-                        self.logger.warning(f"  - {img}")
+                    in_use_count = sum(1 for r in failed_deletions_with_reason.values() if r.get('reason') == 'in_use')
+                    failed_count = len(failed_deletions) - in_use_count
+                    
+                    self.logger.warning(f"Could not delete {len(failed_deletions)} Docker images:")
+                    if in_use_count > 0:
+                        self.logger.warning(f"  {in_use_count} image(s) are currently in use:")
+                        for img in failed_deletions:
+                            if img in failed_deletions_with_reason:
+                                reason_info = failed_deletions_with_reason[img]
+                                if reason_info.get('reason') == 'in_use':
+                                    usage_summary = reason_info.get('usage_summary', 'Unknown usage')
+                                    self.logger.warning(f"    • {img}: {usage_summary}")
+                    if failed_count > 0:
+                        self.logger.warning(f"  {failed_count} image(s) failed to delete:")
+                        for img in failed_deletions:
+                            if img not in failed_deletions_with_reason or failed_deletions_with_reason[img].get('reason') != 'in_use':
+                                self.logger.warning(f"    • {img}")
                     self.logger.warning("MongoDB records for failed deletions will be preserved.")
                 
                 # Clean up MongoDB records - ONLY for successfully deleted Docker images
