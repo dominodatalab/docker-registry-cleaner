@@ -1,0 +1,67 @@
+image:
+  repository: quay.io/domino/docker-registry-cleaner
+  tag: v0.1
+  pullPolicy: Always
+
+imagePullSecrets:
+  - name: domino-quay-repos
+
+serviceAccount:
+  create: true
+  name: docker-registry-cleaner
+  # Optional: override full name; by default uses release-name + chart name
+  fullnameOverride: ""
+
+dominoPlatformNamespace: domino-platform
+
+config:
+  # Inline config.yaml content mounted into the container
+  registry:
+    url: "docker-registry:5000"
+    repository: "dominodatalab"
+  mongo:
+    host: "mongodb-replicaset"
+    port: 27017
+    replicaset: "rs0"
+    db: "domino"
+  analysis:
+    max_workers: 4
+    timeout: 300
+    output_dir: "../reports"
+  retry:
+    max_retries: 3
+    initial_delay: 1.0
+    max_delay: 60.0
+    exponential_base: 2.0
+    jitter: true
+    timeout: 300
+  cache:
+    enabled: true
+    tag_list_ttl: 1800
+    tag_list_max_size: 100
+    image_inspect_ttl: 3600
+    image_inspect_max_size: 1000
+    mongo_query_ttl: 600
+    mongo_query_max_size: 500
+    layer_calc_ttl: 7200
+    layer_calc_max_size: 2000
+  s3:
+    bucket: ""
+    region: "us-west-2"
+  skopeo:
+    use_pod: false
+  reports:
+    deletion_analysis: "deletion-analysis.json"
+    filtered_layers: "filtered-layers.json"
+    image_analysis: "final-report.json"
+    images_report: "images-report"
+    layers_and_sizes: "layers-and-sizes.json"
+    tags_per_layer: "tags-per-layer.json"
+    tag_sums: "tag-sums.json"
+    unused_references: "unused-references.json"
+    runs_env_usage: "runs_env_usage_output.json"
+    model_env_usage: "model_env_usage_output.json"
+    workspace_env_usage: "workspace_env_usage_output.json"
+  security:
+    dry_run_by_default: true
+    require_confirmation: true

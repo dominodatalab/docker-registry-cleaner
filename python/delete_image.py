@@ -62,6 +62,7 @@ from image_data_analysis import ImageAnalyzer
 from logging_utils import setup_logging, get_logger
 from object_id_utils import read_typed_object_ids_from_file
 from report_utils import save_json
+from usage_tracker import ImageUsageTracker
 from pathlib import Path
 
 
@@ -91,7 +92,7 @@ class IntelligentImageDeleter:
                  enable_docker_deletion: bool = False, registry_statefulset: str = None):
         self.registry_url = registry_url or config_manager.get_registry_url()
         self.repository = repository or config_manager.get_repository()
-        self.namespace = namespace or config_manager.get_platform_namespace()
+        self.namespace = namespace or config_manager.get_domino_platform_namespace()
         self.logger = get_logger(__name__)
         
         # Initialize Skopeo client for local execution (same as other delete scripts)
@@ -103,8 +104,10 @@ class IntelligentImageDeleter:
             registry_statefulset=registry_statefulset
         )
     
-    def load_image_analysis_report(self, report_path: str = "final-report.json") -> Dict:
+    def load_image_analysis_report(self, report_path: Optional[str] = None) -> Dict:
         """Load image analysis report from JSON file"""
+        if report_path is None:
+            report_path = config_manager.get_image_analysis_path()
         try:
             with open(report_path, 'r') as f:
                 return json.load(f)
@@ -121,7 +124,6 @@ class IntelligentImageDeleter:
         Returns:
             Dict with keys: 'runs', 'workspaces', 'models' containing lists of records
         """
-        output_dir = config_manager.get_output_dir()
         reports = {
             'runs': [],
             'workspaces': [],
@@ -129,7 +131,7 @@ class IntelligentImageDeleter:
         }
         
         # Load runs environment usage
-        runs_file = Path(output_dir) / config_manager.get_runs_env_usage_path()
+        runs_file = Path(config_manager.get_runs_env_usage_path())
         if runs_file.exists():
             try:
                 with open(runs_file, 'r') as f:
@@ -150,7 +152,7 @@ class IntelligentImageDeleter:
             self.logger.info("  Tip: Run 'python main.py extract_metadata' to generate this report")
         
         # Load workspace environment usage
-        workspace_file = Path(output_dir) / "workspace_env_usage_output.json"
+        workspace_file = Path(config_manager.get_workspace_env_usage_path())
         if workspace_file.exists():
             try:
                 with open(workspace_file, 'r') as f:
@@ -168,7 +170,7 @@ class IntelligentImageDeleter:
             self.logger.warning(f"Workspace environment usage file not found: {workspace_file}")
         
         # Load model environment usage
-        model_file = Path(output_dir) / "model_env_usage_output.json"
+        model_file = Path(config_manager.get_model_env_usage_path())
         if model_file.exists():
             try:
                 with open(model_file, 'r') as f:
@@ -221,78 +223,17 @@ class IntelligentImageDeleter:
     def extract_docker_tags_with_usage_info_from_mongodb_reports(self, mongodb_reports: Dict[str, List[Dict]]) -> Tuple[Set[str], Dict[str, Dict]]:
         """Extract Docker image tags from MongoDB usage reports with detailed usage information
         
+        This method uses usage_tracker to check runs, workspaces, models, scheduler_jobs, and projects.
+        
         Args:
             mongodb_reports: Dict with 'runs', 'workspaces', 'models' keys containing lists of records
         
         Returns:
             Tuple of (set of Docker image tags, dict mapping tag -> usage info)
-            Usage info contains: {'runs': [...], 'workspaces': [...], 'models': [...]}
+            Usage info contains: {'runs': [...], 'workspaces': [...], 'models': [...], 'scheduler_jobs': [...], 'projects': [...]}
         """
-        tags = set()
-        usage_info = {}  # Maps tag -> dict with usage details
-        
-        # Extract tags from runs
-        for record in mongodb_reports.get('runs', []):
-            # Runs have 'environment_docker_tag' field
-            if 'environment_docker_tag' in record and record['environment_docker_tag']:
-                tag = record['environment_docker_tag']
-                tags.add(tag)
-                if tag not in usage_info:
-                    usage_info[tag] = {'runs': [], 'workspaces': [], 'models': []}
-                # Store run info
-                run_info = {
-                    'run_id': record.get('run_id') or record.get('_id', 'unknown'),
-                    'project_id': record.get('project_id', 'unknown'),
-                    'status': record.get('status', 'unknown'),
-                    'started': record.get('started') or record.get('any_started'),
-                    'completed': record.get('completed') or record.get('any_completed') or record.get('last_used')
-                }
-                usage_info[tag]['runs'].append(run_info)
-        
-        # Extract tags from workspaces
-        for record in mongodb_reports.get('workspaces', []):
-            # Workspaces can have multiple tag fields
-            workspace_id = record.get('workspace_id') or record.get('_id', 'unknown')
-            workspace_name = record.get('workspace_name', 'unknown')
-            project_name = record.get('project_name', 'unknown')
-            
-            tag_fields = [
-                ('environment_docker_tag', 'environment'),
-                ('project_default_environment_docker_tag', 'project_default'),
-                ('compute_environment_docker_tag', 'compute_cluster'),
-                ('session_environment_docker_tag', 'session'),
-                ('session_compute_environment_docker_tag', 'session_compute')
-            ]
-            for field, usage_type in tag_fields:
-                if field in record and record[field]:
-                    tag = record[field]
-                    tags.add(tag)
-                    if tag not in usage_info:
-                        usage_info[tag] = {'runs': [], 'workspaces': [], 'models': []}
-                    workspace_usage = {
-                        'workspace_id': workspace_id,
-                        'workspace_name': workspace_name,
-                        'project_name': project_name,
-                        'usage_type': usage_type
-                    }
-                    usage_info[tag]['workspaces'].append(workspace_usage)
-        
-        # Extract tags from models
-        for record in mongodb_reports.get('models', []):
-            # Models have 'environment_docker_tag' field
-            if 'environment_docker_tag' in record and record['environment_docker_tag']:
-                tag = record['environment_docker_tag']
-                tags.add(tag)
-                if tag not in usage_info:
-                    usage_info[tag] = {'runs': [], 'workspaces': [], 'models': []}
-                # Store model info
-                model_info = {
-                    'model_id': record.get('model_id') or record.get('_id', 'unknown'),
-                    'model_name': record.get('model_name', 'unknown'),
-                    'version_id': record.get('model_version_id', 'unknown')
-                }
-                usage_info[tag]['models'].append(model_info)
-        
+        usage_tracker = ImageUsageTracker()
+        tags, usage_info = usage_tracker.extract_docker_tags_with_usage_info(mongodb_reports)
         return tags, usage_info
     
     def _generate_usage_summary(self, usage: Dict) -> str:
@@ -366,7 +307,7 @@ class IntelligentImageDeleter:
                 used_images.update(mongodb_tags)
                 added_count = len(used_images) - original_count
                 if added_count > 0:
-                    self.logger.info(f"Found {added_count} additional used images from MongoDB (runs/workspaces/models)")
+                    self.logger.info(f"Found {added_count} additional used images from MongoDB (runs/workspaces/models/scheduler_jobs/projects)")
                 
                 # Merge MongoDB usage info into usage_sources
                 for tag, usage_info in mongodb_usage_info.items():
@@ -387,7 +328,7 @@ class IntelligentImageDeleter:
             else:
                 self.logger.info("No Docker tags found in MongoDB reports")
         else:
-            self.logger.warning("MongoDB reports not provided - images referenced in runs/workspaces/models may be incorrectly marked as unused")
+            self.logger.warning("MongoDB reports not provided - images referenced in runs/workspaces/models/scheduler_jobs/projects may be incorrectly marked as unused")
         
         # Filter by ObjectIDs if provided
         if object_ids:

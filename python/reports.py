@@ -81,8 +81,6 @@ def generate_required_reports() -> None:
 
 def load_metadata_files() -> tuple:
     """Load metadata files"""
-    output_dir = config_manager.get_output_dir()
-    
     # Load tag sums
     tag_sums_path = config_manager.get_tag_sums_path()
     if not Path(tag_sums_path).exists():
@@ -94,8 +92,8 @@ def load_metadata_files() -> tuple:
     logger.info(f"Loaded {len(tag_data)} tags from tag sums")
     
     # Load workspace environment usage
-    workspace_usage_path = Path(output_dir) / "workspace_env_usage_output.json"
-    if not workspace_usage_path.exists():
+    workspace_usage_path = config_manager.get_workspace_env_usage_path()
+    if not Path(workspace_usage_path).exists():
         logger.error(f"Workspace usage file not found: {workspace_usage_path}")
         raise FileNotFoundError(f"Workspace usage file not found: {workspace_usage_path}")
     
@@ -104,8 +102,8 @@ def load_metadata_files() -> tuple:
     logger.info("Loaded workspace environment usage data")
     
     # Load model environment usage
-    model_usage_path = Path(output_dir) / "model_env_usage_output.json"
-    if not model_usage_path.exists():
+    model_usage_path = config_manager.get_model_env_usage_path()
+    if not Path(model_usage_path).exists():
         logger.error(f"Model usage file not found: {model_usage_path}")
         raise FileNotFoundError(f"Model usage file not found: {model_usage_path}")
     
@@ -195,11 +193,10 @@ def main():
         logger.info("=" * 60)
         
         # Check if metadata reports need to be generated
-        output_dir = config_manager.get_output_dir()
         tag_sums_path = Path(config_manager.get_tag_sums_path())
         reports_exist = all([
-            (Path(output_dir) / "model_env_usage_output.json").exists(),
-            (Path(output_dir) / "workspace_env_usage_output.json").exists(),
+            Path(config_manager.get_model_env_usage_path()).exists(),
+            Path(config_manager.get_workspace_env_usage_path()).exists(),
             tag_sums_path.exists()
         ])
         

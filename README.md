@@ -69,9 +69,6 @@ All Docker deletion scripts share a standardized interface with these common opt
 ### Analysis Commands
 
 ```bash
-# Analyze workload usage
-python python/main.py inspect_workload [--file OBJECTIDS]
-
 # Analyze registry contents
 python python/main.py image_data_analysis [--file OBJECTIDS]
 
@@ -220,7 +217,6 @@ modelVersion:627d94043035a63be6140e94
 EOF
 
 # Use with any analysis or deletion command
-python python/main.py inspect_workload --file environments
 python python/main.py image_data_analysis --file environments
 python python/main.py delete_image --file environments --apply
 ```
@@ -300,8 +296,7 @@ export REPOSITORY="my-repo"
 export REGISTRY_PASSWORD="your_password"  # Optional for ECR
 
 # Kubernetes
-export PLATFORM_NAMESPACE="domino-platform"
-export COMPUTE_NAMESPACE="domino-compute"
+export DOMINO_PLATFORM_NAMESPACE="domino-platform"
 
 # MongoDB
 export MONGODB_USERNAME="admin"  # Optional
@@ -349,7 +344,6 @@ All deletion scripts follow the same pattern and support common options:
 
 - **`python/extract_metadata.py`** - Extract MongoDB metadata
 - **`python/image_data_analysis.py`** - Analyze registry contents with shared layer detection
-- **`python/inspect_workload.py`** - Analyze Kubernetes workloads
 - **`python/reports.py`** - Generate tag usage reports
 
 ### Utility Scripts
@@ -361,13 +355,6 @@ All deletion scripts follow the same pattern and support common options:
 
 ## 📊 How It Works
 
-### Workload Analysis
-
-1. Scans running Kubernetes pods
-2. Extracts container images from pod specifications
-3. Tracks usage patterns by ObjectID
-4. Generates `reports/workload-report.json`
-
 ### Image Analysis
 
 1. Lists all image tags in Docker registry
@@ -378,13 +365,12 @@ All deletion scripts follow the same pattern and support common options:
 
 ### Intelligent Deletion
 
-1. Cross-references workload and image analysis
-2. Identifies unused images not referenced by running pods
-3. Queries MongoDB for additional usage (project defaults, scheduled jobs, etc.)
-4. Calculates freed space with shared layer awareness
-5. Optionally backs up to S3 before deletion
-6. Deletes Docker images first, then MongoDB records
-7. Ensures registry deletion is disabled after completion
+1. Cross-references MongoDB usage data and image analysis
+2. Identifies unused images not referenced in MongoDB (runs, workspaces, models, scheduler_jobs, projects)
+3. Calculates freed space with shared layer awareness
+4. Optionally backs up to S3 before deletion
+5. Deletes Docker images first, then MongoDB records
+6. Ensures registry deletion is disabled after completion
 
 ## 🚨 Troubleshooting
 
@@ -450,7 +436,6 @@ python -c "from python.mongo_utils import get_mongo_client; print('Connected')"
 
 ```bash
 export PYTHONPATH=python
-python python/main.py inspect_workload --max-workers 1
 ```
 
 ## 📝 Requirements

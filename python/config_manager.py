@@ -69,9 +69,7 @@ class ConfigManager:
                 'repository': 'dominodatalab'
             },
             'kubernetes': {
-                'platform_namespace': 'domino-platform',
-                'compute_namespace': 'domino-compute',
-                'pod_prefixes': ['model-', 'run-']
+                'domino_platform_namespace': 'domino-platform'
             },
             'mongo': {
                 'host': 'mongodb-replicaset',
@@ -109,8 +107,9 @@ class ConfigManager:
                 'tags_per_layer': 'tags-per-layer.json',
                 'tag_sums': 'tag-sums.json',
                 'unused_references': 'unused-references.json',
-                'workload_report': 'workload-report.json',
-                'runs_env_usage': 'runs_env_usage_output.json'
+                'runs_env_usage': 'runs_env_usage_output.json',
+                'model_env_usage': 'model_env_usage_output.json',
+                'workspace_env_usage': 'workspace_env_usage_output.json'
             },
             'security': {
                 'dry_run_by_default': True,
@@ -228,17 +227,9 @@ class ConfigManager:
             raise
     
     # Kubernetes configuration
-    def get_platform_namespace(self) -> str:
+    def get_domino_platform_namespace(self) -> str:
         """Get Domino Platform namespace from environment or config"""
-        return os.environ.get('PLATFORM_NAMESPACE') or self.config['kubernetes']['platform_namespace']
-    
-    def get_compute_namespace(self) -> str:
-        """Get Domino Compute namespace from environment or config"""
-        return os.environ.get('COMPUTE_NAMESPACE') or self.config['kubernetes']['compute_namespace']
-    
-    def get_pod_prefixes(self) -> List[str]:
-        """Get pod prefixes from config"""
-        return self.config['kubernetes']['pod_prefixes']
+        return os.environ.get('DOMINO_PLATFORM_NAMESPACE') or self.config['kubernetes']['domino_platform_namespace']
     
     # Analysis configuration
     def get_max_workers(self) -> int:
@@ -328,13 +319,17 @@ class ConfigManager:
             return path
         return os.path.join(self.get_output_dir(), path)
 
-    def get_workload_report_path(self) -> str:
-        """Get workload report path from config"""
-        return self._resolve_report_path(self.config['reports']['workload_report'])
-    
     def get_runs_env_usage_path(self) -> str:
         """Get runs environment usage report path from config"""
         return self._resolve_report_path(self.config['reports']['runs_env_usage'])
+    
+    def get_model_env_usage_path(self) -> str:
+        """Get model environment usage report path from config"""
+        return self._resolve_report_path(self.config['reports']['model_env_usage'])
+    
+    def get_workspace_env_usage_path(self) -> str:
+        """Get workspace environment usage report path from config"""
+        return self._resolve_report_path(self.config['reports']['workspace_env_usage'])
     
     def get_image_analysis_path(self) -> str:
         """Get image analysis path from config"""
@@ -414,7 +409,7 @@ class ConfigManager:
         # Fallback: read credentials from Kubernetes secret mongodb-replicaset-admin
         try:
             core_v1, _ = _get_kubernetes_clients()
-            namespace = self.get_platform_namespace()
+            namespace = self.get_domino_platform_namespace()
             secret = core_v1.read_namespaced_secret(name="mongodb-replicaset-admin", namespace=namespace)
             data = secret.data or {}
             secret_user_b64 = data.get("user")
@@ -445,8 +440,7 @@ class ConfigManager:
         print("Current Configuration:")
         print(f"  Registry URL: {self.get_registry_url()}")
         print(f"  Repository Name: {self.get_repository()}")
-        print(f"  Platform Namespace: {self.get_platform_namespace()}")
-        print(f"  Compute Namespace: {self.get_compute_namespace()}")
+        print(f"  Domino Platform Namespace: {self.get_domino_platform_namespace()}")
         print(f"  Max Workers: {self.get_max_workers()}")
         print(f"  Timeout: {self.get_timeout()}")
         print(f"  Output Directory: {self.get_output_dir()}")
@@ -488,7 +482,7 @@ class SkopeoClient:
         """
         self.config_manager = config_manager
         self.use_pod = use_pod
-        self.namespace = namespace or config_manager.get_platform_namespace()
+        self.namespace = namespace or config_manager.get_domino_platform_namespace()
         self.registry_url = config_manager.get_registry_url()
         self.repository = config_manager.get_repository()
         self.password = config_manager.get_registry_password()

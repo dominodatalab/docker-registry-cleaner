@@ -8,17 +8,17 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: docker-registry-cleaner
-  namespace: domino-compute
+  namespace: domino-platform
 rules:
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: docker-registry-cleaner
-  namespace: domino-compute
+  namespace: domino-platform
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role

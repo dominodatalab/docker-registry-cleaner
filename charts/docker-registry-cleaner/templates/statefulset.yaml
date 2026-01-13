@@ -1,0 +1,61 @@
+{{- $saName := default (include "docker-registry-cleaner.fullname" .) .Values.serviceAccount.name -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "docker-registry-cleaner.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "docker-registry-cleaner.name" . }}
+    helm.sh/chart: {{ include "docker-registry-cleaner.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    docker-registry-client: "true"
+spec:
+  serviceName: {{ include "docker-registry-cleaner.fullname" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "docker-registry-cleaner.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "docker-registry-cleaner.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        docker-registry-client: "true"
+        mongodb-replicaset-client: "true"
+        keycloak-client: "true"
+    spec:
+      serviceAccountName: {{ $saName }}
+      imagePullSecrets:
+{{- range .Values.imagePullSecrets }}
+        - name: {{ .name }}
+{{- end }}
+      containers:
+        - name: docker-registry-cleaner
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "-c", "--"]
+          args: ["while true; do sleep 30; done"]
+          env:
+            - name: KEYCLOAK_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-http
+                  key: password
+            - name: MONGODB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-replicaset-admin
+                  key: password
+          resources: {}
+          volumeMounts:
+            - name: docker-registry-cleaner-config
+              mountPath: /config.yaml
+              subPath: config.yaml
+      volumes:
+        - name: docker-registry-cleaner-config
+          configMap:
+            name: {{ include "docker-registry-cleaner.fullname" . }}-config
+  updateStrategy:
+    type: RollingUpdate

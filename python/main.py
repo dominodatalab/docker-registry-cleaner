@@ -15,7 +15,6 @@ def load_script_paths():
         "extract_metadata": "extract_metadata.py",
         "find_environment_usage": "find_environment_usage.py",
         "image_data_analysis": "image_data_analysis.py",
-        "inspect_workload": "inspect_workload.py",
         "mongo_cleanup": "mongo_cleanup.py",
         "reports": "reports.py",
         "delete_image": "delete_image.py",  
@@ -32,7 +31,6 @@ def get_script_descriptions():
         "extract_metadata": "Extract metadata from MongoDB",
         "find_environment_usage": "Find where a specific environment ID is used (projects, jobs, workspaces, runs, workloads)",
         "image_data_analysis": "Analyze container images and generate reports",
-        "inspect_workload": "Inspect Kubernetes workload and pod information",
         "mongo_cleanup": "Simple tag/ObjectID-based Mongo cleanup (consider using delete_unused_references for advanced features)",
         "reports": "Generate tag usage reports from analysis data (auto-generates metadata)",
         "delete_image": "Delete specific Docker image or analyze/delete unused images",
@@ -116,7 +114,7 @@ def read_object_ids_from_file(file_path: str) -> List[str]:
 def validate_script_requirements(script_keyword, args):
     """Validate required arguments for specific scripts"""
     
-    # image_data_analysis and inspect_workload now always use config_manager
+    # image_data_analysis now always uses config_manager
     # No validation needed - they get registry/repository from config.yaml
     
     if script_keyword == "mongo_cleanup":
@@ -147,7 +145,7 @@ def validate_script_requirements(script_keyword, args):
             logging.warning("  4. For ECR registries, authentication is automatic (no password needed)")
     
     # Validate ObjectID file if provided for supported scripts
-    if script_keyword in ["image_data_analysis", "inspect_workload", "delete_image"]:
+    if script_keyword in ["image_data_analysis", "delete_image"]:
         file_arg = None
         for i, arg in enumerate(args):
             if arg == '--file' and i + 1 < len(args):
@@ -175,7 +173,6 @@ Available scripts:
   extract_metadata                   - Extract metadata from MongoDB
   find_environment_usage             - Find where a specific environment ID is used (projects, jobs, workspaces, runs, workloads)
   image_data_analysis                - Analyze container images and generate reports
-  inspect_workload                   - Inspect Kubernetes workload and pod information
   mongo_cleanup                      - Simple tag/ObjectID-based Mongo cleanup
   reports                            - Generate tag usage reports from analysis data (auto-generates metadata)
   delete_image [image]               - Delete specific Docker image or analyze/delete unused images
@@ -191,13 +188,11 @@ Configuration:
   - REGISTRY_URL: Docker registry URL
   - REPOSITORY: Repository name
   - REGISTRY_PASSWORD: Registry password
-  - PLATFORM_NAMESPACE: Domino platform namespace
-  - COMPUTE_NAMESPACE: Compute namespace
+  - DOMINO_PLATFORM_NAMESPACE: Domino platform namespace
 
 Examples:
   # Basic usage (uses config.yaml defaults)
   python main.py image_data_analysis
-  python main.py inspect_workload
   python main.py delete_image
   python main.py delete_archived_tags --environment --output archived-tags.json
 
@@ -218,7 +213,6 @@ Examples:
 
   # Filter by ObjectIDs from file (first column contains ObjectIDs)
   python main.py image_data_analysis --file environments
-  python main.py inspect_workload --file environments
   python main.py delete_image --file environments
 
   # Mongo cleanup
@@ -357,7 +351,7 @@ Safety Notes:
     
     parser.add_argument(
         '--file',
-        help="File containing ObjectIDs (one per line) to filter images (for image_data_analysis, inspect_workload, delete_image)"
+        help="File containing ObjectIDs (one per line) to filter images (for image_data_analysis, delete_image)"
     )
     
     parser.add_argument(
