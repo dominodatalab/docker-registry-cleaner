@@ -91,8 +91,10 @@ def model_env_usage_pipeline() -> List[dict]:
 
 def workspace_env_usage_pipeline() -> List[dict]:
 	# Converted from mongo_queries/workspace_env_usage.js
+	# Exclude deleted workspaces - they won't be restarted, so images linked to them can be cleaned up
+	# Include all other workspace states (Running, Stopped, etc.) - preserve images for workspaces that could be restarted
 	return [
-		{"$match": {"state": {"$in": ["Stopped", "Deleted"]}}},
+		{"$match": {"state": {"$ne": "Deleted"}}},
 		{"$lookup": {"from": "users", "localField": "ownerId", "foreignField": "_id", "as": "user_id"}},
 		{"$lookup": {"from": "projects", "localField": "projectId", "foreignField": "_id", "as": "project_id"}},
 		{"$lookup": {"from": "workspace_session", "localField": "_id", "foreignField": "workspaceId", "as": "workspace_id"}},

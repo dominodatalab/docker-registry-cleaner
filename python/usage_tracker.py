@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class ImageUsageTracker:
-    """Tracks where Docker images are in use (pods, runs, workspaces, models)"""
+    """Tracks where Docker images are in use (runs, workspaces, models, scheduler_jobs, projects)"""
     
     def __init__(self):
         self.logger = logger
@@ -82,19 +82,6 @@ class ImageUsageTracker:
         
         return reports
     
-    def load_workload_report(self, report_path: str = None) -> Dict:
-        """Load workload analysis report from JSON file"""
-        if report_path is None:
-            report_path = config_manager.get_workload_report_path()
-        try:
-            with open(report_path, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            self.logger.warning(f"Workload report not found: {report_path}")
-            return {}
-        except json.JSONDecodeError as e:
-            self.logger.warning(f"Invalid JSON in workload report: {e}")
-            return {}
     
     def _parse_mongodb_json(self, content: str) -> List[dict]:
         """Parse MongoDB extended JSON format to extract data"""
@@ -109,33 +96,18 @@ class ImageUsageTracker:
             pass
         return []
     
-    def extract_docker_tags_with_usage_info(self, mongodb_reports: Dict[str, List[Dict]], workload_report: Dict = None) -> Tuple[Set[str], Dict[str, Dict]]:
-        """Extract Docker image tags from MongoDB reports and workload report with detailed usage information
+    def extract_docker_tags_with_usage_info(self, mongodb_reports: Dict[str, List[Dict]]) -> Tuple[Set[str], Dict[str, Dict]]:
+        """Extract Docker image tags from MongoDB reports with detailed usage information
         
         Args:
             mongodb_reports: Dict with 'runs', 'workspaces', 'models' keys containing lists of records
-            workload_report: Optional workload report from Kubernetes
         
         Returns:
             Tuple of (set of Docker image tags, dict mapping tag -> usage info)
-            Usage info contains: {'pods': [...], 'runs': [...], 'workspaces': [...], 'models': [...]}
+            Usage info contains: {'runs': [...], 'workspaces': [...], 'models': [...], 'scheduler_jobs': [...], 'projects': [...]}
         """
         tags = set()
         usage_info = {}  # Maps tag -> dict with usage details
-        
-        # Extract tags from workload report (running pods)
-        if workload_report:
-            workload_map = workload_report.get('image_tags', workload_report)
-            for tag, tag_info in workload_map.items():
-                if tag_info.get('count', 0) > 0:
-                    tags.add(tag)
-                    if tag not in usage_info:
-                        usage_info[tag] = {'pods': [], 'runs': [], 'workspaces': [], 'models': []}
-                    pods_using = tag_info.get('pods', [])
-                    if isinstance(pods_using, list):
-                        usage_info[tag]['pods'] = pods_using
-                    elif isinstance(pods_using, str):
-                        usage_info[tag]['pods'] = [pods_using]
         
         # Extract tags from runs
         for record in mongodb_reports.get('runs', []):
@@ -171,7 +143,7 @@ class ImageUsageTracker:
                     tag = record[field]
                     tags.add(tag)
                     if tag not in usage_info:
-                        usage_info[tag] = {'pods': [], 'runs': [], 'workspaces': [], 'models': []}
+                        usage_info[tag] = {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': []}
                     workspace_usage = {
                         'workspace_id': workspace_id,
                         'workspace_name': workspace_name,
@@ -194,41 +166,187 @@ class ImageUsageTracker:
                 }
                 usage_info[tag]['models'].append(model_info)
         
+        # Also check scheduler_jobs and projects collections for environment ID references
+        # These reference environment IDs directly, so we need to resolve them to Docker tags
+        direct_tags, direct_usage_info = self.extract_docker_tags_from_direct_environment_usage()
+        if direct_tags:
+            tags.update(direct_tags)
+            # Merge usage info
+            for tag, tag_usage in direct_usage_info.items():
+                if tag not in usage_info:
+                    usage_info[tag] = {
+                        'runs': [],
+                        'workspaces': [],
+                        'models': [],
+                        'scheduler_jobs': [],
+                        'projects': []
+                    }
+                # Merge scheduler_jobs and projects usage
+                usage_info[tag]['scheduler_jobs'].extend(tag_usage.get('scheduler_jobs', []))
+                usage_info[tag]['projects'].extend(tag_usage.get('projects', []))
+        
         return tags, usage_info
     
-    def get_usage_for_tag(self, tag: str, mongodb_reports: Dict[str, List[Dict]] = None, workload_report: Dict = None) -> Dict:
+    def extract_docker_tags_from_direct_environment_usage(self) -> Tuple[Set[str], Dict[str, Dict]]:
+        """Extract Docker tags from scheduler_jobs and projects that reference environment IDs directly
+        
+        This queries MongoDB collections that reference environment IDs (not Docker tags):
+        - scheduler_jobs (jobDataPlain.overrideEnvironmentId)
+        - projects (overrideV2EnvironmentId)
+        
+        Then resolves those environment IDs to Docker tags via environment_revisions.
+        
+        Returns:
+            Tuple of (set of Docker image tags, dict mapping tag -> usage info)
+            Usage info contains: {'scheduler_jobs': [...], 'projects': [...]}
+        """
+        from bson import ObjectId
+        
+        tags = set()
+        usage_info = {}  # Maps tag -> dict with usage details
+        
+        mongo_client = get_mongo_client()
+        db = mongo_client[config_manager.get_mongo_db()]
+        
+        try:
+            # Collect all environment IDs referenced in scheduler_jobs and projects
+            env_ids_from_scheduler = set()
+            env_ids_from_projects = set()
+            scheduler_jobs_data = {}  # Maps env_id -> list of job info
+            projects_data = {}  # Maps env_id -> list of project info
+            
+            # Query scheduler_jobs
+            scheduler_coll = db["scheduler_jobs"]
+            for doc in scheduler_coll.find(
+                {"jobDataPlain.overrideEnvironmentId": {"$exists": True, "$ne": None}},
+                {"_id": 1, "jobName": 1, "projectId": 1, "jobDataPlain.overrideEnvironmentId": 1}
+            ):
+                job_data = doc.get("jobDataPlain", {})
+                env_id_obj = job_data.get("overrideEnvironmentId")
+                if env_id_obj:
+                    env_id = str(env_id_obj)
+                    env_ids_from_scheduler.add(env_id)
+                    if env_id not in scheduler_jobs_data:
+                        scheduler_jobs_data[env_id] = []
+                    scheduler_jobs_data[env_id].append({
+                        '_id': str(doc.get('_id', '')),
+                        'jobName': doc.get('jobName', 'unknown'),
+                        'projectId': str(doc.get('projectId', '')) if doc.get('projectId') else 'unknown'
+                    })
+            
+            # Query projects
+            projects_coll = db["projects"]
+            for doc in projects_coll.find(
+                {"overrideV2EnvironmentId": {"$exists": True, "$ne": None}},
+                {"_id": 1, "name": 1, "ownerId": 1, "overrideV2EnvironmentId": 1}
+            ):
+                env_id_obj = doc.get("overrideV2EnvironmentId")
+                if env_id_obj:
+                    env_id = str(env_id_obj)
+                    env_ids_from_projects.add(env_id)
+                    if env_id not in projects_data:
+                        projects_data[env_id] = []
+                    projects_data[env_id].append({
+                        '_id': str(doc.get('_id', '')),
+                        'name': doc.get('name', 'unknown'),
+                        'ownerId': str(doc.get('ownerId', '')) if doc.get('ownerId') else 'unknown'
+                    })
+            
+            # Resolve environment IDs to Docker tags via environment_revisions
+            # For each environment, get its active revision's Docker tag
+            all_env_ids = env_ids_from_scheduler | env_ids_from_projects
+            if all_env_ids:
+                envs_coll = db["environments_v2"]
+                revs_coll = db["environment_revisions"]
+                
+                # Get active revision IDs for these environments
+                env_to_active_rev = {}
+                valid_env_ids = [ObjectId(eid) for eid in all_env_ids if len(eid) == 24]
+                if valid_env_ids:
+                    for doc in envs_coll.find(
+                        {"_id": {"$in": valid_env_ids}},
+                        {"_id": 1, "activeRevisionId": 1}
+                    ):
+                        env_id = str(doc.get("_id", ""))
+                        active_rev_id = doc.get("activeRevisionId")
+                        if active_rev_id:
+                            env_to_active_rev[env_id] = str(active_rev_id)
+                
+                # Get Docker tags from active revisions
+                active_rev_ids = [ObjectId(rid) for rid in env_to_active_rev.values() if len(rid) == 24]
+                if active_rev_ids:
+                    rev_to_tag = {}
+                    for doc in revs_coll.find(
+                        {"_id": {"$in": active_rev_ids}},
+                        {"_id": 1, "metadata.dockerImageName.tag": 1}
+                    ):
+                        rev_id = str(doc.get("_id", ""))
+                        docker_tag = doc.get("metadata", {}).get("dockerImageName", {}).get("tag")
+                        if docker_tag:
+                            rev_to_tag[rev_id] = docker_tag
+                    
+                    # Map environment IDs to Docker tags
+                    for env_id in all_env_ids:
+                        active_rev_id = env_to_active_rev.get(env_id)
+                        if active_rev_id:
+                            docker_tag = rev_to_tag.get(active_rev_id)
+                            if docker_tag:
+                                tags.add(docker_tag)
+                                if docker_tag not in usage_info:
+                                    usage_info[docker_tag] = {
+                                        'pods': [],
+                                        'runs': [],
+                                        'workspaces': [],
+                                        'models': [],
+                                        'scheduler_jobs': [],
+                                        'projects': []
+                                    }
+                                
+                                # Add scheduler_jobs usage
+                                if env_id in scheduler_jobs_data:
+                                    usage_info[docker_tag]['scheduler_jobs'].extend(scheduler_jobs_data[env_id])
+                                
+                                # Add projects usage
+                                if env_id in projects_data:
+                                    usage_info[docker_tag]['projects'].extend(projects_data[env_id])
+                
+                if tags:
+                    self.logger.info(f"Found {len(tags)} Docker tags referenced by scheduler_jobs and projects")
+                    scheduler_count = sum(len(usage_info[tag].get('scheduler_jobs', [])) for tag in tags)
+                    projects_count = sum(len(usage_info[tag].get('projects', [])) for tag in tags)
+                    self.logger.info(f"  - {scheduler_count} scheduler jobs, {projects_count} projects")
+        
+        finally:
+            mongo_client.close()
+        
+        return tags, usage_info
+    
+    def get_usage_for_tag(self, tag: str, mongodb_reports: Dict[str, List[Dict]] = None) -> Dict:
         """Get usage information for a specific tag
         
         Args:
             tag: Docker image tag to check
             mongodb_reports: Optional MongoDB usage reports
-            workload_report: Optional workload report
         
         Returns:
-            Dict with usage information: {'pods': [], 'runs': [], 'workspaces': [], 'models': []}
+            Dict with usage information: {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': []}
         """
         if not mongodb_reports:
             mongodb_reports = self.load_mongodb_usage_reports()
-        if not workload_report:
-            workload_report = self.load_workload_report()
         
-        _, usage_info = self.extract_docker_tags_with_usage_info(mongodb_reports, workload_report)
-        return usage_info.get(tag, {'pods': [], 'runs': [], 'workspaces': [], 'models': []})
+        _, usage_info = self.extract_docker_tags_with_usage_info(mongodb_reports)
+        return usage_info.get(tag, {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': []})
     
     def generate_usage_summary(self, usage: Dict) -> str:
         """Generate a human-readable summary of why an image is in use
         
         Args:
-            usage: Usage dictionary with 'pods', 'runs', 'workspaces', 'models' info
+            usage: Usage dictionary with 'runs', 'workspaces', 'models', 'scheduler_jobs', 'projects' info
         
         Returns:
             Human-readable string describing usage
         """
         reasons = []
-        
-        if usage.get('pods'):
-            pod_count = len(usage['pods'])
-            reasons.append(f"{pod_count} running pod{'s' if pod_count > 1 else ''}")
         
         if usage.get('runs'):
             run_count = len(usage['runs'])
@@ -242,38 +360,43 @@ class ImageUsageTracker:
             model_count = len(usage['models'])
             reasons.append(f"{model_count} model{'s' if model_count > 1 else ''}")
         
+        if usage.get('scheduler_jobs'):
+            scheduler_count = len(usage['scheduler_jobs'])
+            reasons.append(f"{scheduler_count} scheduler job{'s' if scheduler_count > 1 else ''}")
+        
+        if usage.get('projects'):
+            project_count = len(usage['projects'])
+            reasons.append(f"{project_count} project{'s' if project_count > 1 else ''} using as default")
+        
         if not reasons:
             return "Referenced in system (source unknown)"
         
         return ", ".join(reasons)
     
-    def check_tags_in_use(self, tags: List[str], mongodb_reports: Dict[str, List[Dict]] = None, workload_report: Dict = None) -> Tuple[Set[str], Dict[str, Dict]]:
+    def check_tags_in_use(self, tags: List[str], mongodb_reports: Dict[str, List[Dict]] = None) -> Tuple[Set[str], Dict[str, Dict]]:
         """Check which tags from a list are in use
         
         Args:
             tags: List of Docker image tags to check
             mongodb_reports: Optional MongoDB usage reports
-            workload_report: Optional workload report
         
         Returns:
             Tuple of (set of tags that are in use, dict mapping tag -> usage info)
         """
         if not mongodb_reports:
             mongodb_reports = self.load_mongodb_usage_reports()
-        if not workload_report:
-            workload_report = self.load_workload_report()
         
-        all_used_tags, all_usage_info = self.extract_docker_tags_with_usage_info(mongodb_reports, workload_report)
+        all_used_tags, all_usage_info = self.extract_docker_tags_with_usage_info(mongodb_reports)
         
         tags_set = set(tags)
         in_use_tags = tags_set.intersection(all_used_tags)
         
         # Build usage info for only the tags we're checking
-        usage_info = {tag: all_usage_info.get(tag, {'pods': [], 'runs': [], 'workspaces': [], 'models': []}) for tag in in_use_tags}
+        usage_info = {tag: all_usage_info.get(tag, {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': []}) for tag in in_use_tags}
         
         return in_use_tags, usage_info
     
-    def find_usage_for_environment_ids(self, environment_ids: Set[str], mongodb_reports: Dict[str, List[Dict]] = None, workload_report: Dict = None) -> Dict[str, Dict]:
+    def find_usage_for_environment_ids(self, environment_ids: Set[str], mongodb_reports: Dict[str, List[Dict]] = None) -> Dict[str, Dict]:
         """Find usage information for a set of environment/revision IDs
         
         This matches tags that contain these IDs (e.g., tags starting with the ObjectID).
@@ -281,7 +404,6 @@ class ImageUsageTracker:
         Args:
             environment_ids: Set of environment or revision ObjectIDs to find usage for
             mongodb_reports: Optional MongoDB usage reports
-            workload_report: Optional workload report
         
         Returns:
             Dict mapping each environment_id to its usage info:
@@ -290,14 +412,12 @@ class ImageUsageTracker:
                     'matching_tags': [...],  # Tags that contain this ID
                     'workspaces': [...],     # Workspace records using these tags
                     'runs': [...],           # Run records using these tags
-                    'pods': [...],           # Pods using these tags
+                    'models': [...]          # Model records using these tags
                 }
             }
         """
         if not mongodb_reports:
             mongodb_reports = self.load_mongodb_usage_reports()
-        if not workload_report:
-            workload_report = self.load_workload_report()
         
         # Helper to check if a tag contains any of our IDs
         def _tag_matches_ids(tag: str) -> bool:
@@ -325,23 +445,8 @@ class ImageUsageTracker:
             'matching_tags': [],
             'workspaces': [],
             'runs': [],
-            'pods': [],
             'models': []
         } for env_id in environment_ids}
-        
-        # Check workload report for matching tags
-        workload_map = workload_report.get('image_tags', workload_report)
-        for tag, tag_info in workload_map.items():
-            if _tag_matches_ids(tag):
-                # Find which IDs this tag matches
-                for env_id in environment_ids:
-                    if tag.startswith(env_id) or env_id in tag:
-                        usage_by_id[env_id]['matching_tags'].append(tag)
-                        pods = tag_info.get('pods', [])
-                        if isinstance(pods, list):
-                            usage_by_id[env_id]['pods'].extend(pods)
-                        elif isinstance(pods, str):
-                            usage_by_id[env_id]['pods'].append(pods)
         
         # Check workspace records
         for rec in mongodb_reports.get('workspaces', []):
