@@ -366,12 +366,11 @@ All deletion scripts follow the same pattern and support common options:
 ### Intelligent Deletion
 
 1. Cross-references MongoDB usage data and image analysis
-2. Identifies unused images not referenced in MongoDB (runs, workspaces, models, scheduled jobs, etc.)
-3. Queries MongoDB for additional usage (project defaults, scheduled jobs, etc.)
-4. Calculates freed space with shared layer awareness
-5. Optionally backs up to S3 before deletion
-6. Deletes Docker images first, then MongoDB records
-7. Ensures registry deletion is disabled after completion
+2. Identifies unused images not referenced in MongoDB (runs, workspaces, models, scheduler_jobs, projects)
+3. Calculates freed space with shared layer awareness
+4. Optionally backs up to S3 before deletion
+5. Deletes Docker images first, then MongoDB records
+6. Ensures registry deletion is disabled after completion
 
 ## 🚨 Troubleshooting
 
