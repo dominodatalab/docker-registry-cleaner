@@ -515,6 +515,46 @@ class IntelligentImageDeleter:
                 'pods_using': tag_usage['pods']
             }
         
+        # Also create stats entries for tags in used_images that aren't in all_tags
+        # This ensures we have usage information for all used images, even if they're not in the image analysis
+        for used_tag in used_images:
+            # Check if we already have stats for this tag (either directly or via full_tag)
+            has_stats = False
+            if used_tag in image_usage_stats:
+                has_stats = True
+            else:
+                # Check if any full_tag matches this tag name
+                for full_tag in image_usage_stats.keys():
+                    tag_name = full_tag.split(':', 1)[1] if ':' in full_tag else full_tag
+                    if tag_name == used_tag:
+                        has_stats = True
+                        break
+            
+            if not has_stats:
+                # Create stats entry for this used tag
+                tag_usage = usage_sources.get(used_tag, {
+                    'pods': [],
+                    'runs': [],
+                    'workspaces': [],
+                    'models': []
+                })
+                
+                image_usage_stats[used_tag] = {
+                    'size': 0,  # Size unknown if not in image analysis
+                    'layer_id': '',
+                    'status': 'used',
+                    'usage': {
+                        'pods': tag_usage['pods'],
+                        'runs_count': len(tag_usage['runs']),
+                        'runs': tag_usage['runs'][:5],
+                        'workspaces_count': len(tag_usage['workspaces']),
+                        'workspaces': tag_usage['workspaces'][:5],
+                        'models_count': len(tag_usage['models']),
+                        'models': tag_usage['models'][:5]
+                    },
+                    'pods_using': tag_usage['pods']
+                }
+        
         return WorkloadAnalysis(
             used_images=used_images,
             unused_images=unused_images,
@@ -905,9 +945,32 @@ class IntelligentImageDeleter:
             # Show a few examples
             shown_count = 0
             for image_tag in list(analysis.used_images)[:5]:
-                stats = analysis.image_usage_stats.get(image_tag, {})
+                # Try to find stats for this tag - check both the tag name and full_tag formats
+                # image_usage_stats is keyed by full_tag (e.g., "environment:tag"), but used_images contains tag names
+                stats = None
+                # First try direct lookup
+                if image_tag in analysis.image_usage_stats:
+                    stats = analysis.image_usage_stats[image_tag]
+                else:
+                    # Try to find by matching tag name (strip type prefix from full_tag keys)
+                    for full_tag, tag_stats in analysis.image_usage_stats.items():
+                        tag_name = full_tag.split(':', 1)[1] if ':' in full_tag else full_tag
+                        if tag_name == image_tag:
+                            stats = tag_stats
+                            break
+                
+                # If still not found, create empty stats
+                if stats is None:
+                    stats = {}
+                
                 usage = stats.get('usage', {})
-                usage_summary = self._generate_usage_summary(usage) if usage else "Unknown usage"
+                # Check if usage dict is actually empty (all lists are empty)
+                if usage and (usage.get('pods') or usage.get('runs_count', 0) > 0 or 
+                             usage.get('workspaces_count', 0) > 0 or usage.get('models_count', 0) > 0):
+                    usage_summary = self._generate_usage_summary(usage)
+                else:
+                    usage_summary = "Referenced in system (source unknown)"
+                
                 # Extract tag name for display
                 tag_name = image_tag.split(':', 1)[1] if ':' in image_tag else image_tag
                 print(f"   • {tag_name}: {usage_summary}")
