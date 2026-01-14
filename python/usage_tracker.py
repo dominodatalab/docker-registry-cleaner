@@ -2,11 +2,9 @@
 
 import json
 import logging
-from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from config_manager import config_manager
-from mongo_utils import get_mongo_client
+from .image_usage import ImageUsageService
 
 logger = logging.getLogger(__name__)
 
@@ -16,69 +14,32 @@ class ImageUsageTracker:
     
     def __init__(self):
         self.logger = logger
+        self._service = ImageUsageService()
     
     def load_mongodb_usage_reports(self) -> Dict[str, List[Dict]]:
-        """Load MongoDB usage reports (runs, workspaces, models) that contain Docker image tag references
+        """Load MongoDB usage reports (runs, workspaces, models, projects, scheduler_jobs, organizations, app_versions) that contain Docker image tag references.
+        
+        First tries to load from saved consolidated report file. If that doesn't exist,
+        runs fresh aggregations against MongoDB.
         
         Returns:
-            Dict with keys: 'runs', 'workspaces', 'models' containing lists of records
+            Dict with keys: 'runs', 'workspaces', 'models', 'projects', 'scheduler_jobs', 'organizations', 'app_versions' containing lists of records
         """
-        output_dir = config_manager.get_output_dir()
-        reports = {
-            'runs': [],
-            'workspaces': [],
-            'models': []
-        }
+        # Try loading from saved file first
+        reports = self._service.load_usage_reports()
         
-        # Load runs environment usage
-        runs_file = Path(config_manager.get_runs_env_usage_path())
-        if runs_file.exists():
-            try:
-                with open(runs_file, 'r') as f:
-                    content = f.read()
-                    try:
-                        reports['runs'] = json.loads(content)
-                        if not isinstance(reports['runs'], list):
-                            reports['runs'] = [reports['runs']] if reports['runs'] else []
-                    except json.JSONDecodeError:
-                        reports['runs'] = self._parse_mongodb_json(content)
-                self.logger.info(f"Loaded {len(reports['runs'])} runs environment records")
-            except Exception as e:
-                self.logger.warning(f"Could not load runs environment usage: {e}")
-        else:
-            self.logger.warning(f"Runs environment usage file not found: {runs_file}")
-        
-        # Load workspace environment usage
-        workspace_file = Path(config_manager.get_workspace_env_usage_path())
-        if workspace_file.exists():
-            try:
-                with open(workspace_file, 'r') as f:
-                    content = f.read()
-                    try:
-                        reports['workspaces'] = json.loads(content)
-                        if not isinstance(reports['workspaces'], list):
-                            reports['workspaces'] = [reports['workspaces']] if reports['workspaces'] else []
-                    except json.JSONDecodeError:
-                        reports['workspaces'] = self._parse_mongodb_json(content)
-                self.logger.info(f"Loaded {len(reports['workspaces'])} workspace environment records")
-            except Exception as e:
-                self.logger.warning(f"Could not load workspace environment usage: {e}")
-        
-        # Load model environment usage
-        model_file = Path(config_manager.get_model_env_usage_path())
-        if model_file.exists():
-            try:
-                with open(model_file, 'r') as f:
-                    content = f.read()
-                    try:
-                        reports['models'] = json.loads(content)
-                        if not isinstance(reports['models'], list):
-                            reports['models'] = [reports['models']] if reports['models'] else []
-                    except json.JSONDecodeError:
-                        reports['models'] = self._parse_mongodb_json(content)
-                self.logger.info(f"Loaded {len(reports['models'])} model environment records")
-            except Exception as e:
-                self.logger.warning(f"Could not load model environment usage: {e}")
+        # If no data was loaded, run fresh aggregations
+        if not any(reports.values()):
+            reports = self._service.run_aggregations("all")
+            return {
+                "runs": reports.get("runs", []),
+                "workspaces": reports.get("workspaces", []),
+                "models": reports.get("models", []),
+                "projects": reports.get("projects", []),
+                "scheduler_jobs": reports.get("scheduler_jobs", []),
+                "organizations": reports.get("organizations", []),
+                "app_versions": reports.get("app_versions", []),
+            }
         
         return reports
     
@@ -100,11 +61,11 @@ class ImageUsageTracker:
         """Extract Docker image tags from MongoDB reports with detailed usage information
         
         Args:
-            mongodb_reports: Dict with 'runs', 'workspaces', 'models' keys containing lists of records
+            mongodb_reports: Dict with 'runs', 'workspaces', 'models', 'projects', 'scheduler_jobs', 'organizations', 'app_versions' keys containing lists of records
         
         Returns:
             Tuple of (set of Docker image tags, dict mapping tag -> usage info)
-            Usage info contains: {'runs': [...], 'workspaces': [...], 'models': [...], 'scheduler_jobs': [...], 'projects': [...]}
+            Usage info contains: {'runs': [...], 'workspaces': [...], 'models': [...], 'scheduler_jobs': [...], 'projects': [...], 'organizations': [...], 'app_versions': [...]}
         """
         tags = set()
         usage_info = {}  # Maps tag -> dict with usage details
@@ -115,7 +76,7 @@ class ImageUsageTracker:
                 tag = record['environment_docker_tag']
                 tags.add(tag)
                 if tag not in usage_info:
-                    usage_info[tag] = {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': []}
+                    usage_info[tag] = {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []}
                 run_info = {
                     'run_id': record.get('run_id') or record.get('_id', 'unknown'),
                     'project_id': record.get('project_id', 'unknown'),
@@ -143,7 +104,7 @@ class ImageUsageTracker:
                     tag = record[field]
                     tags.add(tag)
                     if tag not in usage_info:
-                        usage_info[tag] = {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': []}
+                        usage_info[tag] = {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []}
                     workspace_usage = {
                         'workspace_id': workspace_id,
                         'workspace_name': workspace_name,
@@ -158,7 +119,7 @@ class ImageUsageTracker:
                 tag = record['environment_docker_tag']
                 tags.add(tag)
                 if tag not in usage_info:
-                    usage_info[tag] = {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': []}
+                    usage_info[tag] = {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []}
                 model_info = {
                     'model_id': record.get('model_id') or record.get('_id', 'unknown'),
                     'model_name': record.get('model_name', 'unknown'),
@@ -166,161 +127,140 @@ class ImageUsageTracker:
                 }
                 usage_info[tag]['models'].append(model_info)
         
-        # Also check scheduler_jobs and projects collections for environment ID references
-        # These reference environment IDs directly, so we need to resolve them to Docker tags
-        direct_tags, direct_usage_info = self.extract_docker_tags_from_direct_environment_usage()
-        if direct_tags:
-            tags.update(direct_tags)
-            # Merge usage info
-            for tag, tag_usage in direct_usage_info.items():
+        # Extract tags from projects (from pipeline results)
+        for record in mongodb_reports.get('projects', []):
+            if 'environment_docker_tag' in record and record['environment_docker_tag']:
+                tag = record['environment_docker_tag']
+                tags.add(tag)
                 if tag not in usage_info:
-                    usage_info[tag] = {
-                        'runs': [],
-                        'workspaces': [],
-                        'models': [],
-                        'scheduler_jobs': [],
-                        'projects': []
-                    }
-                # Merge scheduler_jobs and projects usage
-                usage_info[tag]['scheduler_jobs'].extend(tag_usage.get('scheduler_jobs', []))
-                usage_info[tag]['projects'].extend(tag_usage.get('projects', []))
+                    usage_info[tag] = {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []}
+                project_info = {
+                    '_id': str(record.get('project_id', '')),
+                    'name': record.get('project_name', 'unknown'),
+                    'ownerId': str(record.get('owner_id', '')) if record.get('owner_id') else 'unknown'
+                }
+                usage_info[tag]['projects'].append(project_info)
+        
+        # Extract tags from scheduler_jobs (from pipeline results)
+        for record in mongodb_reports.get('scheduler_jobs', []):
+            if 'environment_docker_tag' in record and record['environment_docker_tag']:
+                tag = record['environment_docker_tag']
+                tags.add(tag)
+                if tag not in usage_info:
+                    usage_info[tag] = {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []}
+                job_info = {
+                    '_id': str(record.get('job_id', '')),
+                    'jobName': record.get('job_name', 'unknown'),
+                    'projectId': str(record.get('project_id', '')) if record.get('project_id') else 'unknown'
+                }
+                usage_info[tag]['scheduler_jobs'].append(job_info)
+        
+        # Extract tags from organizations (from pipeline results)
+        for record in mongodb_reports.get('organizations', []):
+            if 'environment_docker_tag' in record and record['environment_docker_tag']:
+                tag = record['environment_docker_tag']
+                tags.add(tag)
+                if tag not in usage_info:
+                    usage_info[tag] = {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []}
+                org_info = {
+                    '_id': str(record.get('organization_id', '')),
+                    'name': record.get('organization_name', 'unknown')
+                }
+                usage_info[tag]['organizations'].append(org_info)
+        
+        # Extract tags from app_versions (from pipeline results)
+        for record in mongodb_reports.get('app_versions', []):
+            if 'environment_docker_tag' in record and record['environment_docker_tag']:
+                tag = record['environment_docker_tag']
+                tags.add(tag)
+                if tag not in usage_info:
+                    usage_info[tag] = {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []}
+                app_version_info = {
+                    '_id': str(record.get('app_version_id', '')),
+                    'appId': record.get('app_id'),
+                    'versionNumber': record.get('version_number')
+                }
+                usage_info[tag]['app_versions'].append(app_version_info)
         
         return tags, usage_info
     
     def extract_docker_tags_from_direct_environment_usage(self) -> Tuple[Set[str], Dict[str, Dict]]:
-        """Extract Docker tags from scheduler_jobs and projects that reference environment IDs directly
+        """Extract Docker tags from scheduler_jobs, projects, organizations, and app_versions that reference environment IDs directly
         
-        This queries MongoDB collections that reference environment IDs (not Docker tags):
-        - scheduler_jobs (jobDataPlain.overrideEnvironmentId)
-        - projects (overrideV2EnvironmentId)
-        
-        Then resolves those environment IDs to Docker tags via environment_revisions.
+        This method now uses pipeline results from the consolidated MongoDB usage report.
         
         Returns:
             Tuple of (set of Docker image tags, dict mapping tag -> usage info)
-            Usage info contains: {'scheduler_jobs': [...], 'projects': [...]}
+            Usage info contains: {'scheduler_jobs': [...], 'projects': [...], 'organizations': [...], 'app_versions': [...]}
         """
-        from bson import ObjectId
+        # Load reports that include projects, scheduler_jobs, organizations, and app_versions
+        reports = self.load_mongodb_usage_reports()
         
         tags = set()
         usage_info = {}  # Maps tag -> dict with usage details
         
-        mongo_client = get_mongo_client()
-        db = mongo_client[config_manager.get_mongo_db()]
+        # Extract tags from projects (from pipeline results)
+        for record in reports.get('projects', []):
+            if 'environment_docker_tag' in record and record['environment_docker_tag']:
+                tag = record['environment_docker_tag']
+                tags.add(tag)
+                if tag not in usage_info:
+                    usage_info[tag] = {'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []}
+                project_info = {
+                    '_id': str(record.get('project_id', '')),
+                    'name': record.get('project_name', 'unknown'),
+                    'ownerId': str(record.get('owner_id', '')) if record.get('owner_id') else 'unknown'
+                }
+                usage_info[tag]['projects'].append(project_info)
         
-        try:
-            # Collect all environment IDs referenced in scheduler_jobs and projects
-            env_ids_from_scheduler = set()
-            env_ids_from_projects = set()
-            scheduler_jobs_data = {}  # Maps env_id -> list of job info
-            projects_data = {}  # Maps env_id -> list of project info
-            
-            # Query scheduler_jobs
-            scheduler_coll = db["scheduler_jobs"]
-            for doc in scheduler_coll.find(
-                {"jobDataPlain.overrideEnvironmentId": {"$exists": True, "$ne": None}},
-                {"_id": 1, "jobName": 1, "projectId": 1, "jobDataPlain.overrideEnvironmentId": 1}
-            ):
-                job_data = doc.get("jobDataPlain", {})
-                env_id_obj = job_data.get("overrideEnvironmentId")
-                if env_id_obj:
-                    env_id = str(env_id_obj)
-                    env_ids_from_scheduler.add(env_id)
-                    if env_id not in scheduler_jobs_data:
-                        scheduler_jobs_data[env_id] = []
-                    scheduler_jobs_data[env_id].append({
-                        '_id': str(doc.get('_id', '')),
-                        'jobName': doc.get('jobName', 'unknown'),
-                        'projectId': str(doc.get('projectId', '')) if doc.get('projectId') else 'unknown'
-                    })
-            
-            # Query projects (ignore archived projects)
-            projects_coll = db["projects"]
-            for doc in projects_coll.find(
-                {
-                    "overrideV2EnvironmentId": {"$exists": True, "$ne": None},
-                    "isArchived": {"$ne": True},
-                },
-                {"_id": 1, "name": 1, "ownerId": 1, "overrideV2EnvironmentId": 1}
-            ):
-                env_id_obj = doc.get("overrideV2EnvironmentId")
-                if env_id_obj:
-                    env_id = str(env_id_obj)
-                    env_ids_from_projects.add(env_id)
-                    if env_id not in projects_data:
-                        projects_data[env_id] = []
-                    projects_data[env_id].append({
-                        '_id': str(doc.get('_id', '')),
-                        'name': doc.get('name', 'unknown'),
-                        'ownerId': str(doc.get('ownerId', '')) if doc.get('ownerId') else 'unknown'
-                    })
-            
-            # Resolve environment IDs to Docker tags via environment_revisions
-            # For each environment, get its active revision's Docker tag
-            all_env_ids = env_ids_from_scheduler | env_ids_from_projects
-            if all_env_ids:
-                envs_coll = db["environments_v2"]
-                revs_coll = db["environment_revisions"]
-                
-                # Get active revision IDs for these environments
-                env_to_active_rev = {}
-                valid_env_ids = [ObjectId(eid) for eid in all_env_ids if len(eid) == 24]
-                if valid_env_ids:
-                    for doc in envs_coll.find(
-                        {"_id": {"$in": valid_env_ids}},
-                        {"_id": 1, "activeRevisionId": 1}
-                    ):
-                        env_id = str(doc.get("_id", ""))
-                        active_rev_id = doc.get("activeRevisionId")
-                        if active_rev_id:
-                            env_to_active_rev[env_id] = str(active_rev_id)
-                
-                # Get Docker tags from active revisions
-                active_rev_ids = [ObjectId(rid) for rid in env_to_active_rev.values() if len(rid) == 24]
-                if active_rev_ids:
-                    rev_to_tag = {}
-                    for doc in revs_coll.find(
-                        {"_id": {"$in": active_rev_ids}},
-                        {"_id": 1, "metadata.dockerImageName.tag": 1}
-                    ):
-                        rev_id = str(doc.get("_id", ""))
-                        docker_tag = doc.get("metadata", {}).get("dockerImageName", {}).get("tag")
-                        if docker_tag:
-                            rev_to_tag[rev_id] = docker_tag
-                    
-                    # Map environment IDs to Docker tags
-                    for env_id in all_env_ids:
-                        active_rev_id = env_to_active_rev.get(env_id)
-                        if active_rev_id:
-                            docker_tag = rev_to_tag.get(active_rev_id)
-                            if docker_tag:
-                                tags.add(docker_tag)
-                                if docker_tag not in usage_info:
-                                    usage_info[docker_tag] = {
-                                        'pods': [],
-                                        'runs': [],
-                                        'workspaces': [],
-                                        'models': [],
-                                        'scheduler_jobs': [],
-                                        'projects': []
-                                    }
-                                
-                                # Add scheduler_jobs usage
-                                if env_id in scheduler_jobs_data:
-                                    usage_info[docker_tag]['scheduler_jobs'].extend(scheduler_jobs_data[env_id])
-                                
-                                # Add projects usage
-                                if env_id in projects_data:
-                                    usage_info[docker_tag]['projects'].extend(projects_data[env_id])
-                
-                if tags:
-                    self.logger.info(f"Found {len(tags)} Docker tags referenced by scheduler_jobs and projects")
-                    scheduler_count = sum(len(usage_info[tag].get('scheduler_jobs', [])) for tag in tags)
-                    projects_count = sum(len(usage_info[tag].get('projects', [])) for tag in tags)
-                    self.logger.info(f"  - {scheduler_count} scheduler jobs, {projects_count} projects")
+        # Extract tags from scheduler_jobs (from pipeline results)
+        for record in reports.get('scheduler_jobs', []):
+            if 'environment_docker_tag' in record and record['environment_docker_tag']:
+                tag = record['environment_docker_tag']
+                tags.add(tag)
+                if tag not in usage_info:
+                    usage_info[tag] = {'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []}
+                job_info = {
+                    '_id': str(record.get('job_id', '')),
+                    'jobName': record.get('job_name', 'unknown'),
+                    'projectId': str(record.get('project_id', '')) if record.get('project_id') else 'unknown'
+                }
+                usage_info[tag]['scheduler_jobs'].append(job_info)
         
-        finally:
-            mongo_client.close()
+        # Extract tags from organizations (from pipeline results)
+        for record in reports.get('organizations', []):
+            if 'environment_docker_tag' in record and record['environment_docker_tag']:
+                tag = record['environment_docker_tag']
+                tags.add(tag)
+                if tag not in usage_info:
+                    usage_info[tag] = {'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []}
+                org_info = {
+                    '_id': str(record.get('organization_id', '')),
+                    'name': record.get('organization_name', 'unknown')
+                }
+                usage_info[tag]['organizations'].append(org_info)
+        
+        # Extract tags from app_versions (from pipeline results)
+        for record in reports.get('app_versions', []):
+            if 'environment_docker_tag' in record and record['environment_docker_tag']:
+                tag = record['environment_docker_tag']
+                tags.add(tag)
+                if tag not in usage_info:
+                    usage_info[tag] = {'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []}
+                app_version_info = {
+                    '_id': str(record.get('app_version_id', '')),
+                    'appId': record.get('app_id'),
+                    'versionNumber': record.get('version_number')
+                }
+                usage_info[tag]['app_versions'].append(app_version_info)
+        
+        if tags:
+            self.logger.info(f"Found {len(tags)} Docker tags referenced by scheduler_jobs, projects, organizations, and app_versions")
+            scheduler_count = sum(len(usage_info[tag].get('scheduler_jobs', [])) for tag in tags)
+            projects_count = sum(len(usage_info[tag].get('projects', [])) for tag in tags)
+            orgs_count = sum(len(usage_info[tag].get('organizations', [])) for tag in tags)
+            app_versions_count = sum(len(usage_info[tag].get('app_versions', [])) for tag in tags)
+            self.logger.info(f"  - {scheduler_count} scheduler jobs, {projects_count} projects, {orgs_count} organizations, {app_versions_count} app versions")
         
         return tags, usage_info
     
@@ -332,19 +272,19 @@ class ImageUsageTracker:
             mongodb_reports: Optional MongoDB usage reports
         
         Returns:
-            Dict with usage information: {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': []}
+            Dict with usage information: {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []}
         """
         if not mongodb_reports:
             mongodb_reports = self.load_mongodb_usage_reports()
         
         _, usage_info = self.extract_docker_tags_with_usage_info(mongodb_reports)
-        return usage_info.get(tag, {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': []})
+        return usage_info.get(tag, {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []})
     
     def generate_usage_summary(self, usage: Dict) -> str:
         """Generate a human-readable summary of why an image is in use
         
         Args:
-            usage: Usage dictionary with 'runs', 'workspaces', 'models', 'scheduler_jobs', 'projects' info
+            usage: Usage dictionary with 'runs', 'workspaces', 'models', 'scheduler_jobs', 'projects', 'organizations', 'app_versions' info
         
         Returns:
             Human-readable string describing usage
@@ -373,6 +313,16 @@ class ImageUsageTracker:
             project_count = len(projects)
             reasons.append(f"{project_count} project{'s' if project_count > 1 else ''} using as default")
         
+        organizations = usage.get('organizations', [])
+        if organizations:
+            org_count = len(organizations)
+            reasons.append(f"{org_count} organization{'s' if org_count > 1 else ''} using as default")
+        
+        app_versions = usage.get('app_versions', [])
+        if app_versions:
+            app_version_count = len(app_versions)
+            reasons.append(f"{app_version_count} app version{'s' if app_version_count > 1 else ''}")
+        
         if not reasons:
             return "Referenced in system (source unknown)"
         
@@ -397,7 +347,7 @@ class ImageUsageTracker:
         in_use_tags = tags_set.intersection(all_used_tags)
         
         # Build usage info for only the tags we're checking
-        usage_info = {tag: all_usage_info.get(tag, {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': []}) for tag in in_use_tags}
+        usage_info = {tag: all_usage_info.get(tag, {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []}) for tag in in_use_tags}
         
         return in_use_tags, usage_info
     
@@ -500,7 +450,7 @@ class ImageUsageTracker:
     def find_direct_environment_id_usage(self, environment_ids: Set[str]) -> Dict[str, Dict]:
         """Find direct environment ID usage in MongoDB collections (not via Docker tags)
         
-        This checks collections that reference environment IDs directly:
+        This checks collections that reference environment IDs directly using pipeline results:
         - projects (overrideV2EnvironmentId)
         - scheduler_jobs (jobDataPlain.overrideEnvironmentId)
         - organizations (defaultV2EnvironmentId)
@@ -520,8 +470,8 @@ class ImageUsageTracker:
                 }
             }
         """
-        mongo_client = get_mongo_client()
-        db = mongo_client[config_manager.get_mongo_db()]
+        # Load pipeline reports
+        reports = self.load_mongodb_usage_reports()
         
         usage_by_id = {env_id: {
             'projects': [],
@@ -530,69 +480,43 @@ class ImageUsageTracker:
             'app_versions': []
         } for env_id in environment_ids}
         
-        try:
-            # Check projects collection (ignore archived projects)
-            projects_coll = db["projects"]
-            for doc in projects_coll.find(
-                {
-                    "overrideV2EnvironmentId": {"$in": [env_id for env_id in environment_ids]},
-                    "isArchived": {"$ne": True},
-                },
-                {"_id": 1, "name": 1, "ownerId": 1, "overrideV2EnvironmentId": 1}
-            ):
-                env_id = str(doc.get("overrideV2EnvironmentId", ""))
-                if env_id in usage_by_id:
-                    usage_by_id[env_id]['projects'].append({
-                        '_id': doc.get('_id'),
-                        'name': doc.get('name', ''),
-                        'ownerId': doc.get('ownerId')
-                    })
-            
-            # Check scheduler_jobs collection
-            scheduler_coll = db["scheduler_jobs"]
-            for doc in scheduler_coll.find(
-                {"jobDataPlain.overrideEnvironmentId": {"$in": [env_id for env_id in environment_ids]}},
-                {"_id": 1, "jobName": 1, "projectId": 1, "jobDataPlain.overrideEnvironmentId": 1}
-            ):
-                job_data = doc.get("jobDataPlain", {})
-                env_id = str(job_data.get("overrideEnvironmentId", ""))
-                if env_id in usage_by_id:
-                    usage_by_id[env_id]['scheduler_jobs'].append({
-                        '_id': doc.get('_id'),
-                        'jobName': doc.get('jobName', ''),
-                        'projectId': doc.get('projectId')
-                    })
-            
-            # Check organizations collection (if it exists)
-            if "organizations" in db.list_collection_names():
-                orgs_coll = db["organizations"]
-                for doc in orgs_coll.find(
-                    {"defaultV2EnvironmentId": {"$in": [env_id for env_id in environment_ids]}},
-                    {"_id": 1, "name": 1, "defaultV2EnvironmentId": 1}
-                ):
-                    env_id = str(doc.get("defaultV2EnvironmentId", ""))
-                    if env_id in usage_by_id:
-                        usage_by_id[env_id]['organizations'].append({
-                            '_id': doc.get('_id'),
-                            'name': doc.get('name', '')
-                        })
-            
-            # Check app_versions collection (if it exists)
-            if "app_versions" in db.list_collection_names():
-                app_versions_coll = db["app_versions"]
-                for doc in app_versions_coll.find(
-                    {"environmentId": {"$in": [env_id for env_id in environment_ids]}},
-                    {"_id": 1, "appId": 1, "versionNumber": 1, "environmentId": 1}
-                ):
-                    env_id = str(doc.get("environmentId", ""))
-                    if env_id in usage_by_id:
-                        usage_by_id[env_id]['app_versions'].append({
-                            '_id': doc.get('_id'),
-                            'appId': doc.get('appId'),
-                            'versionNumber': doc.get('versionNumber')
-                        })
+        # Filter projects by environment_id
+        for record in reports.get('projects', []):
+            env_id = str(record.get('environment_id', ''))
+            if env_id in usage_by_id:
+                usage_by_id[env_id]['projects'].append({
+                    '_id': record.get('project_id'),
+                    'name': record.get('project_name', ''),
+                    'ownerId': record.get('owner_id')
+                })
         
-        finally:
-            mongo_client.close()
+        # Filter scheduler_jobs by environment_id
+        for record in reports.get('scheduler_jobs', []):
+            env_id = str(record.get('environment_id', ''))
+            if env_id in usage_by_id:
+                usage_by_id[env_id]['scheduler_jobs'].append({
+                    '_id': record.get('job_id'),
+                    'jobName': record.get('job_name', ''),
+                    'projectId': record.get('project_id')
+                })
+        
+        # Filter organizations by environment_id
+        for record in reports.get('organizations', []):
+            env_id = str(record.get('environment_id', ''))
+            if env_id in usage_by_id:
+                usage_by_id[env_id]['organizations'].append({
+                    '_id': record.get('organization_id'),
+                    'name': record.get('organization_name', '')
+                })
+        
+        # Filter app_versions by environment_id
+        for record in reports.get('app_versions', []):
+            env_id = str(record.get('environment_id', ''))
+            if env_id in usage_by_id:
+                usage_by_id[env_id]['app_versions'].append({
+                    '_id': record.get('app_version_id'),
+                    'appId': record.get('app_id'),
+                    'versionNumber': record.get('version_number')
+                })
         
         return usage_by_id

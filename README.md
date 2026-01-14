@@ -1,13 +1,13 @@
 # Docker Registry Cleaner
 
-An intelligent Docker registry cleanup tool that analyzes workload usage patterns and safely removes unused images while preserving actively used ones.
+An intelligent Docker registry cleanup tool that analyzes MongoDB usage patterns and safely removes unused images while preserving actively used ones.
 
 ## 🎯 Overview
 
 This project provides a comprehensive solution for cleaning up Docker registries by:
 
 1. **Analyzing registry contents** - Maps image layers, sizes, and tags with shared layer awareness
-2. **Domino-integrated intelligent detection** - Identifies which images are actively used by workloads or project defaults
+2. **Domino-integrated intelligent detection** - Identifies which images are actively used by MongoDB collections (runs, workspaces, models, projects, scheduler_jobs, organizations, app_versions)
 3. **Safe deletion with backups** - Optionally backs up Docker images to S3 before deletion
 4. **Transaction safety** - Only deletes MongoDB records for successfully deleted Docker images
 5. **Unused reference detection** - Identifies and removes MongoDB records referencing non-existent Docker images
@@ -261,7 +261,7 @@ python python/backup_restore.py restore --s3-bucket my-backup-bucket --tags tag1
 - **Failure preservation** - Preserves MongoDB records if Docker deletion fails
 
 ### Intelligent Analysis
-- **Workload-aware** - Only deletes images not used by running pods
+- **MongoDB-aware** - Only deletes images not referenced in MongoDB (runs, workspaces, models, projects, scheduler_jobs, organizations, app_versions)
 - **Shared layer analysis** - Properly calculates freed space accounting for shared layers
 - **Reference counting** - Only counts layers that would have zero references after deletion
 
@@ -333,7 +333,7 @@ python python/main.py --config
 
 All deletion scripts follow the same pattern and support common options:
 
-- **`python/delete_image.py`** - Intelligent deletion based on workload analysis
+- **`python/delete_image.py`** - Intelligent deletion based on MongoDB usage analysis
 - **`python/delete_archived_tags.py`** - Delete archived environments and/or models
 - **`python/delete_unused_environments.py`** - Delete environments not used anywhere
 - **`python/archive_unused_environments.py`** - Mark unused environments as archived in MongoDB (`isArchived = true` on `environments_v2`)
@@ -342,7 +342,7 @@ All deletion scripts follow the same pattern and support common options:
 
 ### Analysis Scripts
 
-- **`python/extract_metadata.py`** - Extract MongoDB metadata
+- **`python/extract_metadata.py`** - Extract MongoDB metadata using aggregation pipelines (generates consolidated `mongodb_usage_report.json`)
 - **`python/image_data_analysis.py`** - Analyze registry contents with shared layer detection
 - **`python/reports.py`** - Generate tag usage reports
 
@@ -365,8 +365,15 @@ All deletion scripts follow the same pattern and support common options:
 
 ### Intelligent Deletion
 
-1. Cross-references MongoDB usage data and image analysis
-2. Identifies unused images not referenced in MongoDB (runs, workspaces, models, scheduler_jobs, projects)
+1. Cross-references MongoDB usage data (from consolidated `mongodb_usage_report.json`) and image analysis
+2. Identifies unused images not referenced in MongoDB collections:
+   - **Runs** - Execution history
+   - **Workspaces** - Active workspace sessions
+   - **Models** - Deployed model versions
+   - **Projects** - Project default environments (`overrideV2EnvironmentId`)
+   - **Scheduler Jobs** - Scheduled job overrides (`jobDataPlain.overrideEnvironmentId`)
+   - **Organizations** - Organization defaults (`defaultV2EnvironmentId`)
+   - **App Versions** - Application versions (`environmentId`)
 3. Calculates freed space with shared layer awareness
 4. Optionally backs up to S3 before deletion
 5. Deletes Docker images first, then MongoDB records
@@ -407,11 +414,6 @@ This is useful when:
 - You want explicit control over which StatefulSet/Deployment is modified
 
 ### Common Issues
-
-**Kubernetes API access:**
-```bash
-kubectl get pods -n domino-compute
-```
 
 **Registry authentication:**
 ```bash

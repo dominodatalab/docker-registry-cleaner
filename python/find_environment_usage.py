@@ -4,7 +4,7 @@ Find usage of a given environment (or its revisions) across Domino.
 
 This script/function inspects:
   - MongoDB: environments_v2, environment_revisions, projects, scheduler_jobs, app_versions
-  - Pre-generated reports (if present): workspace_env_usage and runs_env_usage (from config)
+  - Pre-generated consolidated MongoDB usage report (if present): mongodb_usage_report.json
 """
 
 import argparse
@@ -27,7 +27,7 @@ def find_environment_usage(env_id: str) -> None:
 
     This inspects:
       - MongoDB: environments_v2, environment_revisions, projects, scheduler_jobs, app_versions
-      - Pre-generated reports (if present): workspace_env_usage and runs_env_usage (from config)
+      - Pre-generated consolidated MongoDB usage report (if present): mongodb_usage_report.json
     """
     setup_logging()
     logging.info(f"Finding usage for environment ID: {env_id}")

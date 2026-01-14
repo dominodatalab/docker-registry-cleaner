@@ -426,16 +426,19 @@ Safety Notes:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     script_path = os.path.join(script_dir, script_filename)
     
-    # Determine if we're in dry-run mode for delete_image
+    # Determine if we're in dry-run mode for delete_image, and propagate flags
     dry_run = True  # Default to dry-run for safety
     if args.script_keyword == "delete_image":
+        # Forward top-level flags to the delete_image.py script
+        if args.apply and '--apply' not in args.additional_args:
+            args.additional_args.append('--apply')
+        if args.force and '--force' not in args.additional_args:
+            args.additional_args.append('--force')
+        if args.file and '--file' not in args.additional_args:
+            args.additional_args.extend(['--file', args.file])
+
         if args.apply:
             dry_run = False
-            # Add --apply flag to additional args if not already present
-            if '--apply' not in args.additional_args:
-                args.additional_args.append('--apply')
-            if args.force and '--force' not in args.additional_args:
-                args.additional_args.append('--force')
     
     # Run the script
     run_script(script_path, args.additional_args, dry_run=dry_run)

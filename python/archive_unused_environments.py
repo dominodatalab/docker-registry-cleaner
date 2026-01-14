@@ -123,10 +123,8 @@ def find_unused_environment_docs(recent_days: int | None, generate_reports: bool
     )
 
     # Ensure metadata reports exist if requested
-    reports_exist = all([
-        Path(config_manager.get_model_env_usage_path()).exists(),
-        Path(config_manager.get_workspace_env_usage_path()).exists()
-    ])
+    mongodb_usage_path = Path(config_manager.get_mongodb_usage_path())
+    reports_exist = mongodb_usage_path.exists()
 
     if generate_reports or not reports_exist:
         if not reports_exist:

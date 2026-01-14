@@ -119,73 +119,32 @@ class IntelligentImageDeleter:
             return {}
     
     def load_mongodb_usage_reports(self) -> Dict[str, List[Dict]]:
-        """Load MongoDB usage reports (runs, workspaces, models) that contain Docker image tag references
+        """Load MongoDB usage reports (runs, workspaces, models, projects, scheduler_jobs, organizations, app_versions) that contain Docker image tag references
+        
+        Uses ImageUsageService to load from consolidated report file.
         
         Returns:
-            Dict with keys: 'runs', 'workspaces', 'models' containing lists of records
+            Dict with keys: 'runs', 'workspaces', 'models', 'projects', 'scheduler_jobs', 'organizations', 'app_versions' containing lists of records
         """
-        reports = {
-            'runs': [],
-            'workspaces': [],
-            'models': []
-        }
+        from image_usage import ImageUsageService
         
-        # Load runs environment usage
-        runs_file = Path(config_manager.get_runs_env_usage_path())
-        if runs_file.exists():
-            try:
-                with open(runs_file, 'r') as f:
-                    content = f.read()
-                    # Try to parse as JSON
-                    try:
-                        reports['runs'] = json.loads(content)
-                        if not isinstance(reports['runs'], list):
-                            reports['runs'] = [reports['runs']] if reports['runs'] else []
-                    except json.JSONDecodeError:
-                        # Might be MongoDB extended JSON, try to parse it
-                        reports['runs'] = self._parse_mongodb_json(content)
-                self.logger.info(f"Loaded {len(reports['runs'])} runs environment records")
-            except Exception as e:
-                self.logger.warning(f"Could not load runs environment usage: {e}")
-        else:
-            self.logger.warning(f"Runs environment usage file not found: {runs_file}")
-            self.logger.info("  Tip: Run 'python main.py extract_metadata' to generate this report")
+        service = ImageUsageService()
+        reports = service.load_usage_reports()
         
-        # Load workspace environment usage
-        workspace_file = Path(config_manager.get_workspace_env_usage_path())
-        if workspace_file.exists():
-            try:
-                with open(workspace_file, 'r') as f:
-                    content = f.read()
-                    try:
-                        reports['workspaces'] = json.loads(content)
-                        if not isinstance(reports['workspaces'], list):
-                            reports['workspaces'] = [reports['workspaces']] if reports['workspaces'] else []
-                    except json.JSONDecodeError:
-                        reports['workspaces'] = self._parse_mongodb_json(content)
-                self.logger.info(f"Loaded {len(reports['workspaces'])} workspace environment records")
-            except Exception as e:
-                self.logger.warning(f"Could not load workspace environment usage: {e}")
+        # Log what was loaded
+        total_records = sum(len(v) for v in reports.values())
+        if total_records > 0:
+            self.logger.info(f"Loaded {total_records} MongoDB usage records:")
+            self.logger.info(f"  - {len(reports.get('runs', []))} runs")
+            self.logger.info(f"  - {len(reports.get('workspaces', []))} workspaces")
+            self.logger.info(f"  - {len(reports.get('models', []))} models")
+            self.logger.info(f"  - {len(reports.get('projects', []))} projects")
+            self.logger.info(f"  - {len(reports.get('scheduler_jobs', []))} scheduler jobs")
+            self.logger.info(f"  - {len(reports.get('organizations', []))} organizations")
+            self.logger.info(f"  - {len(reports.get('app_versions', []))} app versions")
         else:
-            self.logger.warning(f"Workspace environment usage file not found: {workspace_file}")
-        
-        # Load model environment usage
-        model_file = Path(config_manager.get_model_env_usage_path())
-        if model_file.exists():
-            try:
-                with open(model_file, 'r') as f:
-                    content = f.read()
-                    try:
-                        reports['models'] = json.loads(content)
-                        if not isinstance(reports['models'], list):
-                            reports['models'] = [reports['models']] if reports['models'] else []
-                    except json.JSONDecodeError:
-                        reports['models'] = self._parse_mongodb_json(content)
-                self.logger.info(f"Loaded {len(reports['models'])} model environment records")
-            except Exception as e:
-                self.logger.warning(f"Could not load model environment usage: {e}")
-        else:
-            self.logger.warning(f"Model environment usage file not found: {model_file}")
+            self.logger.warning("No MongoDB usage reports found")
+            self.logger.info("  Tip: Run 'python main.py extract_metadata' to generate reports")
         
         return reports
     
@@ -241,36 +200,68 @@ class IntelligentImageDeleter:
         
         Args:
             usage: Usage dictionary with 'runs', 'workspaces', 'models', 'scheduler_jobs', 'projects' info
+                  Can have either count fields (runs_count, workspaces_count, models_count) or
+                  list fields (runs, workspaces, models), or both.
         
         Returns:
             Human-readable string describing usage
         """
         reasons = []
         
-        if usage.get('runs_count', 0) > 0:
-            run_count = usage['runs_count']
-            reasons.append(f"{run_count} execution{'s' if run_count > 1 else ''} in MongoDB")
+        # Check runs - prefer count field, fall back to list length
+        runs_count = usage.get('runs_count', 0)
+        if runs_count == 0:
+            runs_list = usage.get('runs', [])
+            runs_count = len(runs_list) if runs_list else 0
+        if runs_count > 0:
+            reasons.append(f"{runs_count} execution{'s' if runs_count > 1 else ''} in MongoDB")
         
-        if usage.get('workspaces_count', 0) > 0:
-            ws_count = usage['workspaces_count']
-            reasons.append(f"{ws_count} workspace{'s' if ws_count > 1 else ''}")
+        # Check workspaces - prefer count field, fall back to list length
+        workspaces_count = usage.get('workspaces_count', 0)
+        if workspaces_count == 0:
+            workspaces_list = usage.get('workspaces', [])
+            workspaces_count = len(workspaces_list) if workspaces_list else 0
+        if workspaces_count > 0:
+            reasons.append(f"{workspaces_count} workspace{'s' if workspaces_count > 1 else ''}")
         
-        if usage.get('models_count', 0) > 0:
-            model_count = usage['models_count']
-            reasons.append(f"{model_count} model{'s' if model_count > 1 else ''}")
+        # Check models - prefer count field, fall back to list length
+        models_count = usage.get('models_count', 0)
+        if models_count == 0:
+            models_list = usage.get('models', [])
+            models_count = len(models_list) if models_list else 0
+        if models_count > 0:
+            reasons.append(f"{models_count} model{'s' if models_count > 1 else ''}")
         
+        # Check scheduler_jobs (always a list)
         scheduler_jobs = usage.get('scheduler_jobs', [])
         if scheduler_jobs:
             scheduler_count = len(scheduler_jobs)
             reasons.append(f"{scheduler_count} scheduler job{'s' if scheduler_count > 1 else ''}")
         
+        # Check projects (always a list)
         projects = usage.get('projects', [])
         if projects:
             project_count = len(projects)
             reasons.append(f"{project_count} project{'s' if project_count > 1 else ''} using as default")
         
         if not reasons:
-            return "Referenced in system (source unknown)"
+            # Try to provide more context about what we checked
+            checked_fields = []
+            if usage.get('runs') or usage.get('runs_count'):
+                checked_fields.append("runs")
+            if usage.get('workspaces') or usage.get('workspaces_count'):
+                checked_fields.append("workspaces")
+            if usage.get('models') or usage.get('models_count'):
+                checked_fields.append("models")
+            if usage.get('scheduler_jobs'):
+                checked_fields.append("scheduler_jobs")
+            if usage.get('projects'):
+                checked_fields.append("projects")
+            
+            if checked_fields:
+                return f"Referenced in system (checked: {', '.join(checked_fields)}, all empty)"
+            else:
+                return "Referenced in system (source unknown - no usage data available)"
         
         return ", ".join(reasons)
 
@@ -1202,23 +1193,39 @@ def main():
                     print("Operation cancelled by user")
                     sys.exit(0)
 
-            # Load reports for analysis
+            # Load reports for analysis (auto-generate if missing)
             print("📊 Loading image analysis report...")
             image_analysis = deleter.load_image_analysis_report(args.image_analysis)
             if not image_analysis:
-                print("❌ Missing image analysis report. Run image-data-analysis.py first.")
+                print("⚠️  Image analysis report not found. Generating it now with image_data_analysis.py ...")
+                analysis_script = os.path.join(os.path.dirname(__file__), "image_data_analysis.py")
+                try:
+                    subprocess.run([sys.executable, analysis_script], check=True)
+                    image_analysis = deleter.load_image_analysis_report(args.image_analysis)
+                except subprocess.CalledProcessError as e:
+                    print(f"❌ Failed to generate image analysis report: {e}")
+                    sys.exit(1)
+            
+            if not image_analysis:
+                print("❌ Missing image analysis report even after regeneration. Aborting.")
                 sys.exit(1)
             
-            # Load MongoDB usage reports
+            # Load MongoDB usage reports (auto-generate if missing)
             print("📊 Loading MongoDB usage reports (runs, workspaces, models)...")
             mongodb_reports = deleter.load_mongodb_usage_reports()
             if not any(mongodb_reports.values()):
-                print("⚠️  Warning: No MongoDB usage reports found. Images referenced in runs/workspaces/models may be incorrectly marked as unused.")
-                print("   To ensure safety, run: python main.py extract_metadata")
-                response = input("   Continue anyway? (yes/no): ").lower().strip()
-                if response not in ['yes', 'y']:
-                    print("Operation cancelled. Please generate MongoDB reports first.")
-                    sys.exit(0)
+                print("⚠️  No MongoDB usage reports found. Generating them now with extract_metadata.py ...")
+                extract_script = os.path.join(os.path.dirname(__file__), "extract_metadata.py")
+                try:
+                    subprocess.run([sys.executable, extract_script, "--target", "all"], check=True)
+                    mongodb_reports = deleter.load_mongodb_usage_reports()
+                except subprocess.CalledProcessError as e:
+                    print(f"❌ Failed to generate MongoDB usage reports: {e}")
+                    sys.exit(1)
+            
+            if not any(mongodb_reports.values()):
+                print("❌ MongoDB usage reports are still missing or empty after regeneration. Aborting to avoid unsafe deletions.")
+                sys.exit(1)
             else:
                 total_records = sum(len(v) for v in mongodb_reports.values())
                 print(f"   ✓ Loaded {total_records} MongoDB records")
@@ -1273,27 +1280,42 @@ def main():
             return
 
         if not args.skip_analysis:
-            # Load analysis reports
+            # Load analysis reports (auto-generate if missing)
             print("📊 Loading image analysis report...")
             image_analysis = deleter.load_image_analysis_report(args.image_analysis)
             
             if not image_analysis:
-                print("❌ Missing image analysis report. Run image-data-analysis.py first.")
-                print("   Or use --skip-analysis to use traditional environments file method.")
+                print("⚠️  Image analysis report not found. Generating it now with image_data_analysis.py ...")
+                analysis_script = os.path.join(os.path.dirname(__file__), "image_data_analysis.py")
+                try:
+                    subprocess.run([sys.executable, analysis_script], check=True)
+                    image_analysis = deleter.load_image_analysis_report(args.image_analysis)
+                except subprocess.CalledProcessError as e:
+                    print(f"❌ Failed to generate image analysis report: {e}")
+                    sys.exit(1)
+            
+            if not image_analysis:
+                print("❌ Missing image analysis report even after regeneration. Aborting.")
                 sys.exit(1)
             
-            # Load MongoDB usage reports (runs, workspaces, models)
+            # Load MongoDB usage reports (runs, workspaces, models, auto-generate if missing)
             print("📊 Loading MongoDB usage reports (runs, workspaces, models)...")
             mongodb_reports = deleter.load_mongodb_usage_reports()
             
-            # Check if MongoDB reports are missing and suggest generating them
+            # If MongoDB reports are missing, generate them via extract_metadata.py
             if not any(mongodb_reports.values()):
-                print("⚠️  Warning: No MongoDB usage reports found. Images referenced in runs/workspaces/models may be incorrectly marked as unused.")
-                print("   To ensure safety, run: python main.py extract_metadata")
-                response = input("   Continue anyway? (yes/no): ").lower().strip()
-                if response not in ['yes', 'y']:
-                    print("Operation cancelled. Please generate MongoDB reports first.")
-                    sys.exit(0)
+                print("⚠️  No MongoDB usage reports found. Generating them now with extract_metadata.py ...")
+                extract_script = os.path.join(os.path.dirname(__file__), "extract_metadata.py")
+                try:
+                    subprocess.run([sys.executable, extract_script, "--target", "all"], check=True)
+                    mongodb_reports = deleter.load_mongodb_usage_reports()
+                except subprocess.CalledProcessError as e:
+                    print(f"❌ Failed to generate MongoDB usage reports: {e}")
+                    sys.exit(1)
+            
+            if not any(mongodb_reports.values()):
+                print("❌ MongoDB usage reports are still missing or empty after regeneration. Aborting to avoid unsafe deletions.")
+                sys.exit(1)
             else:
                 total_records = sum(len(v) for v in mongodb_reports.values())
                 print(f"   ✓ Loaded {total_records} MongoDB records (runs: {len(mongodb_reports['runs'])}, workspaces: {len(mongodb_reports['workspaces'])}, models: {len(mongodb_reports['models'])})")

@@ -91,25 +91,17 @@ def load_metadata_files() -> tuple:
         tag_data = json.load(f)
     logger.info(f"Loaded {len(tag_data)} tags from tag sums")
     
-    # Load workspace environment usage
-    workspace_usage_path = config_manager.get_workspace_env_usage_path()
-    if not Path(workspace_usage_path).exists():
-        logger.error(f"Workspace usage file not found: {workspace_usage_path}")
-        raise FileNotFoundError(f"Workspace usage file not found: {workspace_usage_path}")
+    # Load MongoDB usage reports from consolidated file
+    from image_usage import ImageUsageService
+    service = ImageUsageService()
+    reports = service.load_usage_reports()
     
-    with open(workspace_usage_path, 'r') as f:
-        workspace_data = f.read()
-    logger.info("Loaded workspace environment usage data")
+    # Convert to JSON strings for compatibility with existing analyze_tag_usage function
+    workspace_data = json.dumps(reports.get('workspaces', []))
+    model_data = json.dumps(reports.get('models', []))
     
-    # Load model environment usage
-    model_usage_path = config_manager.get_model_env_usage_path()
-    if not Path(model_usage_path).exists():
-        logger.error(f"Model usage file not found: {model_usage_path}")
-        raise FileNotFoundError(f"Model usage file not found: {model_usage_path}")
-    
-    with open(model_usage_path, 'r') as f:
-        model_data = f.read()
-    logger.info("Loaded model environment usage data")
+    logger.info(f"Loaded {len(reports.get('workspaces', []))} workspace environment records")
+    logger.info(f"Loaded {len(reports.get('models', []))} model environment records")
     
     return tag_data, workspace_data, model_data
 
@@ -194,11 +186,8 @@ def main():
         
         # Check if metadata reports need to be generated
         tag_sums_path = Path(config_manager.get_tag_sums_path())
-        reports_exist = all([
-            Path(config_manager.get_model_env_usage_path()).exists(),
-            Path(config_manager.get_workspace_env_usage_path()).exists(),
-            tag_sums_path.exists()
-        ])
+        mongodb_usage_path = Path(config_manager.get_mongodb_usage_path())
+        reports_exist = mongodb_usage_path.exists() and tag_sums_path.exists()
         
         # Generate reports if requested or if they don't exist
         if args.generate_reports or not reports_exist:

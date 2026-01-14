@@ -32,7 +32,11 @@ class TestDeletionLogic:
                 {"environment_docker_tag": "tag1", "run_id": "run1"}
             ],
             "workspaces": [],
-            "models": []
+            "models": [],
+            "projects": [],
+            "scheduler_jobs": [],
+            "organizations": [],
+            "app_versions": []
         }
         
         # Mock image analysis - both tags exist
@@ -290,7 +294,11 @@ class TestDeletionFlowIntegration:
                 {"environment_docker_tag": "tag1", "run_id": "run1"}
             ],
             "workspaces": [],
-            "models": []
+            "models": [],
+            "projects": [],
+            "scheduler_jobs": [],
+            "organizations": [],
+            "app_versions": []
         }
         
         image_analysis = {
