@@ -18,7 +18,7 @@ from config_manager import config_manager
 from logging_utils import setup_logging
 from mongo_utils import get_mongo_client
 from object_id_utils import validate_object_id
-from usage_tracker import ImageUsageTracker
+from image_usage import ImageUsageService
 
 
 def find_environment_usage(env_id: str) -> None:
@@ -68,11 +68,11 @@ def find_environment_usage(env_id: str) -> None:
             )
         )
 
-        # Load auxiliary JSON reports using usage_tracker
-        usage_tracker = ImageUsageTracker()
+        # Load auxiliary JSON reports using service
+        service = ImageUsageService()
         
         # Find direct environment ID usage in MongoDB collections (projects, scheduler_jobs, etc.)
-        direct_usage = usage_tracker.find_direct_environment_id_usage(all_ids)
+        direct_usage = service.find_direct_environment_id_usage(all_ids)
         
         # Aggregate direct usage results
         projects: List[Dict] = []
@@ -87,13 +87,13 @@ def find_environment_usage(env_id: str) -> None:
             app_versions.extend(usage_info['app_versions'])
         
         # Load Docker tag usage reports
-        mongodb_reports = usage_tracker.load_mongodb_usage_reports()
+        mongodb_reports = service.load_mongodb_usage_reports()
         
         workspace_usages = mongodb_reports.get('workspaces', [])
         runs_usages = mongodb_reports.get('runs', [])
 
-        # Use usage_tracker to find usage for all environment/revision IDs
-        usage_by_id = usage_tracker.find_usage_for_environment_ids(
+        # Use service to find usage for all environment/revision IDs
+        usage_by_id = service.find_usage_for_environment_ids(
             all_ids,
             mongodb_reports=mongodb_reports
         )
