@@ -244,6 +244,18 @@ class IntelligentImageDeleter:
             project_count = len(projects)
             reasons.append(f"{project_count} project{'s' if project_count > 1 else ''} using as default")
         
+        # Check organizations (always a list)
+        organizations = usage.get('organizations', [])
+        if organizations:
+            org_count = len(organizations)
+            reasons.append(f"{org_count} organization{'s' if org_count > 1 else ''} using as default")
+        
+        # Check app_versions (always a list)
+        app_versions = usage.get('app_versions', [])
+        if app_versions:
+            app_version_count = len(app_versions)
+            reasons.append(f"{app_version_count} app version{'s' if app_version_count > 1 else ''}")
+        
         if not reasons:
             # Try to provide more context about what we checked
             checked_fields = []
@@ -257,6 +269,10 @@ class IntelligentImageDeleter:
                 checked_fields.append("scheduler_jobs")
             if usage.get('projects'):
                 checked_fields.append("projects")
+            if usage.get('organizations'):
+                checked_fields.append("organizations")
+            if usage.get('app_versions'):
+                checked_fields.append("app_versions")
             
             if checked_fields:
                 return f"Referenced in system (checked: {', '.join(checked_fields)}, all empty)"
@@ -311,13 +327,17 @@ class IntelligentImageDeleter:
                             'workspaces': [],
                             'models': [],
                             'scheduler_jobs': [],
-                            'projects': []
+                            'projects': [],
+                            'organizations': [],
+                            'app_versions': []
                         }
                     usage_sources[tag]['runs'].extend(usage_info.get('runs', []))
                     usage_sources[tag]['workspaces'].extend(usage_info.get('workspaces', []))
                     usage_sources[tag]['models'].extend(usage_info.get('models', []))
                     usage_sources[tag]['scheduler_jobs'].extend(usage_info.get('scheduler_jobs', []))
                     usage_sources[tag]['projects'].extend(usage_info.get('projects', []))
+                    usage_sources[tag]['organizations'].extend(usage_info.get('organizations', []))
+                    usage_sources[tag]['app_versions'].extend(usage_info.get('app_versions', []))
             else:
                 self.logger.info("No Docker tags found in MongoDB reports")
         else:
@@ -404,7 +424,9 @@ class IntelligentImageDeleter:
                 'workspaces': [],
                 'models': [],
                 'scheduler_jobs': [],
-                'projects': []
+                'projects': [],
+                'organizations': [],
+                'app_versions': []
             })
             
             image_usage_stats[full_tag] = {
@@ -419,7 +441,9 @@ class IntelligentImageDeleter:
                     'models_count': len(tag_usage.get('models', [])),
                     'models': tag_usage.get('models', [])[:5],  # Limit to first 5 for display
                     'scheduler_jobs': tag_usage.get('scheduler_jobs', []),
-                    'projects': tag_usage.get('projects', [])
+                    'projects': tag_usage.get('projects', []),
+                    'organizations': tag_usage.get('organizations', []),
+                    'app_versions': tag_usage.get('app_versions', [])
                 }
             }
         
@@ -445,7 +469,9 @@ class IntelligentImageDeleter:
                     'workspaces': [],
                     'models': [],
                     'scheduler_jobs': [],
-                    'projects': []
+                    'projects': [],
+                    'organizations': [],
+                    'app_versions': []
                 })
                 
                 image_usage_stats[used_tag] = {
@@ -460,7 +486,9 @@ class IntelligentImageDeleter:
                         'models_count': len(tag_usage.get('models', [])),
                         'models': tag_usage.get('models', [])[:5],
                         'scheduler_jobs': tag_usage.get('scheduler_jobs', []),
-                        'projects': tag_usage.get('projects', [])
+                        'projects': tag_usage.get('projects', []),
+                        'organizations': tag_usage.get('organizations', []),
+                        'app_versions': tag_usage.get('app_versions', [])
                     }
                 }
         
