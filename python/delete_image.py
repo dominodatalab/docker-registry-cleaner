@@ -706,9 +706,18 @@ class IntelligentImageDeleter:
                 deleted_tags_normalized.add(dt)  # Legacy format
         
         for image_tag in sorted(analysis.unused_images):
+            # Find matching stats - stats may be keyed by full_tag (type:tag) or just tag
             stats = analysis.image_usage_stats.get(image_tag, {})
-            size_bytes = stats.get('size', 0)
-            usage = stats.get('usage', {})
+            if not stats:
+                # Try to find by matching tag name (strip type prefix from full_tag keys)
+                for full_tag, tag_stats in analysis.image_usage_stats.items():
+                    tag_name = full_tag.split(':', 1)[1] if ':' in full_tag else full_tag
+                    if tag_name == image_tag or full_tag == image_tag:
+                        stats = tag_stats
+                        break
+            
+            size_bytes = stats.get('size', 0) if stats else 0
+            usage = stats.get('usage', {}) if stats else {}
             
             # Check if this image was successfully deleted
             # For dry_run, all unused images are considered "would be deleted"
@@ -724,6 +733,8 @@ class IntelligentImageDeleter:
                 "models_count": usage.get('models_count', 0),
                 "scheduler_jobs_count": len(usage.get('scheduler_jobs', [])),
                 "projects_count": len(usage.get('projects', [])),
+                "organizations_count": len(usage.get('organizations', [])),
+                "app_versions_count": len(usage.get('app_versions', [])),
                 "usage": usage
             }
             
@@ -734,9 +745,21 @@ class IntelligentImageDeleter:
         
         # Also include images that were in use (not deleted) with full usage details
         for image_tag in sorted(analysis.used_images):
-            stats = analysis.image_usage_stats.get(image_tag, {})
-            size_bytes = stats.get('size', 0)
-            usage = stats.get('usage', {})
+            # Find matching stats - need to search through all stats
+            # used_images contains tag names without type prefix, but stats may be keyed by full_tag (type:tag)
+            matching_stats = None
+            if image_tag in analysis.image_usage_stats:
+                matching_stats = analysis.image_usage_stats[image_tag]
+            else:
+                # Search through all stats to find match by tag name
+                for full_tag, stats in analysis.image_usage_stats.items():
+                    tag_name = full_tag.split(':', 1)[1] if ':' in full_tag else full_tag
+                    if tag_name == image_tag:
+                        matching_stats = stats
+                        break
+            
+            size_bytes = matching_stats.get('size', 0) if matching_stats else 0
+            usage = matching_stats.get('usage', {}) if matching_stats else {}
             
             results["used_images"].append({
                 "tag": image_tag,
@@ -748,6 +771,8 @@ class IntelligentImageDeleter:
                 "models_count": usage.get('models_count', 0),
                 "scheduler_jobs_count": len(usage.get('scheduler_jobs', [])),
                 "projects_count": len(usage.get('projects', [])),
+                "organizations_count": len(usage.get('organizations', [])),
+                "app_versions_count": len(usage.get('app_versions', [])),
                 "usage": usage,
                 "why_cannot_delete": self._generate_usage_summary(usage) if usage else "Referenced in system (source unknown)"
             })
