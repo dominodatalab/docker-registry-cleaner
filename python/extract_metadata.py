@@ -3,8 +3,6 @@ import argparse
 from logging_utils import setup_logging, get_logger
 from typing import List
 
-from image_usage import ImageUsageService
-
 logger = get_logger(__name__)
 
 
@@ -355,6 +353,8 @@ def app_versions_env_usage_pipeline() -> List[dict]:
 
 def run(target: str) -> None:
 	"""Run aggregations and save reports via ImageUsageService."""
+	from image_usage import ImageUsageService  # Local import to avoid circular dependency
+	
 	service = ImageUsageService()
 	logger.info(f"Running image usage aggregations for target={target}...")
 	service.save_aggregations(target)

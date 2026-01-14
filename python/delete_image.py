@@ -62,7 +62,7 @@ from image_data_analysis import ImageAnalyzer
 from logging_utils import setup_logging, get_logger
 from object_id_utils import read_typed_object_ids_from_file
 from report_utils import save_json
-from usage_tracker import ImageUsageTracker
+from image_usage import ImageUsageService
 from pathlib import Path
 
 
@@ -182,7 +182,7 @@ class IntelligentImageDeleter:
     def extract_docker_tags_with_usage_info_from_mongodb_reports(self, mongodb_reports: Dict[str, List[Dict]]) -> Tuple[Set[str], Dict[str, Dict]]:
         """Extract Docker image tags from MongoDB usage reports with detailed usage information
         
-        This method uses usage_tracker to check runs, workspaces, models, scheduler_jobs, and projects.
+        This method uses ImageUsageService to check runs, workspaces, models, scheduler_jobs, and projects.
         
         Args:
             mongodb_reports: Dict with 'runs', 'workspaces', 'models' keys containing lists of records
@@ -191,8 +191,8 @@ class IntelligentImageDeleter:
             Tuple of (set of Docker image tags, dict mapping tag -> usage info)
             Usage info contains: {'runs': [...], 'workspaces': [...], 'models': [...], 'scheduler_jobs': [...], 'projects': [...]}
         """
-        usage_tracker = ImageUsageTracker()
-        tags, usage_info = usage_tracker.extract_docker_tags_with_usage_info(mongodb_reports)
+        service = ImageUsageService()
+        tags, usage_info = service.extract_docker_tags_with_usage_info(mongodb_reports)
         return tags, usage_info
     
     def _generate_usage_summary(self, usage: Dict) -> str:

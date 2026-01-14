@@ -60,7 +60,7 @@ from image_data_analysis import ImageAnalyzer
 from logging_utils import setup_logging, get_logger
 from mongo_utils import get_mongo_client
 from report_utils import save_json
-from usage_tracker import ImageUsageTracker
+from image_usage import ImageUsageService
 
 # Disable SSL warnings for Keycloak
 requests.packages.urllib3.disable_warnings()
@@ -488,15 +488,15 @@ class DeactivatedUserEnvFinder:
                 successfully_deleted_object_ids = set()
                 
                 # Check which tags are in use before attempting deletion
-                usage_tracker = ImageUsageTracker()
+                service = ImageUsageService()
                 tags_to_check = [tag_info.tag for tag_info in deactivated_user_tags]
-                in_use_tags, usage_info = usage_tracker.check_tags_in_use(tags_to_check)
+                in_use_tags, usage_info = service.check_tags_in_use(tags_to_check)
                 
                 if in_use_tags:
                     self.logger.warning(f"⚠️  Found {len(in_use_tags)} tags that are currently in use - these will be skipped")
                     for tag in in_use_tags:
                         usage = usage_info.get(tag, {})
-                        usage_summary = usage_tracker.generate_usage_summary(usage)
+                        usage_summary = service.generate_usage_summary(usage)
                         self.logger.warning(f"  • {tag}: {usage_summary}")
                         failed_deletions_with_reason[tag] = {
                             'reason': 'in_use',
@@ -511,7 +511,7 @@ class DeactivatedUserEnvFinder:
                     # Skip if tag is in use
                     if tag_info.tag in in_use_tags:
                         usage = usage_info.get(tag_info.tag, {})
-                        usage_summary = usage_tracker.generate_usage_summary(usage)
+                        usage_summary = service.generate_usage_summary(usage)
                         self.logger.warning(f"  Skipping {tag_info.full_image} (user: {tag_info.user_email}, in use: {usage_summary})")
                         failed_deletions.append(tag_info.full_image)
                         failed_deletions_with_reason[tag_info.full_image] = {
