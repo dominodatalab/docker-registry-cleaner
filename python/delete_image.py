@@ -298,6 +298,7 @@ class IntelligentImageDeleter:
                     oid_to_type[oid] = repo_type
         
         # Track usage sources for each image
+        # Keys: 'runs', 'workspaces', 'models', 'scheduler_jobs', 'projects'
         usage_sources = {}  # Maps tag -> dict with usage info
         
         # Get used images from MongoDB reports (runs, workspaces, models, scheduler_jobs, projects)
@@ -315,7 +316,6 @@ class IntelligentImageDeleter:
                 for tag, usage_info in mongodb_usage_info.items():
                     if tag not in usage_sources:
                         usage_sources[tag] = {
-                            'pods': [],
                             'runs': [],
                             'workspaces': [],
                             'models': [],
@@ -405,9 +405,10 @@ class IntelligentImageDeleter:
             # Get individual size from calculation (0 if not found)
             tag_size = individual_tag_sizes.get(full_tag, 0)
             
-            # Get usage information for this tag
+            # Get usage information for this tag. Not all tags will have all usage keys
+            # populated (e.g., tags referenced only by scheduler_jobs/projects), so we
+            # must use .get() with sensible defaults for safety.
             tag_usage = usage_sources.get(tag_name, {
-                'pods': [],
                 'runs': [],
                 'workspaces': [],
                 'models': [],
@@ -420,12 +421,12 @@ class IntelligentImageDeleter:
                 'layer_id': '',
                 'status': 'used' if tag_name in used_images else 'unused',
                 'usage': {
-                    'runs_count': len(tag_usage['runs']),
-                    'runs': tag_usage['runs'][:5],  # Limit to first 5 for display
-                    'workspaces_count': len(tag_usage['workspaces']),
-                    'workspaces': tag_usage['workspaces'][:5],  # Limit to first 5 for display
-                    'models_count': len(tag_usage['models']),
-                    'models': tag_usage['models'][:5],  # Limit to first 5 for display
+                    'runs_count': len(tag_usage.get('runs', [])),
+                    'runs': tag_usage.get('runs', [])[:5],  # Limit to first 5 for display
+                    'workspaces_count': len(tag_usage.get('workspaces', [])),
+                    'workspaces': tag_usage.get('workspaces', [])[:5],  # Limit to first 5 for display
+                    'models_count': len(tag_usage.get('models', [])),
+                    'models': tag_usage.get('models', [])[:5],  # Limit to first 5 for display
                     'scheduler_jobs': tag_usage.get('scheduler_jobs', []),
                     'projects': tag_usage.get('projects', [])
                 }
@@ -449,7 +450,6 @@ class IntelligentImageDeleter:
             if not has_stats:
                 # Create stats entry for this used tag
                 tag_usage = usage_sources.get(used_tag, {
-                    'pods': [],
                     'runs': [],
                     'workspaces': [],
                     'models': [],
@@ -462,17 +462,15 @@ class IntelligentImageDeleter:
                     'layer_id': '',
                     'status': 'used',
                     'usage': {
-                        'pods': tag_usage['pods'],
-                        'runs_count': len(tag_usage['runs']),
-                        'runs': tag_usage['runs'][:5],
-                        'workspaces_count': len(tag_usage['workspaces']),
-                        'workspaces': tag_usage['workspaces'][:5],
-                        'models_count': len(tag_usage['models']),
-                        'models': tag_usage['models'][:5],
+                        'runs_count': len(tag_usage.get('runs', [])),
+                        'runs': tag_usage.get('runs', [])[:5],
+                        'workspaces_count': len(tag_usage.get('workspaces', [])),
+                        'workspaces': tag_usage.get('workspaces', [])[:5],
+                        'models_count': len(tag_usage.get('models', [])),
+                        'models': tag_usage.get('models', [])[:5],
                         'scheduler_jobs': tag_usage.get('scheduler_jobs', []),
                         'projects': tag_usage.get('projects', [])
-                    },
-                    'pods_using': tag_usage['pods']
+                    }
                 }
         
         return WorkloadAnalysis(
@@ -586,7 +584,6 @@ class IntelligentImageDeleter:
                 "size_gb": round(size_bytes / (1024**3), 2),
                 "layer_id": stats.get('layer_id', ''),
                 "status": stats.get('status', 'unused'),
-                "pods_using": stats.get('pods_using', []),
                 "usage": usage
             })
         
@@ -604,13 +601,18 @@ class IntelligentImageDeleter:
             if matching_stats:
                 size_bytes = matching_stats.get('size', 0)
                 usage = matching_stats.get('usage', {})
+                # Flatten some key usage counts for convenience
                 report["used_images"].append({
                     "tag": image_tag,
                     "size_bytes": size_bytes,
                     "size_gb": round(size_bytes / (1024**3), 2),
                     "status": "used",
+                    "runs_count": usage.get('runs_count', 0),
+                    "workspaces_count": usage.get('workspaces_count', 0),
+                    "models_count": usage.get('models_count', 0),
+                    "scheduler_jobs_count": len(usage.get('scheduler_jobs', [])),
+                    "projects_count": len(usage.get('projects', [])),
                     "usage": usage,
-                    "pods_using": matching_stats.get('pods_using', []),
                     "why_cannot_delete": self._generate_usage_summary(usage)
                 })
         
@@ -884,10 +886,14 @@ class IntelligentImageDeleter:
                     stats = {}
                 
                 usage = stats.get('usage', {})
-                # Check if usage dict is actually empty (all lists are empty)
-                if usage and (usage.get('pods') or usage.get('runs_count', 0) > 0 or 
-                             usage.get('workspaces_count', 0) > 0 or usage.get('models_count', 0) > 0 or
-                             usage.get('scheduler_jobs') or usage.get('projects')):
+                # Check if usage dict is actually empty (all lists/counts are empty)
+                if usage and (
+                    usage.get('runs_count', 0) > 0 or 
+                    usage.get('workspaces_count', 0) > 0 or 
+                    usage.get('models_count', 0) > 0 or
+                    usage.get('scheduler_jobs') or 
+                    usage.get('projects')
+                ):
                     usage_summary = self._generate_usage_summary(usage)
                 else:
                     usage_summary = "Referenced in system (source unknown)"
