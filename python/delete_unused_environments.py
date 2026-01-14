@@ -176,49 +176,25 @@ class UnusedEnvironmentsFinder:
             raise
     
     def load_metadata_files(self) -> tuple:
-        """Load metadata files from extract_metadata.py"""
-        # Load model environment usage
-        model_env_file = Path(config_manager.get_model_env_usage_path())
-        model_env_data = []
-        if model_env_file.exists():
-            try:
-                with open(model_env_file, 'r') as f:
-                    content = f.read()
-                    # Handle MongoDB extended JSON format (ObjectId, ISODate)
-                    # For simplicity, we'll extract the relevant IDs using regex
-                    model_env_data = self._parse_mongodb_json(content)
-                self.logger.info(f"Loaded {len(model_env_data)} model environment records")
-            except Exception as e:
-                self.logger.warning(f"Could not load model environment usage: {e}")
-        else:
-            self.logger.warning(f"Model environment usage file not found: {model_env_file}")
+        """Load metadata files from extract_metadata.py
         
-        # Load workspace environment usage
-        workspace_env_file = Path(config_manager.get_workspace_env_usage_path())
-        workspace_env_data = []
-        if workspace_env_file.exists():
-            try:
-                with open(workspace_env_file, 'r') as f:
-                    content = f.read()
-                    workspace_env_data = self._parse_mongodb_json(content)
-                self.logger.info(f"Loaded {len(workspace_env_data)} workspace environment records")
-            except Exception as e:
-                self.logger.warning(f"Could not load workspace environment usage: {e}")
-        else:
-            self.logger.warning(f"Workspace environment usage file not found: {workspace_env_file}")
+        Uses consolidated MongoDB usage report file.
         
-        # Load runs usage file (new)
-        runs_env_file = Path(config_manager.get_runs_env_usage_path())
-        runs_env_data = []
-        if runs_env_file.exists():
-            try:
-                with open(runs_env_file, 'r') as f:
-                    runs_env_data = json.load(f)
-                self.logger.info(f"Loaded {len(runs_env_data)} runs environment records")
-            except Exception as e:
-                self.logger.warning(f"Could not load runs environment usage: {e}")
-        else:
-            self.logger.warning(f"Runs environment usage file not found: {runs_env_file}")
+        Returns:
+            Tuple of (model_env_data, workspace_env_data, runs_env_data)
+        """
+        from image_usage import ImageUsageService
+        
+        service = ImageUsageService()
+        reports = service.load_usage_reports()
+        
+        model_env_data = reports.get('models', [])
+        workspace_env_data = reports.get('workspaces', [])
+        runs_env_data = reports.get('runs', [])
+        
+        self.logger.info(f"Loaded {len(model_env_data)} model environment records")
+        self.logger.info(f"Loaded {len(workspace_env_data)} workspace environment records")
+        self.logger.info(f"Loaded {len(runs_env_data)} runs environment records")
 
         return model_env_data, workspace_env_data, runs_env_data
     
@@ -1199,10 +1175,8 @@ def main():
         )
         
         # Check if reports need to be generated
-        reports_exist = all([
-            Path(config_manager.get_model_env_usage_path()).exists(),
-            Path(config_manager.get_workspace_env_usage_path()).exists()
-        ])
+        mongodb_usage_path = Path(config_manager.get_mongodb_usage_path())
+        reports_exist = mongodb_usage_path.exists()
         
         # Generate reports if requested or if they don't exist
         if args.generate_reports or (not use_input_file and not reports_exist):

@@ -1,0 +1,118 @@
+{
+  "runs": [
+    {
+      "environment_id": "507f1f77bcf86cd799439011",
+      "environment_revision_id": "507f1f77bcf86cd799439012",
+      "environment_docker_repo": "dominodatalab/compute-environment-images",
+      "environment_docker_tag": "507f1f77bcf86cd799439011-abc123",
+      "last_used": "2024-01-15T10:30:00Z",
+      "started": "2024-01-15T10:25:00Z",
+      "completed": "2024-01-15T10:30:00Z"
+    },
+    {
+      "environment_id": "507f1f77bcf86cd799439013",
+      "environment_revision_id": "507f1f77bcf86cd799439014",
+      "environment_docker_repo": "dominodatalab/compute-environment-images",
+      "environment_docker_tag": "507f1f77bcf86cd799439013-def456",
+      "last_used": "2024-01-14T15:20:00Z",
+      "started": "2024-01-14T15:15:00Z",
+      "completed": "2024-01-14T15:20:00Z"
+    }
+  ],
+  "workspaces": [
+    {
+      "workspace_name": "my-workspace",
+      "workspace_last_change": "2024-01-16T09:00:00Z",
+      "project_name": "my-project",
+      "user_name": "John Doe",
+      "environment_name": "Python 3.9",
+      "environment_docker_repo": "dominodatalab/compute-environment-images",
+      "environment_docker_tag": "507f1f77bcf86cd799439011-abc123",
+      "project_default_environment_name": "Python 3.9",
+      "project_default_environment_docker_repo": "dominodatalab/compute-environment-images",
+      "project_default_environment_docker_tag": "507f1f77bcf86cd799439011-abc123",
+      "compute_environment_docker_repo": "dominodatalab/compute-environment-images",
+      "compute_environment_docker_tag": "507f1f77bcf86cd799439011-xyz789",
+      "session_environment_docker_repo": null,
+      "session_environment_docker_tag": null,
+      "session_compute_environment_docker_repo": null,
+      "session_compute_environment_docker_tag": null
+    }
+  ],
+  "models": [
+    {
+      "model_id": "507f1f77bcf86cd799439020",
+      "model_name": "Customer Churn Predictor",
+      "model_last_change": "2024-01-10T14:30:00Z",
+      "model_owner": "Jane Smith",
+      "model_created_by": "Jane Smith",
+      "environment_name": "Python 3.9",
+      "environment_id": "507f1f77bcf86cd799439011",
+      "model_active_versions": [
+        {
+          "environment_revision_id": "507f1f77bcf86cd799439012",
+          "model_version_id": "507f1f77bcf86cd799439021",
+          "model_environment_repository": "dominodatalab/compute-environment-images",
+          "model_environment_tag": "507f1f77bcf86cd799439011-abc123",
+          "base_environment_repository": "dominodatalab/compute-environment-images",
+          "base_environment_tag": "507f1f77bcf86cd799439011-abc123"
+        }
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "project_id": "507f1f77bcf86cd799439030",
+      "project_name": "Data Science Project",
+      "owner_id": "507f1f77bcf86cd799439031",
+      "environment_id": "507f1f77bcf86cd799439011",
+      "environment_docker_repo": "dominodatalab/compute-environment-images",
+      "environment_docker_tag": "507f1f77bcf86cd799439011-abc123"
+    },
+    {
+      "project_id": "507f1f77bcf86cd799439032",
+      "project_name": "ML Training Pipeline",
+      "owner_id": "507f1f77bcf86cd799439033",
+      "environment_id": "507f1f77bcf86cd799439013",
+      "environment_docker_repo": "dominodatalab/compute-environment-images",
+      "environment_docker_tag": "507f1f77bcf86cd799439013-def456"
+    }
+  ],
+  "scheduler_jobs": [
+    {
+      "job_id": "507f1f77bcf86cd799439040",
+      "job_name": "Daily Data Refresh",
+      "project_id": "507f1f77bcf86cd799439030",
+      "environment_id": "507f1f77bcf86cd799439011",
+      "environment_docker_repo": "dominodatalab/compute-environment-images",
+      "environment_docker_tag": "507f1f77bcf86cd799439011-abc123"
+    },
+    {
+      "job_id": "507f1f77bcf86cd799439041",
+      "job_name": "Weekly Model Retrain",
+      "project_id": "507f1f77bcf86cd799439032",
+      "environment_id": "507f1f77bcf86cd799439013",
+      "environment_docker_repo": "dominodatalab/compute-environment-images",
+      "environment_docker_tag": "507f1f77bcf86cd799439013-def456"
+    }
+  ],
+  "organizations": [
+    {
+      "organization_id": "507f1f77bcf86cd799439050",
+      "organization_name": "Engineering Team",
+      "environment_id": "507f1f77bcf86cd799439011",
+      "environment_docker_repo": "dominodatalab/compute-environment-images",
+      "environment_docker_tag": "507f1f77bcf86cd799439011-abc123"
+    }
+  ],
+  "app_versions": [
+    {
+      "app_version_id": "507f1f77bcf86cd799439060",
+      "app_id": "507f1f77bcf86cd799439061",
+      "version_number": 1,
+      "environment_id": "507f1f77bcf86cd799439011",
+      "environment_docker_repo": "dominodatalab/compute-environment-images",
+      "environment_docker_tag": "507f1f77bcf86cd799439011-abc123"
+    }
+  ]
+}

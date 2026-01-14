@@ -51,17 +51,16 @@ config:
   skopeo:
     use_pod: false
   reports:
+    archived_tags: "archived-tags.json"
     deletion_analysis: "deletion-analysis.json"
     filtered_layers: "filtered-layers.json"
     image_analysis: "final-report.json"
     images_report: "images-report"
     layers_and_sizes: "layers-and-sizes.json"
+    mongodb_usage: "mongodb_usage_report.json"
     tags_per_layer: "tags-per-layer.json"
     tag_sums: "tag-sums.json"
-    unused_references: "unused-references.json"
-    runs_env_usage: "runs_env_usage_output.json"
-    model_env_usage: "model_env_usage_output.json"
-    workspace_env_usage: "workspace_env_usage_output.json"
+    unused_references: "unused-references.json"  # Consolidated report for all MongoDB usage data
   security:
     dry_run_by_default: true
     require_confirmation: true

@@ -107,9 +107,7 @@ class ConfigManager:
                 'tags_per_layer': 'tags-per-layer.json',
                 'tag_sums': 'tag-sums.json',
                 'unused_references': 'unused-references.json',
-                'runs_env_usage': 'runs_env_usage_output.json',
-                'model_env_usage': 'model_env_usage_output.json',
-                'workspace_env_usage': 'workspace_env_usage_output.json'
+                'mongodb_usage': 'mongodb_usage_report.json'  # Consolidated report for all MongoDB usage data
             },
             'security': {
                 'dry_run_by_default': True,
@@ -319,17 +317,9 @@ class ConfigManager:
             return path
         return os.path.join(self.get_output_dir(), path)
 
-    def get_runs_env_usage_path(self) -> str:
-        """Get runs environment usage report path from config"""
-        return self._resolve_report_path(self.config['reports']['runs_env_usage'])
-    
-    def get_model_env_usage_path(self) -> str:
-        """Get model environment usage report path from config"""
-        return self._resolve_report_path(self.config['reports']['model_env_usage'])
-    
-    def get_workspace_env_usage_path(self) -> str:
-        """Get workspace environment usage report path from config"""
-        return self._resolve_report_path(self.config['reports']['workspace_env_usage'])
+    def get_mongodb_usage_path(self) -> str:
+        """Get consolidated MongoDB usage report path from config"""
+        return self._resolve_report_path(self.config['reports']['mongodb_usage'])
     
     def get_image_analysis_path(self) -> str:
         """Get image analysis path from config"""

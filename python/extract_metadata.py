@@ -1,12 +1,9 @@
 import argparse
-import os
 
 from logging_utils import setup_logging, get_logger
 from typing import List
 
-from config_manager import config_manager
-from mongo_utils import get_mongo_client, bson_to_jsonable
-from report_utils import save_json
+from image_usage import ImageUsageService
 
 logger = get_logger(__name__)
 
@@ -231,33 +228,142 @@ def runs_env_usage_pipeline() -> List[dict]:
 	]
 
 
-def run(target: str) -> None:
-	mongo_uri = config_manager.get_mongo_connection_string()
-	mongo_db = config_manager.get_mongo_db()
+def projects_env_usage_pipeline() -> List[dict]:
+	# Aggregate projects that reference environment IDs via overrideV2EnvironmentId; enrich with docker image info
+	# Exclude archived projects - they won't use the environment, so images linked to them can be cleaned up
+	return [
+		{"$match": {
+			"overrideV2EnvironmentId": {"$exists": True, "$ne": None},
+			"isArchived": {"$ne": True}
+		}},
+		{"$project": {
+			"project_id": "$_id",
+			"project_name": "$name",
+			"owner_id": "$ownerId",
+			"environment_id": "$overrideV2EnvironmentId"
+		}},
+		{"$lookup": {"from": "environments_v2", "localField": "environment_id", "foreignField": "_id", "as": "environment"}},
+		{"$project": {
+			"project_id": "$project_id",
+			"project_name": "$project_name",
+			"owner_id": "$owner_id",
+			"environment_id": "$environment_id",
+			"active_revision_id": {"$first": "$environment.activeRevisionId"}
+		}},
+		{"$lookup": {"from": "environment_revisions", "localField": "active_revision_id", "foreignField": "_id", "as": "environment_revision"}},
+		{"$project": {
+			"project_id": "$project_id",
+			"project_name": "$project_name",
+			"owner_id": "$owner_id",
+			"environment_id": "$environment_id",
+			"environment_docker_repo": {"$first": "$environment_revision.metadata.dockerImageName.repository"},
+			"environment_docker_tag": {"$first": "$environment_revision.metadata.dockerImageName.tag"}
+		}},
+		{"$match": {"environment_docker_tag": {"$exists": True, "$ne": None}}}
+	]
 
-	client = get_mongo_client()
-	try:
-		db = client[mongo_db]
-		if target in ("model", "all"):
-			logger.info("Running model environment usage aggregation...")
-			model_results = list(db.models.aggregate(model_env_usage_pipeline()))
-			save_json(config_manager.get_model_env_usage_path(), bson_to_jsonable(model_results))
-		if target in ("workspace", "all"):
-			logger.info("Running workspace environment usage aggregation...")
-			workspace_results = list(db.workspace.aggregate(workspace_env_usage_pipeline()))
-			save_json(config_manager.get_workspace_env_usage_path(), bson_to_jsonable(workspace_results))
-		if target in ("runs", "all"):
-			logger.info("Running runs environment usage aggregation...")
-			runs_results = list(db.runs.aggregate(runs_env_usage_pipeline()))
-			save_json(config_manager.get_runs_env_usage_path(), bson_to_jsonable(runs_results))
-	finally:
-		client.close()
+
+def scheduler_jobs_env_usage_pipeline() -> List[dict]:
+	# Aggregate scheduler jobs that reference environment IDs via jobDataPlain.overrideEnvironmentId; enrich with docker image info
+	return [
+		{"$match": {"jobDataPlain.overrideEnvironmentId": {"$exists": True, "$ne": None}}},
+		{"$project": {
+			"job_id": "$_id",
+			"job_name": "$jobName",
+			"project_id": "$projectId",
+			"environment_id": "$jobDataPlain.overrideEnvironmentId"
+		}},
+		{"$lookup": {"from": "environments_v2", "localField": "environment_id", "foreignField": "_id", "as": "environment"}},
+		{"$project": {
+			"job_id": "$job_id",
+			"job_name": "$job_name",
+			"project_id": "$project_id",
+			"environment_id": "$environment_id",
+			"active_revision_id": {"$first": "$environment.activeRevisionId"}
+		}},
+		{"$lookup": {"from": "environment_revisions", "localField": "active_revision_id", "foreignField": "_id", "as": "environment_revision"}},
+		{"$project": {
+			"job_id": "$job_id",
+			"job_name": "$job_name",
+			"project_id": "$project_id",
+			"environment_id": "$environment_id",
+			"environment_docker_repo": {"$first": "$environment_revision.metadata.dockerImageName.repository"},
+			"environment_docker_tag": {"$first": "$environment_revision.metadata.dockerImageName.tag"}
+		}},
+		{"$match": {"environment_docker_tag": {"$exists": True, "$ne": None}}}
+	]
+
+
+def organizations_env_usage_pipeline() -> List[dict]:
+	# Aggregate organizations that reference environment IDs via defaultV2EnvironmentId; enrich with docker image info
+	return [
+		{"$match": {"defaultV2EnvironmentId": {"$exists": True, "$ne": None}}},
+		{"$project": {
+			"organization_id": "$_id",
+			"organization_name": "$name",
+			"environment_id": "$defaultV2EnvironmentId"
+		}},
+		{"$lookup": {"from": "environments_v2", "localField": "environment_id", "foreignField": "_id", "as": "environment"}},
+		{"$project": {
+			"organization_id": "$organization_id",
+			"organization_name": "$organization_name",
+			"environment_id": "$environment_id",
+			"active_revision_id": {"$first": "$environment.activeRevisionId"}
+		}},
+		{"$lookup": {"from": "environment_revisions", "localField": "active_revision_id", "foreignField": "_id", "as": "environment_revision"}},
+		{"$project": {
+			"organization_id": "$organization_id",
+			"organization_name": "$organization_name",
+			"environment_id": "$environment_id",
+			"environment_docker_repo": {"$first": "$environment_revision.metadata.dockerImageName.repository"},
+			"environment_docker_tag": {"$first": "$environment_revision.metadata.dockerImageName.tag"}
+		}},
+		{"$match": {"environment_docker_tag": {"$exists": True, "$ne": None}}}
+	]
+
+
+def app_versions_env_usage_pipeline() -> List[dict]:
+	# Aggregate app versions that reference environment IDs via environmentId; enrich with docker image info
+	return [
+		{"$match": {"environmentId": {"$exists": True, "$ne": None}}},
+		{"$project": {
+			"app_version_id": "$_id",
+			"app_id": "$appId",
+			"version_number": "$versionNumber",
+			"environment_id": "$environmentId"
+		}},
+		{"$lookup": {"from": "environments_v2", "localField": "environment_id", "foreignField": "_id", "as": "environment"}},
+		{"$project": {
+			"app_version_id": "$app_version_id",
+			"app_id": "$app_id",
+			"version_number": "$version_number",
+			"environment_id": "$environment_id",
+			"active_revision_id": {"$first": "$environment.activeRevisionId"}
+		}},
+		{"$lookup": {"from": "environment_revisions", "localField": "active_revision_id", "foreignField": "_id", "as": "environment_revision"}},
+		{"$project": {
+			"app_version_id": "$app_version_id",
+			"app_id": "$app_id",
+			"version_number": "$version_number",
+			"environment_id": "$environment_id",
+			"environment_docker_repo": {"$first": "$environment_revision.metadata.dockerImageName.repository"},
+			"environment_docker_tag": {"$first": "$environment_revision.metadata.dockerImageName.tag"}
+		}},
+		{"$match": {"environment_docker_tag": {"$exists": True, "$ne": None}}}
+	]
+
+
+def run(target: str) -> None:
+	"""Run aggregations and save reports via ImageUsageService."""
+	service = ImageUsageService()
+	logger.info(f"Running image usage aggregations for target={target}...")
+	service.save_aggregations(target)
 
 
 def main():
 	setup_logging()
 	parser = argparse.ArgumentParser(description='Extract metadata from MongoDB using PyMongo')
-	parser.add_argument('--target', choices=['model', 'workspace', 'runs', 'all'], default='all', help='Which aggregation(s) to run')
+	parser.add_argument('--target', choices=['model', 'workspace', 'runs', 'projects', 'scheduler_jobs', 'organizations', 'app_versions', 'all'], default='all', help='Which aggregation(s) to run')
 	args = parser.parse_args()
 	run(args.target)
 
