@@ -115,7 +115,7 @@ class ImageUsageTracker:
                 tag = record['environment_docker_tag']
                 tags.add(tag)
                 if tag not in usage_info:
-                    usage_info[tag] = {'pods': [], 'runs': [], 'workspaces': [], 'models': []}
+                    usage_info[tag] = {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': []}
                 run_info = {
                     'run_id': record.get('run_id') or record.get('_id', 'unknown'),
                     'project_id': record.get('project_id', 'unknown'),
@@ -158,7 +158,7 @@ class ImageUsageTracker:
                 tag = record['environment_docker_tag']
                 tags.add(tag)
                 if tag not in usage_info:
-                    usage_info[tag] = {'pods': [], 'runs': [], 'workspaces': [], 'models': []}
+                    usage_info[tag] = {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': []}
                 model_info = {
                     'model_id': record.get('model_id') or record.get('_id', 'unknown'),
                     'model_name': record.get('model_name', 'unknown'),
@@ -360,12 +360,14 @@ class ImageUsageTracker:
             model_count = len(usage['models'])
             reasons.append(f"{model_count} model{'s' if model_count > 1 else ''}")
         
-        if usage.get('scheduler_jobs'):
-            scheduler_count = len(usage['scheduler_jobs'])
+        scheduler_jobs = usage.get('scheduler_jobs', [])
+        if scheduler_jobs:
+            scheduler_count = len(scheduler_jobs)
             reasons.append(f"{scheduler_count} scheduler job{'s' if scheduler_count > 1 else ''}")
         
-        if usage.get('projects'):
-            project_count = len(usage['projects'])
+        projects = usage.get('projects', [])
+        if projects:
+            project_count = len(projects)
             reasons.append(f"{project_count} project{'s' if project_count > 1 else ''} using as default")
         
         if not reasons:
