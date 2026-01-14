@@ -234,10 +234,13 @@ class ImageUsageTracker:
                         'projectId': str(doc.get('projectId', '')) if doc.get('projectId') else 'unknown'
                     })
             
-            # Query projects
+            # Query projects (ignore archived projects)
             projects_coll = db["projects"]
             for doc in projects_coll.find(
-                {"overrideV2EnvironmentId": {"$exists": True, "$ne": None}},
+                {
+                    "overrideV2EnvironmentId": {"$exists": True, "$ne": None},
+                    "isArchived": {"$ne": True},
+                },
                 {"_id": 1, "name": 1, "ownerId": 1, "overrideV2EnvironmentId": 1}
             ):
                 env_id_obj = doc.get("overrideV2EnvironmentId")
@@ -528,10 +531,13 @@ class ImageUsageTracker:
         } for env_id in environment_ids}
         
         try:
-            # Check projects collection
+            # Check projects collection (ignore archived projects)
             projects_coll = db["projects"]
             for doc in projects_coll.find(
-                {"overrideV2EnvironmentId": {"$in": [env_id for env_id in environment_ids]}},
+                {
+                    "overrideV2EnvironmentId": {"$in": [env_id for env_id in environment_ids]},
+                    "isArchived": {"$ne": True},
+                },
                 {"_id": 1, "name": 1, "ownerId": 1, "overrideV2EnvironmentId": 1}
             ):
                 env_id = str(doc.get("overrideV2EnvironmentId", ""))
