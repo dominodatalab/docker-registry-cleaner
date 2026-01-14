@@ -668,7 +668,8 @@ class IntelligentImageDeleter:
                 "total_size_saved_gb": round(analysis.total_size_saved / (1024**3), 2)
             },
             "deleted_images": [],
-            "failed_deletions": []
+            "failed_deletions": [],
+            "used_images": []
         }
         
         # Add successfully deleted images
@@ -688,6 +689,7 @@ class IntelligentImageDeleter:
         for image_tag in sorted(analysis.unused_images):
             stats = analysis.image_usage_stats.get(image_tag, {})
             size_bytes = stats.get('size', 0)
+            usage = stats.get('usage', {})
             
             # Check if this image was successfully deleted
             # For dry_run, all unused images are considered "would be deleted"
@@ -697,13 +699,39 @@ class IntelligentImageDeleter:
                 "tag": image_tag,
                 "size_bytes": size_bytes,
                 "size_gb": round(size_bytes / (1024**3), 2),
-                "status": "deleted" if is_deleted else "failed"
+                "status": "deleted" if is_deleted else "failed",
+                "runs_count": usage.get('runs_count', 0),
+                "workspaces_count": usage.get('workspaces_count', 0),
+                "models_count": usage.get('models_count', 0),
+                "scheduler_jobs_count": len(usage.get('scheduler_jobs', [])),
+                "projects_count": len(usage.get('projects', [])),
+                "usage": usage
             }
             
             if image_result["status"] == "deleted":
                 results["deleted_images"].append(image_result)
             else:
                 results["failed_deletions"].append(image_result)
+        
+        # Also include images that were in use (not deleted) with full usage details
+        for image_tag in sorted(analysis.used_images):
+            stats = analysis.image_usage_stats.get(image_tag, {})
+            size_bytes = stats.get('size', 0)
+            usage = stats.get('usage', {})
+            
+            results["used_images"].append({
+                "tag": image_tag,
+                "size_bytes": size_bytes,
+                "size_gb": round(size_bytes / (1024**3), 2),
+                "status": "used",
+                "runs_count": usage.get('runs_count', 0),
+                "workspaces_count": usage.get('workspaces_count', 0),
+                "models_count": usage.get('models_count', 0),
+                "scheduler_jobs_count": len(usage.get('scheduler_jobs', [])),
+                "projects_count": len(usage.get('projects', [])),
+                "usage": usage,
+                "why_cannot_delete": self._generate_usage_summary(usage) if usage else "Referenced in system (source unknown)"
+            })
         
         try:
             save_json(output_file, results)
