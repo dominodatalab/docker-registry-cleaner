@@ -60,7 +60,7 @@ config:
     mongodb_usage: "mongodb_usage_report.json"
     tags_per_layer: "tags-per-layer.json"
     tag_sums: "tag-sums.json"
-    unused_references: "unused-references.json"  # Consolidated report for all MongoDB usage data
+    unused_references: "unused-references.json"
   security:
     dry_run_by_default: true
     require_confirmation: true
