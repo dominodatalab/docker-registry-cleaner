@@ -9,8 +9,8 @@ import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'python'))
 
-from delete_image import IntelligentImageDeleter, WorkloadAnalysis
-from image_data_analysis import ImageAnalyzer
+from scripts.delete_image import IntelligentImageDeleter, WorkloadAnalysis
+from utils.image_data_analysis import ImageAnalyzer
 
 
 class TestDeletionLogic:
@@ -18,7 +18,7 @@ class TestDeletionLogic:
     
     def setup_method(self):
         """Set up test fixtures"""
-        with patch('delete_image.SkopeoClient'):
+        with patch('scripts.delete_image.SkopeoClient'):
             self.deleter = IntelligentImageDeleter(
                 registry_url="http://test-registry",
                 repository="test-repo"
@@ -144,7 +144,7 @@ class TestDeletionLogic:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
     
-    @patch('delete_image.SkopeoClient')
+    @patch('scripts.delete_image.SkopeoClient')
     def test_delete_unused_images_dry_run(self, mock_skopeo_class):
         """Test dry-run deletion doesn't actually delete"""
         mock_skopeo = MagicMock()
@@ -173,7 +173,7 @@ class TestDeletionLogic:
         # Skopeo delete_image should not be called
         assert not mock_skopeo.delete_image.called
     
-    @patch('delete_image.SkopeoClient')
+    @patch('scripts.delete_image.SkopeoClient')
     def test_delete_unused_images_actual_deletion(self, mock_skopeo_class):
         """Test actual deletion calls skopeo correctly"""
         mock_skopeo = MagicMock()
@@ -202,7 +202,7 @@ class TestDeletionLogic:
         assert len(deleted_tags) == 1
         assert "test-repo/environment:tag1" in deleted_tags
     
-    @patch('delete_image.SkopeoClient')
+    @patch('scripts.delete_image.SkopeoClient')
     def test_delete_unused_images_handles_failures(self, mock_skopeo_class):
         """Test that deletion failures are handled correctly"""
         mock_skopeo = MagicMock()
@@ -269,7 +269,7 @@ class TestDeletionFlowIntegration:
     """Integration tests for the complete deletion flow"""
     
     @patch('delete_image.ImageAnalyzer')
-    @patch('delete_image.SkopeoClient')
+    @patch('scripts.delete_image.SkopeoClient')
     def test_complete_deletion_flow(self, mock_skopeo_class, mock_analyzer_class):
         """Test the complete flow from analysis to deletion"""
         # Setup mocks

@@ -1,4 +1,4 @@
-from logging_utils import get_logger
+from utils.logging_utils import get_logger
 from typing import List, Dict
 
 from bson import ObjectId

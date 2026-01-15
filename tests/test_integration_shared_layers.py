@@ -10,7 +10,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'python'))
 
-from image_data_analysis import ImageAnalyzer
+from utils.image_data_analysis import ImageAnalyzer
 
 
 class TestSharedLayerCalculation:

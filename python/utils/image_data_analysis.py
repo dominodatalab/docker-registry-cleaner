@@ -14,14 +14,20 @@ Data Model:
 import argparse
 import concurrent.futures
 import sys
+
 from collections import Counter
+from pathlib import Path
+from typing import Dict, List, Optional
 
-from typing import List, Optional, Dict
+# Add parent directory to path for imports
+_parent_dir = Path(__file__).parent.parent.absolute()
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
 
-from config_manager import config_manager, SkopeoClient
-from logging_utils import setup_logging, get_logger
-from object_id_utils import read_typed_object_ids_from_file
-from report_utils import save_json
+from utils.config_manager import SkopeoClient, config_manager
+from utils.logging_utils import get_logger, setup_logging
+from utils.object_id_utils import read_typed_object_ids_from_file
+from utils.report_utils import save_json
 
 logger = get_logger(__name__)
 
@@ -330,33 +336,34 @@ class ImageAnalyzer:
         images_report_output_file = config_manager.get_images_report_path()
         
         # Export to legacy format (for backward compatibility)
+        # Use timestamp=True for auto-generated reports
         legacy_data = self.export_to_legacy_format()
-        save_json(final_output_file, legacy_data)
-        self.logger.info(f"Image analysis saved to: {final_output_file}")
+        saved_path = save_json(final_output_file, legacy_data, timestamp=True)
+        self.logger.info(f"Image analysis saved to: {saved_path}")
         
         # Tags per layer
         tags_per_layer = {
             layer_id: layer_data['ref_count'] 
             for layer_id, layer_data in self.layers.items()
         }
-        save_json(tags_per_layer_output_file, tags_per_layer)
-        self.logger.info(f"Tags per layer count saved to: {tags_per_layer_output_file}")
+        saved_path = save_json(tags_per_layer_output_file, tags_per_layer, timestamp=True)
+        self.logger.info(f"Tags per layer count saved to: {saved_path}")
         
         # Layers and sizes
         layers_and_sizes = {
             layer_id: int(layer_data['size_bytes'])
             for layer_id, layer_data in self.layers.items()
         }
-        save_json(layers_and_sizes_output_file, layers_and_sizes)
-        self.logger.info(f"Layers and sizes saved to: {layers_and_sizes_output_file}")
+        saved_path = save_json(layers_and_sizes_output_file, layers_and_sizes, timestamp=True)
+        self.logger.info(f"Layers and sizes saved to: {saved_path}")
         
         # Filtered layers (ref_count == 1)
         filtered_legacy = {}
         for layer_id, layer_data in self.layers.items():
             if layer_data['ref_count'] == 1 and layer_id in legacy_data:
                 filtered_legacy[layer_id] = legacy_data[layer_id]
-        save_json(filtered_layers_output_file, filtered_legacy)
-        self.logger.info(f"Filtered layers saved to: {filtered_layers_output_file}")
+        saved_path = save_json(filtered_layers_output_file, filtered_legacy, timestamp=True)
+        self.logger.info(f"Filtered layers saved to: {saved_path}")
         
         # Tag sums (sum of single-use layer sizes per tag)
         tag_sums = {}
@@ -368,17 +375,16 @@ class ImageAnalyzer:
                         'environments': data['environments']
                     }
                 tag_sums[tag]['size'] += data['size']
-        save_json(tag_sums_output_file, tag_sums)
-        self.logger.info(f"Tag sums saved to: {tag_sums_output_file}")
+        saved_path = save_json(tag_sums_output_file, tag_sums, timestamp=True)
+        self.logger.info(f"Tag sums saved to: {saved_path}")
         
         # Images report (comprehensive)
         images_report = {
             'summary': self.generate_summary_stats(),
             'layers': legacy_data
         }
-        save_json(f"{images_report_output_file}.json", images_report)
-        
-        self.logger.info(f"Images report saved to: {images_report_output_file}.json")
+        saved_path = save_json(f"{images_report_output_file}.json", images_report, timestamp=True)
+        self.logger.info(f"Images report saved to: {saved_path}")
 
 
 def main():

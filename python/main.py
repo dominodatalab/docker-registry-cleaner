@@ -4,33 +4,36 @@ import os
 import subprocess
 import sys
 
-from typing import List
+from pathlib import Path
+from typing import Dict, List, Optional
 
-from config_manager import config_manager
-from logging_utils import setup_logging
+# Add python directory to path so we can import utils and scripts
+_python_dir = Path(__file__).parent.absolute()
+if str(_python_dir) not in sys.path:
+    sys.path.insert(0, str(_python_dir))
+
+from utils.config_manager import config_manager
+from utils.logging_utils import setup_logging
+from utils.health_checks import HealthChecker
 
 
-def load_script_paths():
+def load_script_paths() -> Dict[str, Optional[str]]:
     return {
-        "extract_metadata": "extract_metadata.py",
-        "find_environment_usage": "find_environment_usage.py",
-        "image_data_analysis": "image_data_analysis.py",
-        "mongo_cleanup": "mongo_cleanup.py",
-        "reports": "reports.py",
-        "delete_image": "delete_image.py",  
-        "delete_archived_tags": "delete_archived_tags.py",
-        "archive_unused_environments": "archive_unused_environments.py",
-        "delete_unused_environments": "delete_unused_environments.py",
-        "delete_unused_private_environments": "delete_unused_private_environments.py",
+        "find_environment_usage": "scripts/find_environment_usage.py",
+        "mongo_cleanup": "scripts/mongo_cleanup.py",
+        "reports": "scripts/reports.py",
+        "delete_image": "scripts/delete_image.py",  
+        "delete_archived_tags": "scripts/delete_archived_tags.py",
+        "archive_unused_environments": "scripts/archive_unused_environments.py",
+        "delete_unused_environments": "scripts/delete_unused_environments.py",
+        "delete_unused_private_environments": "scripts/delete_unused_private_environments.py",
         "delete_all_unused_environments": None, # Special: runs multiple scripts
-        "delete_unused_references": "delete_unused_references.py",
+        "delete_unused_references": "scripts/delete_unused_references.py",
     }
 
-def get_script_descriptions():
+def get_script_descriptions() -> Dict[str, str]:
     return {
-        "extract_metadata": "Extract metadata from MongoDB",
         "find_environment_usage": "Find where a specific environment ID is used (projects, jobs, workspaces, runs, workloads)",
-        "image_data_analysis": "Analyze container images and generate reports",
         "mongo_cleanup": "Simple tag/ObjectID-based Mongo cleanup (consider using delete_unused_references for advanced features)",
         "reports": "Generate tag usage reports from analysis data (auto-generates metadata)",
         "delete_image": "Delete specific Docker image or analyze/delete unused images",
@@ -42,7 +45,7 @@ def get_script_descriptions():
         "delete_unused_references": "Find and optionally delete MongoDB references to non-existent Docker images",
     }
 
-def run_script(script_path, args, dry_run=True):
+def run_script(script_path: str, args: List[str], dry_run: bool = True) -> None:
     """Run a script with the given arguments"""
     
     # Special handling for delete_image script
@@ -111,11 +114,8 @@ def read_object_ids_from_file(file_path: str) -> List[str]:
         logging.error(f"Error reading file '{file_path}': {e}")
         return []
 
-def validate_script_requirements(script_keyword, args):
+def validate_script_requirements(script_keyword: str, args: List[str]) -> None:
     """Validate required arguments for specific scripts"""
-    
-    # image_data_analysis now always uses config_manager
-    # No validation needed - they get registry/repository from config.yaml
     
     if script_keyword == "mongo_cleanup":
         # Check if required arguments are provided
@@ -128,27 +128,26 @@ def validate_script_requirements(script_keyword, args):
             sys.exit(1)
     
     elif script_keyword == "delete_image":
-        # Check if password is provided (argument, env var, or config)
-        has_password_arg = any(arg.startswith('--password') for arg in args)
+        # Check if password is provided (env var or config)
         has_password = config_manager.get_registry_password() is not None
         
         # Check if using ECR (which doesn't need a password)
         registry_url = config_manager.get_registry_url()
         is_ecr = '.amazonaws.com' in registry_url if registry_url else False
         
-        if not has_password_arg and not has_password and not is_ecr:
+        if not has_password and not is_ecr:
             logging.warning("No password provided for delete_image.")
             logging.warning("Options:")
             logging.warning("  1. Add to config.yaml: registry.password: <password>")
             logging.warning("  2. Set REGISTRY_PASSWORD environment variable: export REGISTRY_PASSWORD=<password>")
-            logging.warning("  3. Provide password as flag: main.py delete_image --password <password>")
-            logging.warning("  4. For ECR registries, authentication is automatic (no password needed)")
+            logging.warning("  3. For ECR registries, authentication is automatic (no password needed)")
     
     # Validate ObjectID file if provided for supported scripts
-    if script_keyword in ["image_data_analysis", "delete_image"]:
+    if script_keyword == "delete_image":
         file_arg = None
+        # Check for --input (delete_image)
         for i, arg in enumerate(args):
-            if arg == '--file' and i + 1 < len(args):
+            if (arg == '--input' or arg == '--file') and i + 1 < len(args):
                 file_arg = args[i + 1]
                 break
         
@@ -170,9 +169,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Available scripts:
-  extract_metadata                   - Extract metadata from MongoDB
   find_environment_usage             - Find where a specific environment ID is used (projects, jobs, workspaces, runs, workloads)
-  image_data_analysis                - Analyze container images and generate reports
   mongo_cleanup                      - Simple tag/ObjectID-based Mongo cleanup
   reports                            - Generate tag usage reports from analysis data (auto-generates metadata)
   delete_image [image]               - Delete specific Docker image or analyze/delete unused images
@@ -192,7 +189,6 @@ Configuration:
 
 Examples:
   # Basic usage (uses config.yaml defaults)
-  python main.py image_data_analysis
   python main.py delete_image
   python main.py delete_archived_tags --environment --output archived-tags.json
 
@@ -208,12 +204,11 @@ Examples:
   # Delete unused images (actual deletion - requires confirmation)
   python main.py delete_image --apply
 
-  # Delete unused images (force deletion - no confirmation) with explicit password
-  python main.py delete_image --apply --force --password mypassword
+  # Delete unused images (force deletion - no confirmation)
+  python main.py delete_image --apply --force
 
   # Filter by ObjectIDs from file (first column contains ObjectIDs)
-  python main.py image_data_analysis --file environments
-  python main.py delete_image --file environments
+  python main.py delete_image --input environments
 
   # Mongo cleanup
   python main.py mongo_cleanup --file environments
@@ -331,6 +326,12 @@ Safety Notes:
     )
     
     parser.add_argument(
+        '--health-check',
+        action='store_true',
+        help='Run health checks and exit'
+    )
+    
+    parser.add_argument(
         'script_keyword', 
         nargs='?',
         choices=script_paths.keys(), 
@@ -351,7 +352,7 @@ Safety Notes:
     
     parser.add_argument(
         '--file',
-        help="File containing ObjectIDs (one per line) to filter images (for image_data_analysis, delete_image)"
+        help="File containing ObjectIDs (one per line) to filter images (for delete_image)"
     )
     
     parser.add_argument(
@@ -367,6 +368,13 @@ Safety Notes:
     )
     
     args = parser.parse_args()
+
+    # Handle --health-check flag
+    if args.health_check:
+        health_checker = HealthChecker()
+        results = health_checker.run_all_checks(skip_optional=False)
+        all_healthy = health_checker.print_health_report(results)
+        sys.exit(0 if all_healthy else 1)
 
     # Show configuration if requested
     if args.config:
@@ -392,14 +400,14 @@ Safety Notes:
         logging.info("\n" + "="*60)
         logging.info("Step 1/2: Unused environments (not in workspaces/models/defaults)")
         logging.info("="*60)
-        unused_envs_script = os.path.join(script_dir, 'delete_unused_environments.py')
+        unused_envs_script = os.path.join(script_dir, 'scripts', 'delete_unused_environments.py')
         run_script(unused_envs_script, args.additional_args, dry_run=True)
         
         # Run delete_unused_private_environments second
         logging.info("\n" + "="*60)
         logging.info("Step 2/2: Private environments of deactivated users")
         logging.info("="*60)
-        private_envs_script = os.path.join(script_dir, 'delete_unused_private_environments.py')
+        private_envs_script = os.path.join(script_dir, 'scripts', 'delete_unused_private_environments.py')
         run_script(private_envs_script, args.additional_args, dry_run=True)
         
         logging.info("\n" + "="*60)

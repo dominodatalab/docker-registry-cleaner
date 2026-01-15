@@ -1,7 +1,15 @@
 import argparse
+import sys
 
-from logging_utils import setup_logging, get_logger
+from pathlib import Path
 from typing import List
+
+# Add parent directory to path for imports
+_parent_dir = Path(__file__).parent.parent.absolute()
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
+from utils.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
 
@@ -353,7 +361,7 @@ def app_versions_env_usage_pipeline() -> List[dict]:
 
 def run(target: str) -> None:
 	"""Run aggregations and save reports via ImageUsageService."""
-	from image_usage import ImageUsageService  # Local import to avoid circular dependency
+	from utils.image_usage import ImageUsageService  # Local import to avoid circular dependency
 	
 	service = ImageUsageService()
 	logger.info(f"Running image usage aggregations for target={target}...")

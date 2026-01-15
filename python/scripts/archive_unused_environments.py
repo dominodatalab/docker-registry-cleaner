@@ -26,17 +26,22 @@ Usage examples:
 
 import argparse
 import sys
-from dataclasses import asdict
-from pathlib import Path
-from typing import List, Dict
 
 from bson import ObjectId
+from dataclasses import asdict
+from pathlib import Path
+from typing import Dict, List
 
-from config_manager import config_manager
-from delete_unused_environments import UnusedEnvironmentsFinder, UnusedEnvInfo
-from logging_utils import setup_logging, get_logger
-from mongo_utils import get_mongo_client
-from report_utils import save_json
+# Add parent directory to path for imports
+_parent_dir = Path(__file__).parent.parent.absolute()
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
+from scripts.delete_unused_environments import UnusedEnvInfo, UnusedEnvironmentsFinder
+from utils.config_manager import config_manager
+from utils.logging_utils import get_logger, setup_logging
+from utils.mongo_utils import get_mongo_client
+from utils.report_utils import save_json
 
 
 logger = get_logger(__name__)
@@ -89,7 +94,7 @@ Examples:
     parser.add_argument(
         '--generate-reports',
         action='store_true',
-        help='Generate required metadata reports (extract_metadata) before analysis'
+        help='Generate required metadata reports before analysis (reports are auto-generated if missing or stale)'
     )
 
     parser.add_argument(
@@ -332,9 +337,8 @@ def main():
         sys.exit(1)
     except Exception as e:
         logger.error(f"\n❌ Operation failed: {e}")
-        import traceback
-
-        logger.error(traceback.format_exc())
+        from utils.logging_utils import log_exception
+        log_exception(logger, "Error in main", exc_info=e)
         sys.exit(1)
 
 

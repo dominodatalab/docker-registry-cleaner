@@ -10,13 +10,22 @@ import base64
 import json
 import logging
 import os
+import re
 import subprocess
+import time
 import yaml
+from threading import Lock
 
 from typing import Dict, Any, Optional, List, Tuple
 
-from retry_utils import retry_with_backoff, is_retryable_error
-from cache_utils import cached_image_inspect, cached_tag_list, get_image_inspect_cache, get_tag_list_cache
+from utils.retry_utils import retry_with_backoff, is_retryable_error
+from utils.cache_utils import cached_image_inspect, cached_tag_list, get_image_inspect_cache, get_tag_list_cache
+from utils.error_utils import create_registry_connection_error, create_registry_auth_error, create_rate_limit_error
+
+
+class ConfigValidationError(Exception):
+    """Raised when configuration validation fails"""
+    pass
 
 
 def _load_kubernetes_config():
@@ -57,9 +66,18 @@ def _get_kubernetes_clients() -> Tuple[Any, Any]:
 class ConfigManager:
     """Manages configuration for the Docker registry cleaner project"""
     
-    def __init__(self, config_file: str = "../config.yaml"):
+    def __init__(self, config_file: str = "../config.yaml", validate: bool = True):
+        """Initialize ConfigManager
+        
+        Args:
+            config_file: Path to configuration YAML file
+            validate: If True, validate configuration on initialization
+        """
         self.config_file = config_file
         self.config = self._load_config()
+        
+        if validate:
+            self.validate_config()
     
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from YAML file with defaults"""
@@ -95,7 +113,12 @@ class ConfigManager:
                 'region': 'us-west-2'
             },
             'skopeo': {
-                'use_pod': False
+                'use_pod': False,
+                'rate_limit': {
+                    'enabled': True,
+                    'requests_per_second': 10.0,  # Max requests per second
+                    'burst_size': 20  # Allow burst of up to N requests
+                }
             },
             'reports': {
                 'archived_tags': 'archived-tags.json',
@@ -231,12 +254,20 @@ class ConfigManager:
     
     # Analysis configuration
     def get_max_workers(self) -> int:
-        """Get max workers from config"""
-        return self.config['analysis']['max_workers']
+        """Get max workers from config, with type coercion"""
+        workers = self.config['analysis']['max_workers']
+        try:
+            return int(workers)
+        except (ValueError, TypeError):
+            raise ConfigValidationError(f"max_workers must be an integer, got: {workers} (type: {type(workers).__name__})")
     
     def get_timeout(self) -> int:
-        """Get timeout from config"""
-        return self.config['analysis']['timeout']
+        """Get timeout from config, with type coercion"""
+        timeout = self.config['analysis']['timeout']
+        try:
+            return int(timeout)
+        except (ValueError, TypeError):
+            raise ConfigValidationError(f"timeout must be an integer, got: {timeout} (type: {type(timeout).__name__})")
     
     def get_output_dir(self) -> str:
         """Get output directory from config"""
@@ -244,28 +275,48 @@ class ConfigManager:
     
     # Retry configuration
     def get_max_retries(self) -> int:
-        """Get max retries from config"""
-        return self.config.get('retry', {}).get('max_retries', 3)
+        """Get max retries from config, with type coercion"""
+        retries = self.config.get('retry', {}).get('max_retries', 3)
+        try:
+            return int(retries)
+        except (ValueError, TypeError):
+            raise ConfigValidationError(f"retry.max_retries must be an integer, got: {retries} (type: {type(retries).__name__})")
     
     def get_retry_initial_delay(self) -> float:
-        """Get initial retry delay from config"""
-        return self.config.get('retry', {}).get('initial_delay', 1.0)
+        """Get initial retry delay from config, with type coercion"""
+        delay = self.config.get('retry', {}).get('initial_delay', 1.0)
+        try:
+            return float(delay)
+        except (ValueError, TypeError):
+            raise ConfigValidationError(f"retry.initial_delay must be a number, got: {delay} (type: {type(delay).__name__})")
     
     def get_retry_max_delay(self) -> float:
-        """Get max retry delay from config"""
-        return self.config.get('retry', {}).get('max_delay', 60.0)
+        """Get max retry delay from config, with type coercion"""
+        delay = self.config.get('retry', {}).get('max_delay', 60.0)
+        try:
+            return float(delay)
+        except (ValueError, TypeError):
+            raise ConfigValidationError(f"retry.max_delay must be a number, got: {delay} (type: {type(delay).__name__})")
     
     def get_retry_exponential_base(self) -> float:
-        """Get exponential base for retry backoff from config"""
-        return self.config.get('retry', {}).get('exponential_base', 2.0)
+        """Get exponential base for retry backoff from config, with type coercion"""
+        base = self.config.get('retry', {}).get('exponential_base', 2.0)
+        try:
+            return float(base)
+        except (ValueError, TypeError):
+            raise ConfigValidationError(f"retry.exponential_base must be a number, got: {base} (type: {type(base).__name__})")
     
     def get_retry_jitter(self) -> bool:
         """Get whether to use jitter in retry delays from config"""
         return self.config.get('retry', {}).get('jitter', True)
     
     def get_retry_timeout(self) -> int:
-        """Get timeout for subprocess calls from config"""
-        return self.config.get('retry', {}).get('timeout', 300)
+        """Get timeout for subprocess calls from config, with type coercion"""
+        timeout = self.config.get('retry', {}).get('timeout', 300)
+        try:
+            return int(timeout)
+        except (ValueError, TypeError):
+            raise ConfigValidationError(f"retry.timeout must be an integer, got: {timeout} (type: {type(timeout).__name__})")
     
     # Cache configuration
     def is_cache_enabled(self) -> bool:
@@ -273,12 +324,20 @@ class ConfigManager:
         return self.config.get('cache', {}).get('enabled', True)
     
     def get_cache_tag_list_ttl(self) -> int:
-        """Get tag list cache TTL from config"""
-        return self.config.get('cache', {}).get('tag_list_ttl', 1800)
+        """Get tag list cache TTL from config, with type coercion"""
+        ttl = self.config.get('cache', {}).get('tag_list_ttl', 1800)
+        try:
+            return int(ttl)
+        except (ValueError, TypeError):
+            raise ConfigValidationError(f"cache.tag_list_ttl must be an integer, got: {ttl} (type: {type(ttl).__name__})")
     
     def get_cache_image_inspect_ttl(self) -> int:
-        """Get image inspect cache TTL from config"""
-        return self.config.get('cache', {}).get('image_inspect_ttl', 3600)
+        """Get image inspect cache TTL from config, with type coercion"""
+        ttl = self.config.get('cache', {}).get('image_inspect_ttl', 3600)
+        try:
+            return int(ttl)
+        except (ValueError, TypeError):
+            raise ConfigValidationError(f"cache.image_inspect_ttl must be an integer, got: {ttl} (type: {type(ttl).__name__})")
     
     # S3 Configuration
     def get_s3_bucket(self) -> Optional[str]:
@@ -306,6 +365,18 @@ class ConfigManager:
         elif env_value in ('false', '0', 'no'):
             return False
         return self.config.get('skopeo', {}).get('use_pod', False)
+    
+    def get_skopeo_rate_limit_enabled(self) -> bool:
+        """Get whether rate limiting is enabled for Skopeo operations"""
+        return self.config.get('skopeo', {}).get('rate_limit', {}).get('enabled', True)
+    
+    def get_skopeo_rate_limit_rps(self) -> float:
+        """Get requests per second for Skopeo rate limiting"""
+        return float(self.config.get('skopeo', {}).get('rate_limit', {}).get('requests_per_second', 10.0))
+    
+    def get_skopeo_rate_limit_burst(self) -> int:
+        """Get burst size for Skopeo rate limiting"""
+        return int(self.config.get('skopeo', {}).get('rate_limit', {}).get('burst_size', 20))
     
     # Report configuration
     def _resolve_report_path(self, path: str) -> str:
@@ -380,7 +451,12 @@ class ConfigManager:
         return self.config['mongo']['host']
 
     def get_mongo_port(self) -> int:
-        return int(self.config['mongo']['port'])
+        """Get MongoDB port from config, with type coercion"""
+        port = self.config['mongo']['port']
+        try:
+            return int(port)
+        except (ValueError, TypeError):
+            raise ConfigValidationError(f"MongoDB port must be an integer, got: {port} (type: {type(port).__name__})")
 
     def get_mongo_replicaset(self) -> str:
         return self.config['mongo']['replicaset']
@@ -424,6 +500,168 @@ class ConfigManager:
         port = self.get_mongo_port()
         rs = self.get_mongo_replicaset()
         return f"mongodb://{auth}@{host}:{port}/?replicaSet={rs}"
+    
+    def validate_config(self) -> None:
+        """Validate configuration values
+        
+        Raises:
+            ConfigValidationError: If configuration is invalid
+        """
+        errors = []
+        warnings = []
+        
+        # Validate registry configuration
+        registry_url = self.get_registry_url()
+        if not registry_url or not registry_url.strip():
+            errors.append("Registry URL is required and cannot be empty")
+        elif not self._is_valid_registry_url(registry_url):
+            warnings.append(f"Registry URL '{registry_url}' may be invalid (expected format: hostname[:port] or hostname.namespace[:port])")
+        
+        repository = self.get_repository()
+        if not repository or not repository.strip():
+            errors.append("Repository name is required and cannot be empty")
+        elif not self._is_valid_repository_name(repository):
+            errors.append(f"Repository name '{repository}' contains invalid characters (alphanumeric, hyphens, underscores, and slashes only)")
+        
+        # Validate Kubernetes configuration
+        namespace = self.get_domino_platform_namespace()
+        if not namespace or not namespace.strip():
+            errors.append("Domino platform namespace is required and cannot be empty")
+        elif not self._is_valid_k8s_name(namespace):
+            errors.append(f"Namespace '{namespace}' is not a valid Kubernetes name (lowercase alphanumeric and hyphens only)")
+        
+        # Validate MongoDB configuration
+        mongo_host = self.get_mongo_host()
+        if not mongo_host or not mongo_host.strip():
+            errors.append("MongoDB host is required and cannot be empty")
+        
+        mongo_port = self.get_mongo_port()
+        if not isinstance(mongo_port, int) or mongo_port < 1 or mongo_port > 65535:
+            errors.append(f"MongoDB port must be an integer between 1 and 65535, got: {mongo_port}")
+        
+        mongo_replicaset = self.get_mongo_replicaset()
+        if not mongo_replicaset or not mongo_replicaset.strip():
+            errors.append("MongoDB replicaset name is required and cannot be empty")
+        
+        mongo_db = self.get_mongo_db()
+        if not mongo_db or not mongo_db.strip():
+            errors.append("MongoDB database name is required and cannot be empty")
+        
+        # Validate analysis configuration
+        max_workers = self.get_max_workers()
+        if not isinstance(max_workers, int) or max_workers < 1:
+            errors.append(f"max_workers must be a positive integer, got: {max_workers}")
+        elif max_workers > 100:
+            warnings.append(f"max_workers is very high ({max_workers}), this may cause resource issues")
+        
+        timeout = self.get_timeout()
+        if not isinstance(timeout, int) or timeout < 1:
+            errors.append(f"timeout must be a positive integer (seconds), got: {timeout}")
+        elif timeout > 3600:
+            warnings.append(f"timeout is very high ({timeout}s), operations may take a long time")
+        
+        output_dir = self.get_output_dir()
+        if not output_dir or not output_dir.strip():
+            errors.append("output_dir is required and cannot be empty")
+        
+        # Validate retry configuration
+        max_retries = self.get_max_retries()
+        if not isinstance(max_retries, int) or max_retries < 0:
+            errors.append(f"retry.max_retries must be a non-negative integer, got: {max_retries}")
+        elif max_retries > 10:
+            warnings.append(f"max_retries is very high ({max_retries}), operations may take a long time")
+        
+        initial_delay = self.get_retry_initial_delay()
+        if not isinstance(initial_delay, (int, float)) or initial_delay < 0:
+            errors.append(f"retry.initial_delay must be a non-negative number, got: {initial_delay}")
+        
+        max_delay = self.get_retry_max_delay()
+        if not isinstance(max_delay, (int, float)) or max_delay < 0:
+            errors.append(f"retry.max_delay must be a non-negative number, got: {max_delay}")
+        elif max_delay < initial_delay:
+            errors.append(f"retry.max_delay ({max_delay}) must be >= retry.initial_delay ({initial_delay})")
+        
+        exponential_base = self.get_retry_exponential_base()
+        if not isinstance(exponential_base, (int, float)) or exponential_base < 1.0:
+            errors.append(f"retry.exponential_base must be >= 1.0, got: {exponential_base}")
+        
+        retry_timeout = self.get_retry_timeout()
+        if not isinstance(retry_timeout, int) or retry_timeout < 1:
+            errors.append(f"retry.timeout must be a positive integer (seconds), got: {retry_timeout}")
+        
+        # Validate cache configuration
+        if self.is_cache_enabled():
+            tag_list_ttl = self.get_cache_tag_list_ttl()
+            if not isinstance(tag_list_ttl, int) or tag_list_ttl < 0:
+                errors.append(f"cache.tag_list_ttl must be a non-negative integer, got: {tag_list_ttl}")
+            
+            image_inspect_ttl = self.get_cache_image_inspect_ttl()
+            if not isinstance(image_inspect_ttl, int) or image_inspect_ttl < 0:
+                errors.append(f"cache.image_inspect_ttl must be a non-negative integer, got: {image_inspect_ttl}")
+        
+        # Validate S3 configuration (if bucket is provided)
+        s3_bucket = self.get_s3_bucket()
+        if s3_bucket:
+            if not self._is_valid_s3_bucket_name(s3_bucket):
+                errors.append(f"S3 bucket name '{s3_bucket}' is invalid (must be 3-63 characters, lowercase alphanumeric and hyphens only)")
+            
+            s3_region = self.get_s3_region()
+            if not s3_region or not s3_region.strip():
+                errors.append("S3 region is required when S3 bucket is configured")
+        
+        # Log warnings
+        for warning in warnings:
+            logging.warning(f"Configuration warning: {warning}")
+        
+        # Raise error if there are validation errors
+        if errors:
+            error_msg = "Configuration validation failed:\n  " + "\n  ".join(errors)
+            logging.error(error_msg)
+            raise ConfigValidationError(error_msg)
+    
+    def _is_valid_registry_url(self, url: str) -> bool:
+        """Validate registry URL format"""
+        if not url:
+            return False
+        
+        # Remove protocol if present
+        url = url.replace("http://", "").replace("https://", "")
+        
+        # Basic validation: should contain hostname and optional port
+        # Formats: "hostname:port", "hostname.namespace:port", "hostname.namespace.svc.cluster.local:port"
+        pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?(:[0-9]{1,5})?$'
+        return bool(re.match(pattern, url))
+    
+    def _is_valid_repository_name(self, name: str) -> bool:
+        """Validate repository name format"""
+        if not name:
+            return False
+        # Allow alphanumeric, hyphens, underscores, and slashes
+        pattern = r'^[a-zA-Z0-9_\-/]+$'
+        return bool(re.match(pattern, name))
+    
+    def _is_valid_k8s_name(self, name: str) -> bool:
+        """Validate Kubernetes resource name format"""
+        if not name:
+            return False
+        # Kubernetes names: lowercase alphanumeric and hyphens, max 253 chars
+        pattern = r'^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$'
+        return bool(re.match(pattern, name)) and len(name) <= 253
+    
+    def _is_valid_s3_bucket_name(self, name: str) -> bool:
+        """Validate S3 bucket name format"""
+        if not name:
+            return False
+        # S3 bucket names: 3-63 characters, lowercase alphanumeric and hyphens, not IP address format
+        if len(name) < 3 or len(name) > 63:
+            return False
+        pattern = r'^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$'
+        if not re.match(pattern, name):
+            return False
+        # Cannot be formatted as IP address
+        if re.match(r'^\d+\.\d+\.\d+\.\d+$', name):
+            return False
+        return True
     
     def print_config(self):
         """Print current configuration"""
@@ -482,15 +720,63 @@ class SkopeoClient:
         self.enable_docker_deletion = enable_docker_deletion
         self.registry_statefulset = registry_statefulset or "docker-registry"
         
+        # Rate limiting
+        self.rate_limit_enabled = config_manager.get_skopeo_rate_limit_enabled()
+        self.rate_limit_rps = config_manager.get_skopeo_rate_limit_rps()
+        self.rate_limit_burst = config_manager.get_skopeo_rate_limit_burst()
+        self._rate_limiter = None
+        self._rate_limiter_lock = Lock()
+        
+        if self.rate_limit_enabled:
+            self._init_rate_limiter()
+        
         if use_pod:
             # Initialize Kubernetes client for pod operations
             try:
                 self.core_v1_client, _ = _get_kubernetes_clients()
             except Exception as e:
-                raise RuntimeError(f"Failed to initialize Kubernetes client: {e}")
+                from utils.error_utils import create_kubernetes_error
+                raise create_kubernetes_error("Initialize Kubernetes client", e)
         
         # Ensure we're logged in before any operations
         self._ensure_logged_in()
+    
+    def _init_rate_limiter(self):
+        """Initialize token bucket rate limiter"""
+        # Simple token bucket implementation
+        self._tokens = float(self.rate_limit_burst)
+        self._last_update = time.time()
+        self._token_refill_rate = self.rate_limit_rps  # tokens per second
+    
+    def _acquire_rate_limit_token(self):
+        """Acquire a token from the rate limiter, waiting if necessary"""
+        if not self.rate_limit_enabled:
+            return
+        
+        with self._rate_limiter_lock:
+            now = time.time()
+            elapsed = now - self._last_update
+            
+            # Refill tokens based on elapsed time
+            self._tokens = min(
+                self.rate_limit_burst,
+                self._tokens + elapsed * self._token_refill_rate
+            )
+            self._last_update = now
+            
+            # If we have tokens, use one
+            if self._tokens >= 1.0:
+                self._tokens -= 1.0
+                return
+            
+            # Otherwise, calculate wait time
+            wait_time = (1.0 - self._tokens) / self._token_refill_rate
+            
+            if wait_time > 0:
+                logging.debug(f"Rate limiting: waiting {wait_time:.2f}s (tokens: {self._tokens:.2f})")
+                time.sleep(wait_time)
+                self._tokens = 0.0
+                self._last_update = time.time()
     
     def _ensure_logged_in(self):
         """Ensure skopeo is logged in to the registry before operations
@@ -514,10 +800,8 @@ class SkopeoClient:
         except Exception as e:
             logging.error(f"Failed to authenticate with registry: {self.registry_url}")
             logging.error(f"Authentication error: {e}")
-            raise RuntimeError(
-                f"Skopeo authentication failed for registry {self.registry_url}. "
-                f"Cannot proceed without successful authentication. Error: {e}"
-            ) from e
+            from utils.error_utils import create_registry_auth_error
+            raise create_registry_auth_error(self.registry_url, e)
     
     def _login_to_registry(self):
         """Login to the registry using skopeo login"""
@@ -581,10 +865,27 @@ class SkopeoClient:
         # Ensure we're logged in before any operation
         self._ensure_logged_in()
         
-        if self.use_pod:
-            return self._run_skopeo_in_pod(subcommand, args)
-        else:
-            return self._run_skopeo_local(subcommand, args)
+        # Apply rate limiting
+        self._acquire_rate_limit_token()
+        
+        try:
+            if self.use_pod:
+                return self._run_skopeo_in_pod(subcommand, args)
+            else:
+                return self._run_skopeo_local(subcommand, args)
+        except subprocess.CalledProcessError as e:
+            # Check for rate limiting errors
+            error_str = str(e).lower()
+            if "429" in error_str or "rate limit" in error_str or "too many requests" in error_str:
+                from utils.error_utils import create_rate_limit_error
+                raise create_rate_limit_error(f"skopeo {subcommand}", retry_after=1.0)
+            raise
+        except Exception as e:
+            error_str = str(e).lower()
+            if "429" in error_str or "rate limit" in error_str or "too many requests" in error_str:
+                from utils.error_utils import create_rate_limit_error
+                raise create_rate_limit_error(f"skopeo {subcommand}", retry_after=1.0)
+            raise
     
     def _run_skopeo_local(self, subcommand: str, args: List[str]) -> Optional[str]:
         """Run Skopeo command locally using subprocess with retry logic"""
@@ -610,14 +911,21 @@ class SkopeoClient:
                 return result.stdout
             except subprocess.TimeoutExpired as e:
                 logging.error(f"Skopeo command timed out after {timeout}s: {' '.join(cmd)}")
-                raise
+                from utils.error_utils import create_registry_connection_error
+                raise create_registry_connection_error(self.registry_url, e)
             except subprocess.CalledProcessError as e:
+                error_str = (e.stderr or "").lower()
+                if "429" in error_str or "rate limit" in error_str or "too many requests" in error_str:
+                    from utils.error_utils import create_rate_limit_error
+                    raise create_rate_limit_error(f"skopeo {subcommand}", retry_after=1.0)
                 logging.error(f"Skopeo command failed: {' '.join(cmd)}")
                 logging.error(f"Error: {e.stderr}")
-                raise
+                from utils.error_utils import create_registry_connection_error
+                raise create_registry_connection_error(self.registry_url, e)
             except Exception as e:
                 logging.error(f"Unexpected error running Skopeo: {e}")
-                raise
+                from utils.error_utils import create_registry_connection_error
+                raise create_registry_connection_error(self.registry_url, e)
         
         try:
             return _execute()
@@ -665,14 +973,24 @@ class SkopeoClient:
                     # Pod not found - might be transient if pod is starting up
                     # But usually this is permanent, so we'll check
                     logging.error(f"Skopeo pod not found in namespace {self.namespace}")
-                    # For 404, we'll still retry in case pod is being created
-                    raise
+                    from utils.error_utils import create_kubernetes_error
+                    raise create_kubernetes_error(f"Find skopeo pod in namespace {self.namespace}", e)
+                elif e.status == 429:
+                    # Rate limiting from Kubernetes API
+                    from utils.error_utils import create_rate_limit_error
+                    raise create_rate_limit_error(f"skopeo {subcommand} (pod mode)", retry_after=1.0)
                 else:
                     logging.error(f"API error executing skopeo command: {e}")
-                    raise
+                    from utils.error_utils import create_kubernetes_error
+                    raise create_kubernetes_error(f"Execute skopeo command in pod", e)
             except Exception as e:
+                error_str = str(e).lower()
+                if "429" in error_str or "rate limit" in error_str or "too many requests" in error_str:
+                    from utils.error_utils import create_rate_limit_error
+                    raise create_rate_limit_error(f"skopeo {subcommand} (pod mode)", retry_after=1.0)
                 logging.error(f"Unexpected error executing skopeo command: {e}")
-                raise
+                from utils.error_utils import create_registry_connection_error
+                raise create_registry_connection_error(self.registry_url, e)
         
         try:
             return _execute()
@@ -1000,4 +1318,6 @@ class SkopeoClient:
 
 
 # Global config manager instance
-config_manager = ConfigManager() 
+# Validation can be disabled by setting SKIP_CONFIG_VALIDATION=true environment variable
+# This is useful for testing or when you know the config is valid
+config_manager = ConfigManager(validate=os.environ.get('SKIP_CONFIG_VALIDATION', '').lower() not in ('true', '1', 'yes')) 

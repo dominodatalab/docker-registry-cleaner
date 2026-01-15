@@ -19,16 +19,17 @@ It can:
 
 import json
 import logging
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from config_manager import config_manager
-from mongo_utils import get_mongo_client, bson_to_jsonable
-from report_utils import save_json
+from utils.config_manager import config_manager
+from utils.mongo_utils import get_mongo_client, bson_to_jsonable
+from utils.report_utils import save_json
 
 logger = logging.getLogger(__name__)
 
-from extract_metadata import (
+from utils.extract_metadata import (
     model_env_usage_pipeline,
     workspace_env_usage_pipeline,
     runs_env_usage_pipeline,
@@ -161,10 +162,11 @@ class ImageUsageService:
             else:
                 consolidated[key] = []
         
-        # Save to consolidated file
+        # Save to consolidated file with timestamp
         save_json(
             config_manager.get_mongodb_usage_path(),
             consolidated,
+            timestamp=True,
         )
 
     # ------------------------------------------------------------------
@@ -174,11 +176,27 @@ class ImageUsageService:
     def load_usage_reports(self) -> Dict[str, List[dict]]:
         """Load MongoDB usage reports from saved consolidated JSON file.
         
+        Supports both timestamped and non-timestamped report files.
+        If exact file doesn't exist, finds the most recent timestamped version.
+        
         Returns:
             Dict with keys: 'runs', 'workspaces', 'models', 'projects', 
             'scheduler_jobs', 'organizations', 'app_versions'
         """
+        from utils.report_utils import get_latest_report, get_reports_dir
+        
         consolidated_path = Path(config_manager.get_mongodb_usage_path())
+        
+        # If exact file doesn't exist, try to find latest timestamped version
+        if not consolidated_path.exists():
+            reports_dir = get_reports_dir()
+            stem = consolidated_path.stem
+            suffix = consolidated_path.suffix
+            pattern = f"{stem}-*-*-*-*-*-*{suffix}"
+            latest = get_latest_report(pattern, reports_dir)
+            if latest:
+                consolidated_path = latest
+                logger.info(f"Using latest timestamped report: {consolidated_path.name}")
         
         if not consolidated_path.exists():
             return {
@@ -299,7 +317,8 @@ class ImageUsageService:
                         'workspace_id': workspace_id,
                         'workspace_name': workspace_name,
                         'project_name': project_name,
-                        'usage_type': usage_type
+                        'usage_type': usage_type,
+                        'workspace_last_change': record.get('workspace_last_change')
                     }
                     usage_info[tag]['workspaces'].append(workspace_usage)
         
@@ -438,12 +457,63 @@ class ImageUsageService:
         
         return ", ".join(reasons)
     
-    def check_tags_in_use(self, tags: List[str], mongodb_reports: Dict[str, List[Dict]] = None) -> Tuple[Set[str], Dict[str, Dict]]:
+    def _parse_timestamp(self, timestamp_str: str) -> Optional[datetime]:
+        """Parse a timestamp string to datetime object
+        
+        Args:
+            timestamp_str: ISO format timestamp string (may end with 'Z')
+        
+        Returns:
+            datetime object or None if parsing fails
+        """
+        if not timestamp_str:
+            return None
+        try:
+            # Handle ISO strings possibly ending with 'Z'
+            ts = timestamp_str.replace('Z', '+00:00')
+            return datetime.fromisoformat(ts)
+        except Exception:
+            return None
+    
+    def _get_most_recent_usage_date(self, usage_info: Dict) -> Optional[datetime]:
+        """Get the most recent usage date from usage information
+        
+        Checks runs (last_used, completed, started), workspaces (workspace_last_change),
+        and other sources to find the most recent timestamp.
+        
+        Args:
+            usage_info: Dict with 'runs', 'workspaces', 'models', etc. containing usage records
+        
+        Returns:
+            Most recent datetime or None if no timestamps found
+        """
+        most_recent = None
+        
+        # Check runs - prefer last_used, then completed, then started
+        for run in usage_info.get('runs', []):
+            for field in ['last_used', 'completed', 'started']:
+                ts = self._parse_timestamp(run.get(field))
+                if ts:
+                    if most_recent is None or ts > most_recent:
+                        most_recent = ts
+                    break  # Use first available timestamp per run
+        
+        # Check workspaces - use workspace_last_change
+        for workspace in usage_info.get('workspaces', []):
+            ts = self._parse_timestamp(workspace.get('workspace_last_change'))
+            if ts:
+                if most_recent is None or ts > most_recent:
+                    most_recent = ts
+        
+        return most_recent
+    
+    def check_tags_in_use(self, tags: List[str], mongodb_reports: Dict[str, List[Dict]] = None, recent_days: Optional[int] = None) -> Tuple[Set[str], Dict[str, Dict]]:
         """Check which tags from a list are in use
         
         Args:
             tags: List of Docker image tags to check
             mongodb_reports: Optional MongoDB usage reports
+            recent_days: Optional number of days - if provided, only consider tags as "in-use" if they were used within the last N days
         
         Returns:
             Tuple of (set of tags that are in use, dict mapping tag -> usage info)
@@ -458,6 +528,38 @@ class ImageUsageService:
         
         # Build usage info for only the tags we're checking
         usage_info = {tag: all_usage_info.get(tag, {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []}) for tag in in_use_tags}
+        
+        # Filter by age if recent_days is specified
+        if recent_days is not None and recent_days > 0:
+            threshold = datetime.now(timezone.utc) - timedelta(days=recent_days)
+            filtered_in_use_tags = set()
+            filtered_usage_info = {}
+            
+            for tag in in_use_tags:
+                tag_usage = usage_info.get(tag, {})
+                
+                # Check for usage from sources without timestamps (always keep these - they represent current config)
+                has_config_usage = (
+                    len(tag_usage.get('models', [])) > 0 or
+                    len(tag_usage.get('scheduler_jobs', [])) > 0 or
+                    len(tag_usage.get('projects', [])) > 0 or
+                    len(tag_usage.get('organizations', [])) > 0 or
+                    len(tag_usage.get('app_versions', [])) > 0
+                )
+                
+                if has_config_usage:
+                    # Keep tags with current configuration usage (conservative)
+                    filtered_in_use_tags.add(tag)
+                    filtered_usage_info[tag] = tag_usage
+                    continue
+                
+                # Check for recent usage from runs or workspaces (with timestamps)
+                most_recent = self._get_most_recent_usage_date(tag_usage)
+                if most_recent is not None and most_recent >= threshold:
+                    filtered_in_use_tags.add(tag)
+                    filtered_usage_info[tag] = tag_usage
+            
+            return filtered_in_use_tags, filtered_usage_info
         
         return in_use_tags, usage_info
     

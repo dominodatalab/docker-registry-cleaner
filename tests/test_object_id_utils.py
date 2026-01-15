@@ -8,9 +8,11 @@ from bson import ObjectId
 
 # Import the module to test
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'python'))
+_python_dir = Path(__file__).parent.parent / 'python'
+if str(_python_dir.absolute()) not in sys.path:
+    sys.path.insert(0, str(_python_dir.absolute()))
 
-from object_id_utils import (
+from utils.object_id_utils import (
     validate_object_id,
     read_object_ids_from_file,
     read_typed_object_ids_from_file,

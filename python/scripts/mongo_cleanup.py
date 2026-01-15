@@ -22,11 +22,18 @@ Usage examples:
 """
 
 import argparse
+import sys
 
+from pathlib import Path
 from typing import Iterator, Tuple
 
-from config_manager import config_manager
-from mongo_utils import get_mongo_client
+# Add parent directory to path for imports
+_parent_dir = Path(__file__).parent.parent.absolute()
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
+from utils.config_manager import config_manager
+from utils.mongo_utils import get_mongo_client
 
 
 def iter_targets_from_file(path: str) -> Iterator[Tuple[str, str]]:

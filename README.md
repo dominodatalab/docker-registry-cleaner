@@ -29,6 +29,9 @@ cp config-example.yaml config.yaml
 All scripts are invoked through `python/main.py` with a standardized interface:
 
 ```bash
+# 0. Check system health (recommended first step)
+python python/main.py --health-check
+
 # 1. Analyze what would be deleted (dry-run is default)
 python python/main.py delete_archived_tags --environment
 
@@ -41,6 +44,24 @@ python python/main.py delete_archived_tags --environment --apply --backup --s3-b
 # 4. Comprehensive cleanup
 python python/main.py delete_all_unused_environments --apply --backup --s3-bucket my-bucket
 ```
+
+## 🏥 Health Checks
+
+Before running deletion operations, it's recommended to verify system connectivity:
+
+```bash
+# Run all health checks
+python python/main.py --health-check
+```
+
+This will verify:
+- ✅ Configuration validity
+- ✅ Docker registry connectivity
+- ✅ MongoDB connectivity
+- ✅ Kubernetes API access (if using pod mode)
+- ✅ S3 access (if configured)
+
+Health checks are also automatically run by deletion scripts that inherit from `BaseDeletionScript` before performing operations.
 
 ## 🎛️ Common Options
 
@@ -57,6 +78,17 @@ All Docker deletion scripts share a standardized interface with these common opt
 | `--enable-docker-deletion` | Override registry auto-detection | `false` |
 | `--registry-statefulset NAME` | StatefulSet/Deployment name for registry | `docker-registry` |
 
+### Rate Limiting
+
+The tool includes built-in rate limiting for registry operations to prevent overwhelming the registry:
+
+- **Enabled by default** - Rate limiting is automatically enabled
+- **Configurable** - Adjust in `config.yaml` under `skopeo.rate_limit`:
+  - `requests_per_second`: Maximum requests per second (default: 10.0)
+  - `burst_size`: Allow burst of up to N requests (default: 20)
+- **Automatic** - Applies to all registry operations (list, inspect, delete)
+- **Smart** - Detects rate limit errors (HTTP 429) and provides actionable guidance
+
 ### Safety by Default
 
 - **Dry-run mode** - No changes are made to Docker or MongoDB unless `--apply` is specified.
@@ -69,14 +101,8 @@ All Docker deletion scripts share a standardized interface with these common opt
 ### Analysis Commands
 
 ```bash
-# Analyze registry contents
-python python/main.py image_data_analysis [--file OBJECTIDS]
-
-# Generate usage reports
+# Generate usage reports (automatically generates required metadata and image analysis if needed)
 python python/main.py reports [--generate-reports]
-
-# Extract MongoDB metadata
-python python/main.py extract_metadata --target both
 ```
 
 ### Deletion Commands
@@ -187,7 +213,7 @@ python python/main.py delete_image environment:abc-123 --apply
 python python/main.py delete_image --apply --backup --s3-bucket my-bucket
 
 # Filter by ObjectIDs from file (prefixes required; see ObjectID Filtering)
-python python/main.py delete_image --file environments --apply
+python python/main.py delete_image --input environments --apply
 
 # Clean up MongoDB references (opt-in)
 python python/main.py delete_image --apply --mongo-cleanup
@@ -216,9 +242,8 @@ model:627d94043035a63be6140e93
 modelVersion:627d94043035a63be6140e94
 EOF
 
-# Use with any analysis or deletion command
-python python/main.py image_data_analysis --file environments
-python python/main.py delete_image --file environments --apply
+# Use with deletion commands
+python python/main.py delete_image --input environments --apply
 ```
 
 ## 📦 Backup and Restore
@@ -239,10 +264,10 @@ python python/main.py delete_archived_tags --environment --backup --s3-bucket my
 
 ```bash
 # Restore specific tags from S3 backup
-python python/backup_restore.py restore --tags tag1 tag2
+python python/main.py backup_restore restore --tags tag1 tag2
 
 # Restore with explicit S3 bucket override
-python python/backup_restore.py restore --s3-bucket my-backup-bucket --tags tag1 tag2
+python python/main.py backup_restore restore --s3-bucket my-backup-bucket --tags tag1 tag2
 ```
 
 **Behavior:**
@@ -251,6 +276,48 @@ python python/backup_restore.py restore --s3-bucket my-backup-bucket --tags tag1
 - Images can be restored to any compatible registry
 - Restoration of Docker images does not restore their records in Mongo
 - However, once an image has been restored, its URL can be used as the base image for a new Domino Compute Environment
+
+## 🔄 Resume Capability
+
+Long-running deletion operations can be interrupted (network issues, timeouts, etc.). The tool now supports resuming from checkpoints:
+
+```bash
+# If an operation is interrupted, resume from checkpoint
+python python/main.py delete_archived_tags --environment --apply --resume
+
+# Use a specific operation ID to resume a particular run
+python python/main.py delete_archived_tags --environment --apply --resume --operation-id 2026-01-15-14-30-00
+```
+
+**How it works:**
+- Checkpoints are automatically saved every 10 items during deletion
+- If interrupted, progress is preserved in `reports/checkpoints/`
+- Use `--resume` to continue from the last checkpoint
+- Checkpoints are automatically cleaned up when operations complete successfully
+- Use `--operation-id` to manage multiple concurrent operations
+
+**Supported scripts:**
+- `delete_archived_tags`
+- `delete_unused_environments`
+- `delete_unused_private_environments`
+
+## 📅 Timestamped Reports
+
+All auto-generated reports now include timestamps in their filenames, allowing you to compare results across multiple runs:
+
+```
+reports/mongodb_usage_report-2026-01-15-14-30-00.json
+reports/tag-sums-2026-01-15-14-35-12.json
+reports/final-report-2026-01-15-14-40-25.json
+```
+
+**Benefits:**
+- Compare reports from different time periods
+- Track changes over time
+- Keep historical data for analysis
+- Reports are automatically found by freshness checks (finds latest timestamped version)
+
+**Note:** User-specified output files (via `--output`) do not include timestamps to preserve exact filenames.
 
 ## 🛡️ Safety Features
 
@@ -323,35 +390,53 @@ python python/main.py --config
 
 ## 🏗️ Architecture
 
-### Core Scripts
+The Python codebase is organized into two main directories:
+- **`python/scripts/`** - User-facing scripts that can be run via `main.py`
+- **`python/utils/`** - Utility modules used by the scripts
+
+### Core Entrypoint
 
 - **`python/main.py`** - Unified entrypoint for all operations
-- **`python/config_manager.py`** - Centralized configuration and Skopeo client management
-- **`python/backup_restore.py`** - S3 backup and restore functionality
 
-### Deletion Scripts
+### User-Facing Scripts (`python/scripts/`)
 
+#### Deletion Scripts
 All deletion scripts follow the same pattern and support common options:
 
-- **`python/delete_image.py`** - Intelligent deletion based on MongoDB usage analysis
-- **`python/delete_archived_tags.py`** - Delete archived environments and/or models
-- **`python/delete_unused_environments.py`** - Delete environments not used anywhere
-- **`python/archive_unused_environments.py`** - Mark unused environments as archived in MongoDB (`isArchived = true` on `environments_v2`)
-- **`python/delete_unused_private_environments.py`** - Delete private environments owned by deactivated users
-- **`python/delete_unused_references.py`** - Delete MongoDB references to non-existent images
+- **`python/scripts/delete_image.py`** - Intelligent deletion based on MongoDB usage analysis
+- **`python/scripts/delete_archived_tags.py`** - Delete archived environments and/or models
+- **`python/scripts/delete_unused_environments.py`** - Delete environments not used anywhere
+- **`python/scripts/archive_unused_environments.py`** - Mark unused environments as archived in MongoDB (`isArchived = true` on `environments_v2`)
+- **`python/scripts/delete_unused_private_environments.py`** - Delete private environments owned by deactivated users
+- **`python/scripts/delete_unused_references.py`** - Delete MongoDB references to non-existent images
 
-### Analysis Scripts
+#### Analysis Scripts
 
-- **`python/extract_metadata.py`** - Extract MongoDB metadata using aggregation pipelines (generates consolidated `mongodb_usage_report.json`)
-- **`python/image_data_analysis.py`** - Analyze registry contents with shared layer detection
-- **`python/reports.py`** - Generate tag usage reports
+- **`python/scripts/reports.py`** - Generate tag usage reports (automatically generates required metadata and image analysis if needed)
+- **`python/scripts/find_environment_usage.py`** - Find where a specific environment ID is used
 
-### Utility Scripts
+#### Other Scripts
 
-- **`python/mongo_cleanup.py`** - MongoDB record cleanup
-- **`python/mongo_utils.py`** - MongoDB connection utilities
-- **`python/object_id_utils.py`** - ObjectID handling
-- **`python/logging_utils.py`** - Logging configuration
+- **`python/scripts/backup_restore.py`** - S3 backup and restore functionality
+- **`python/scripts/mongo_cleanup.py`** - MongoDB record cleanup
+
+### Utility Modules (`python/utils/`)
+
+- **`python/utils/config_manager.py`** - Centralized configuration and Skopeo client management
+- **`python/utils/mongo_utils.py`** - MongoDB connection utilities
+- **`python/utils/object_id_utils.py`** - ObjectID handling
+- **`python/utils/logging_utils.py`** - Logging configuration
+- **`python/utils/extract_metadata.py`** - Extract MongoDB metadata using aggregation pipelines (generates consolidated `mongodb_usage_report.json`)
+- **`python/utils/image_data_analysis.py`** - Analyze registry contents with shared layer detection
+- **`python/utils/image_usage.py`** - Image usage analysis from MongoDB
+- **`python/utils/deletion_base.py`** - Base class for deletion scripts
+- **`python/utils/error_utils.py`** - Actionable error message utilities
+- **`python/utils/health_checks.py`** - System health check functionality
+- **`python/utils/report_utils.py`** - Report saving, freshness checking, automatic generation, and timestamp utilities
+- **`python/utils/checkpoint.py`** - Checkpoint and resume functionality for long-running operations
+- **`python/utils/retry_utils.py`** - Retry logic with exponential backoff
+- **`python/utils/cache_utils.py`** - Caching utilities for registry operations
+- **`python/utils/security_scanning.py`** - Security scanning utilities
 
 ## 📊 How It Works
 

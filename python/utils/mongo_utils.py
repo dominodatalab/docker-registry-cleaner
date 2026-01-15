@@ -8,7 +8,7 @@ from bson import json_util
 from pymongo import MongoClient
 from typing import Optional, Any
 
-from config_manager import config_manager
+from utils.config_manager import config_manager
 
 
 def get_mongo_client() -> MongoClient:

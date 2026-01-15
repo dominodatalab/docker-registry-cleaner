@@ -10,15 +10,21 @@ This script/function inspects:
 import argparse
 import logging
 import sys
-from typing import Dict, List, Set
 
 from bson import ObjectId
+from pathlib import Path
+from typing import Dict, List, Set
 
-from config_manager import config_manager
-from logging_utils import setup_logging
-from mongo_utils import get_mongo_client
-from object_id_utils import validate_object_id
-from image_usage import ImageUsageService
+# Add parent directory to path for imports
+_parent_dir = Path(__file__).parent.parent.absolute()
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
+from utils.config_manager import config_manager
+from utils.image_usage import ImageUsageService
+from utils.logging_utils import setup_logging
+from utils.mongo_utils import get_mongo_client
+from utils.object_id_utils import validate_object_id
 
 
 def find_environment_usage(env_id: str) -> None:

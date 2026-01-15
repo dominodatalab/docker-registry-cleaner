@@ -42,16 +42,23 @@ import hashlib
 import logging
 import os
 import re
+import sys
 import tempfile
 
 from botocore.config import Config
 from botocore.exceptions import ClientError
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import List, Optional, Tuple
 
-from config_manager import ConfigManager, SkopeoClient
-from logging_utils import get_logger
-from object_id_utils import read_typed_object_ids_from_file
+# Add parent directory to path for imports
+_parent_dir = Path(__file__).parent.parent.absolute()
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
+from utils.config_manager import ConfigManager, SkopeoClient
+from utils.logging_utils import get_logger
+from utils.object_id_utils import read_typed_object_ids_from_file
 
 logger = get_logger(__name__)
 
@@ -161,7 +168,10 @@ def filter_tags(tags, prefix, exclude_latest=True, min_age_days=None):
 def calculate_checksum(file_path, algo='sha256'):
     h = hashlib.new(algo)
     with open(file_path, 'rb') as f:
-        while chunk := f.read(8192):
+        while True:
+            chunk = f.read(8192)
+            if not chunk:
+                break
             h.update(chunk)
     return h.hexdigest()
 
