@@ -49,7 +49,7 @@ import sys
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from keycloak import KeycloakAdmin
 from bson import ObjectId
@@ -85,7 +85,7 @@ class DeactivatedUserEnvFinder:
     """Main class for finding and managing private environments owned by deactivated users"""
     
     def __init__(self, registry_url: str, repository: str,
-                 enable_docker_deletion: bool = False, registry_statefulset: str = None):
+                 enable_docker_deletion: bool = False, registry_statefulset: str = None, recent_days: Optional[int] = None):
         self.registry_url = registry_url
         self.repository = repository
         self.skopeo_client = SkopeoClient(
@@ -95,6 +95,7 @@ class DeactivatedUserEnvFinder:
             registry_statefulset=registry_statefulset
         )
         self.logger = get_logger(__name__)
+        self.recent_days = recent_days
         
         # Image types to scan (only environment images contain environment ObjectIDs)
         self.image_types = ['environment']
@@ -490,7 +491,7 @@ class DeactivatedUserEnvFinder:
                 # Check which tags are in use before attempting deletion
                 service = ImageUsageService()
                 tags_to_check = [tag_info.tag for tag_info in deactivated_user_tags]
-                in_use_tags, usage_info = service.check_tags_in_use(tags_to_check)
+                in_use_tags, usage_info = service.check_tags_in_use(tags_to_check, recent_days=self.recent_days)
                 
                 if in_use_tags:
                     self.logger.warning(f"⚠️  Found {len(in_use_tags)} tags that are currently in use - these will be skipped")
@@ -861,6 +862,17 @@ Environment Variables Required:
         action='store_true',
         help='Also clean up MongoDB records after Docker image deletion (default: off)'
     )
+    parser.add_argument(
+        '--unused-since-days',
+        dest='days',
+        type=int,
+        metavar='N',
+        help='Only consider images as "in-use" if they were used in a workload within the last N days. '
+             'If the last usage was more than N days ago, the image will be considered '
+             'unused and eligible for deletion. If omitted, any historical usage marks the image as in-use. '
+             'This filters based on the last_used, completed, or started timestamp from runs, '
+             'and workspace_last_change from workspaces.'
+    )
     
     return parser.parse_args()
 
@@ -911,7 +923,8 @@ def main():
             registry_url, 
             repository,
             enable_docker_deletion=args.enable_docker_deletion,
-            registry_statefulset=args.registry_statefulset
+            registry_statefulset=args.registry_statefulset,
+            recent_days=args.days
         )
         
         # Handle different operation modes

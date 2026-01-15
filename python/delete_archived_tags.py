@@ -52,7 +52,7 @@ import sys
 
 from bson import ObjectId
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 from backup_restore import process_backup
@@ -81,10 +81,11 @@ class ArchivedTagsFinder:
     """Main class for finding and managing archived tags"""
     
     def __init__(self, registry_url: str, repository: str, process_environments: bool = False, process_models: bool = False,
-                 enable_docker_deletion: bool = False, registry_statefulset: str = None, max_workers: int = 4):
+                 enable_docker_deletion: bool = False, registry_statefulset: str = None, max_workers: int = 4, recent_days: Optional[int] = None):
         self.registry_url = registry_url
         self.repository = repository
         self.max_workers = max_workers
+        self.recent_days = recent_days
         self.skopeo_client = SkopeoClient(
             config_manager, 
             use_pod=config_manager.get_skopeo_use_pod(),
@@ -629,7 +630,7 @@ class ArchivedTagsFinder:
                 # Check which tags are in use before attempting deletion
                 service = ImageUsageService()
                 tags_to_check = [tag_info.tag for tag_info in archived_tags]
-                in_use_tags, usage_info = service.check_tags_in_use(tags_to_check)
+                in_use_tags, usage_info = service.check_tags_in_use(tags_to_check, recent_days=self.recent_days)
                 
                 if in_use_tags:
                     self.logger.warning(f"⚠️  Found {len(in_use_tags)} tags that are currently in use - these will be skipped")
@@ -1113,6 +1114,17 @@ Examples:
         action='store_true',
         help='Also clean up MongoDB records after Docker image deletion (default: off)'
     )
+    parser.add_argument(
+        '--unused-since-days',
+        dest='days',
+        type=int,
+        metavar='N',
+        help='Only consider images as "in-use" if they were used in a workload within the last N days. '
+             'If the last usage was more than N days ago, the image will be considered '
+             'unused and eligible for deletion. If omitted, any historical usage marks the image as in-use. '
+             'This filters based on the last_used, completed, or started timestamp from runs, '
+             'and workspace_last_change from workspaces.'
+    )
     
     return parser.parse_args()
 
@@ -1181,7 +1193,8 @@ def main():
             process_models=args.model,
             enable_docker_deletion=args.enable_docker_deletion,
             registry_statefulset=args.registry_statefulset,
-            max_workers=max_workers
+            max_workers=max_workers,
+            recent_days=args.days
         )
         
         # Handle different operation modes

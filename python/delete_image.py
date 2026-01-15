@@ -51,7 +51,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -179,6 +179,123 @@ class IntelligentImageDeleter:
         tags, _ = self.extract_docker_tags_with_usage_info_from_mongodb_reports(mongodb_reports)
         return tags
     
+    def _parse_timestamp(self, timestamp_str: str) -> Optional[datetime]:
+        """Parse a timestamp string to datetime object
+        
+        Args:
+            timestamp_str: ISO format timestamp string (may end with 'Z')
+        
+        Returns:
+            datetime object or None if parsing fails
+        """
+        if not timestamp_str:
+            return None
+        try:
+            # Handle ISO strings possibly ending with 'Z'
+            ts = timestamp_str.replace('Z', '+00:00')
+            return datetime.fromisoformat(ts)
+        except Exception:
+            return None
+    
+    def _get_most_recent_usage_date(self, usage_info: Dict) -> Optional[datetime]:
+        """Get the most recent usage date from usage information
+        
+        Checks runs (last_used, completed, started), workspaces (workspace_last_change),
+        and other sources to find the most recent timestamp.
+        
+        Args:
+            usage_info: Dict with 'runs', 'workspaces', 'models', etc. containing usage records
+        
+        Returns:
+            Most recent datetime or None if no timestamps found
+        """
+        most_recent = None
+        
+        # Check runs - prefer last_used, then completed, then started
+        for run in usage_info.get('runs', []):
+            for field in ['last_used', 'completed', 'started']:
+                ts = self._parse_timestamp(run.get(field))
+                if ts:
+                    if most_recent is None or ts > most_recent:
+                        most_recent = ts
+                    break  # Use first available timestamp per run
+        
+        # Check workspaces - use workspace_last_change
+        for workspace in usage_info.get('workspaces', []):
+            ts = self._parse_timestamp(workspace.get('workspace_last_change'))
+            if ts:
+                if most_recent is None or ts > most_recent:
+                    most_recent = ts
+        
+        return most_recent
+    
+    def _filter_usage_by_age(self, usage_sources: Dict[str, Dict], recent_days: Optional[int]) -> Dict[str, Dict]:
+        """Filter usage sources to only include recent usage if recent_days is specified
+        
+        Args:
+            usage_sources: Dict mapping tag -> usage info
+            recent_days: Optional number of days - if provided, only keep usage within this window
+        
+        Returns:
+            Filtered usage_sources dict with only recent usage
+        """
+        if recent_days is None or recent_days <= 0:
+            return usage_sources
+        
+        threshold = datetime.now(timezone.utc) - timedelta(days=recent_days)
+        filtered_usage = {}
+        
+        for tag, usage_info in usage_sources.items():
+            # Get most recent usage date for this tag
+            most_recent = self._get_most_recent_usage_date(usage_info)
+            
+            # If no timestamp found, keep the usage (conservative - don't delete if we can't determine age)
+            if most_recent is None:
+                filtered_usage[tag] = usage_info
+                continue
+            
+            # If most recent usage is within threshold, keep it
+            if most_recent >= threshold:
+                # Filter individual usage records to only include recent ones
+                filtered_info = {
+                    'runs': [],
+                    'workspaces': [],
+                    'models': [],
+                    'scheduler_jobs': [],
+                    'projects': [],
+                    'organizations': [],
+                    'app_versions': []
+                }
+                
+                # Filter runs
+                for run in usage_info.get('runs', []):
+                    for field in ['last_used', 'completed', 'started']:
+                        ts = self._parse_timestamp(run.get(field))
+                        if ts and ts >= threshold:
+                            filtered_info['runs'].append(run)
+                            break
+                
+                # Filter workspaces
+                for workspace in usage_info.get('workspaces', []):
+                    ts = self._parse_timestamp(workspace.get('workspace_last_change'))
+                    if ts and ts >= threshold:
+                        filtered_info['workspaces'].append(workspace)
+                    elif ts is None:
+                        # No timestamp - keep it (conservative)
+                        filtered_info['workspaces'].append(workspace)
+                
+                # Keep models, scheduler_jobs, projects, organizations, app_versions as-is
+                # (these don't have timestamps in the usage info, so we keep them if the tag has recent usage)
+                filtered_info['models'] = usage_info.get('models', [])
+                filtered_info['scheduler_jobs'] = usage_info.get('scheduler_jobs', [])
+                filtered_info['projects'] = usage_info.get('projects', [])
+                filtered_info['organizations'] = usage_info.get('organizations', [])
+                filtered_info['app_versions'] = usage_info.get('app_versions', [])
+                
+                filtered_usage[tag] = filtered_info
+        
+        return filtered_usage
+    
     def extract_docker_tags_with_usage_info_from_mongodb_reports(self, mongodb_reports: Dict[str, List[Dict]]) -> Tuple[Set[str], Dict[str, Dict]]:
         """Extract Docker image tags from MongoDB usage reports with detailed usage information
         
@@ -281,13 +398,15 @@ class IntelligentImageDeleter:
         
         return ", ".join(reasons)
 
-    def analyze_image_usage(self, image_analysis: Dict, object_ids: Optional[List[str]] = None, object_ids_map: Optional[Dict[str, List[str]]] = None, mongodb_reports: Optional[Dict[str, List[Dict]]] = None) -> WorkloadAnalysis:
+    def analyze_image_usage(self, image_analysis: Dict, object_ids: Optional[List[str]] = None, object_ids_map: Optional[Dict[str, List[str]]] = None, mongodb_reports: Optional[Dict[str, List[Dict]]] = None, recent_days: Optional[int] = None) -> WorkloadAnalysis:
         """Analyze which images are used vs unused based on MongoDB reports and image analysis
         
         Args:
             image_analysis: Image analysis report
             object_ids: List of ObjectIDs to filter by (merged from all types)
             object_ids_map: Dict mapping image types to ObjectID lists (e.g., {'environment': [...], 'model': [...]})
+            mongodb_reports: Optional MongoDB usage reports
+            recent_days: Optional number of days - if provided, only consider images as "in-use" if they were used within the last N days
         """
         used_images = set()
         unused_images = set()
@@ -342,6 +461,45 @@ class IntelligentImageDeleter:
                 self.logger.info("No Docker tags found in MongoDB reports")
         else:
             self.logger.warning("MongoDB reports not provided - images referenced in runs/workspaces/models/scheduler_jobs/projects may be incorrectly marked as unused")
+        
+        # Filter usage by age if recent_days is specified
+        if recent_days is not None and recent_days > 0:
+            self.logger.info(f"Filtering usage to only include activity within the last {recent_days} days")
+            threshold = datetime.now(timezone.utc) - timedelta(days=recent_days)
+            original_used_count = len(used_images)
+            
+            # Rebuild used_images set based on filtered usage
+            # Only include tags that have recent usage or usage from sources without timestamps
+            filtered_used_images = set()
+            for tag in used_images:
+                usage_info = usage_sources.get(tag, {})
+                
+                # Check for usage from sources without timestamps (always keep these - they represent current config)
+                has_config_usage = (
+                    len(usage_info.get('models', [])) > 0 or
+                    len(usage_info.get('scheduler_jobs', [])) > 0 or
+                    len(usage_info.get('projects', [])) > 0 or
+                    len(usage_info.get('organizations', [])) > 0 or
+                    len(usage_info.get('app_versions', [])) > 0
+                )
+                
+                if has_config_usage:
+                    # Keep tags with current configuration usage (conservative)
+                    filtered_used_images.add(tag)
+                    continue
+                
+                # Check for recent usage from runs or workspaces (with timestamps)
+                has_recent_usage = False
+                most_recent = self._get_most_recent_usage_date(usage_info)
+                if most_recent is not None and most_recent >= threshold:
+                    has_recent_usage = True
+                
+                if has_recent_usage:
+                    filtered_used_images.add(tag)
+            
+            removed_count = original_used_count - len(filtered_used_images)
+            used_images = filtered_used_images
+            self.logger.info(f"After age filtering: {len(used_images)} tags have recent usage or current configuration ({removed_count} tags removed due to old usage only)")
         
         # Filter by ObjectIDs if provided
         if object_ids:
@@ -1108,6 +1266,17 @@ def parse_arguments():
         default='docker-registry',
         help='Name of registry StatefulSet/Deployment to modify for deletion (default: docker-registry)'
     )
+    parser.add_argument(
+        '--unused-since-days',
+        dest='days',
+        type=int,
+        metavar='N',
+        help='Only consider images as "in-use" if they were used in a workload within the last N days. '
+             'If the last usage was more than N days ago, the image will be considered '
+             'unused and eligible for deletion. If omitted, any historical usage marks the image as in-use. '
+             'This filters based on the last_used, completed, or started timestamp from runs, '
+             'and workspace_last_change from workspaces.'
+    )
     return parser.parse_args()
 
 
@@ -1292,7 +1461,7 @@ def main():
                 merged.update(object_ids_map.get('model_version', []))
                 merged_ids = sorted(merged)
                 print(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
-            analysis = deleter.analyze_image_usage(image_analysis, merged_ids, object_ids_map, mongodb_reports)
+            analysis = deleter.analyze_image_usage(image_analysis, merged_ids, object_ids_map, mongodb_reports, recent_days=args.days)
 
             # Prepare tags to backup
             # Unused images are in format: type:tag (e.g., "environment:abc123...") or just "tag" (legacy)
@@ -1385,7 +1554,7 @@ def main():
                 merged.update(object_ids_map.get('model_version', []))
                 merged_ids = sorted(merged)
                 print(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
-            analysis = deleter.analyze_image_usage(image_analysis, merged_ids, object_ids_map, mongodb_reports)
+            analysis = deleter.analyze_image_usage(image_analysis, merged_ids, object_ids_map, mongodb_reports, recent_days=args.days)
             
             # Generate deletion report
             deleter.generate_deletion_report(analysis, args.output_report)
