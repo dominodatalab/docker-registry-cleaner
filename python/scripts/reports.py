@@ -23,14 +23,20 @@ Usage examples:
 
 import argparse
 import json
+import sys
 
 from pathlib import Path
 from typing import Dict
 
-import extract_metadata
-from config_manager import config_manager
-from image_data_analysis import ImageAnalyzer
-from logging_utils import setup_logging, get_logger
+# Add parent directory to path for imports
+_parent_dir = Path(__file__).parent.parent.absolute()
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
+from utils.config_manager import config_manager
+from utils.image_data_analysis import ImageAnalyzer
+from utils.logging_utils import get_logger, setup_logging
+from utils.report_utils import ensure_all_reports
 
 logger = get_logger(__name__)
 
@@ -47,52 +53,42 @@ def sizeof_fmt(num: float, suffix: str = "B") -> str:
 def generate_required_reports() -> None:
     """Generate required metadata reports by calling extract_metadata and image_data_analysis"""
     logger.info("Generating required metadata reports...")
-    
-    # Generate metadata from MongoDB
-    logger.info("Extracting metadata from MongoDB...")
-    try:
-        extract_metadata.run("all")  # Run both model and workspace queries
-        logger.info("✓ Metadata extraction completed")
-    except Exception as e:
-        logger.error(f"Failed to extract metadata: {e}")
-        raise
-    
-    # Generate image analysis and tag sums
-    logger.info("Analyzing Docker images and generating tag sums...")
-    try:
-        registry_url = config_manager.get_registry_url()
-        repository = config_manager.get_repository()
-        analyzer = ImageAnalyzer(registry_url, repository)
-        
-        # Analyze both environment and model images
-        for image_type in ['environment', 'model']:
-            logger.info(f"Analyzing {image_type} images...")
-            success = analyzer.analyze_image(image_type)
-            if not success:
-                logger.warning(f"Failed to analyze {image_type} images")
-        
-        # Save reports (generates tag-sums.json and other reports)
-        analyzer.save_reports()
-        logger.info("✓ Image analysis completed")
-    except Exception as e:
-        logger.error(f"Failed to analyze images: {e}")
-        raise
+    ensure_all_reports()
 
 
 def load_metadata_files() -> tuple:
-    """Load metadata files"""
+    """Load metadata files.
+    
+    Supports both timestamped and non-timestamped report files.
+    If exact file doesn't exist, finds the most recent timestamped version.
+    """
+    from utils.report_utils import get_latest_report, get_reports_dir
+    
     # Load tag sums
     tag_sums_path = config_manager.get_tag_sums_path()
-    if not Path(tag_sums_path).exists():
+    tag_sums_file = Path(tag_sums_path)
+    
+    # If exact file doesn't exist, try to find latest timestamped version
+    if not tag_sums_file.exists():
+        reports_dir = get_reports_dir()
+        stem = tag_sums_file.stem
+        suffix = tag_sums_file.suffix
+        pattern = f"{stem}-*-*-*-*-*-*{suffix}"
+        latest = get_latest_report(pattern, reports_dir)
+        if latest:
+            tag_sums_file = latest
+            logger.info(f"Using latest timestamped report: {tag_sums_file.name}")
+    
+    if not tag_sums_file.exists():
         logger.error(f"Tag sums file not found: {tag_sums_path}")
         raise FileNotFoundError(f"Tag sums file not found: {tag_sums_path}")
     
-    with open(tag_sums_path) as f:
+    with open(tag_sums_file) as f:
         tag_data = json.load(f)
     logger.info(f"Loaded {len(tag_data)} tags from tag sums")
     
     # Load MongoDB usage reports from consolidated file
-    from image_usage import ImageUsageService
+    from utils.image_usage import ImageUsageService
     service = ImageUsageService()
     reports = service.load_usage_reports()
     
@@ -185,9 +181,11 @@ def main():
         logger.info("=" * 60)
         
         # Check if metadata reports need to be generated
-        tag_sums_path = Path(config_manager.get_tag_sums_path())
-        mongodb_usage_path = Path(config_manager.get_mongodb_usage_path())
-        reports_exist = mongodb_usage_path.exists() and tag_sums_path.exists()
+        # Use is_report_fresh which handles timestamped reports
+        from utils.report_utils import is_report_fresh
+        tag_sums_exists = is_report_fresh('tag-sums.json')
+        mongodb_usage_exists = is_report_fresh('mongodb_usage_report.json')
+        reports_exist = tag_sums_exists and mongodb_usage_exists
         
         # Generate reports if requested or if they don't exist
         if args.generate_reports or not reports_exist:
@@ -209,8 +207,8 @@ def main():
         sys.exit(1)
     except Exception as e:
         logger.error(f"\n❌ Report generation failed: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        from utils.logging_utils import log_exception
+        log_exception(logger, "Error in main", exc_info=e)
         import sys
         sys.exit(1)
 

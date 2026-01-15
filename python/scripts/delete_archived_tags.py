@@ -51,17 +51,24 @@ import json
 import sys
 
 from bson import ObjectId
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
-from backup_restore import process_backup
-from config_manager import config_manager, SkopeoClient, ConfigManager
-from image_data_analysis import ImageAnalyzer
-from logging_utils import setup_logging, get_logger
-from mongo_utils import get_mongo_client
-from report_utils import save_json
-from image_usage import ImageUsageService
+# Add parent directory to path for imports
+_parent_dir = Path(__file__).parent.parent.absolute()
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
+from scripts.backup_restore import process_backup
+from utils.image_data_analysis import ImageAnalyzer
+from utils.config_manager import ConfigManager, SkopeoClient, config_manager
+from utils.deletion_base import BaseDeletionScript
+from utils.image_usage import ImageUsageService
+from utils.logging_utils import get_logger, setup_logging
+from utils.mongo_utils import get_mongo_client
+from utils.report_utils import ensure_mongodb_reports, get_timestamp_suffix, save_json
 
 logger = get_logger(__name__)
 
@@ -74,25 +81,22 @@ class ArchivedTagInfo:
     tag: str
     full_image: str
     size_bytes: int = 0
-    record_type: str = None  # 'environment', 'revision', 'model', or 'version'
+    record_type: Optional[str] = None  # 'environment', 'revision', 'model', or 'version'
 
 
-class ArchivedTagsFinder:
+class ArchivedTagsFinder(BaseDeletionScript):
     """Main class for finding and managing archived tags"""
     
     def __init__(self, registry_url: str, repository: str, process_environments: bool = False, process_models: bool = False,
-                 enable_docker_deletion: bool = False, registry_statefulset: str = None, recent_days: Optional[int] = None):
-        self.registry_url = registry_url
-        self.repository = repository
-        self.max_workers = config_manager.get_max_workers()
-        self.recent_days = recent_days
-        self.skopeo_client = SkopeoClient(
-            config_manager, 
-            use_pod=config_manager.get_skopeo_use_pod(),
+                 enable_docker_deletion: bool = False, registry_statefulset: Optional[str] = None, recent_days: Optional[int] = None):
+        super().__init__(
+            registry_url=registry_url,
+            repository=repository,
             enable_docker_deletion=enable_docker_deletion,
             registry_statefulset=registry_statefulset
         )
-        self.logger = get_logger(__name__)
+        self.max_workers = config_manager.get_max_workers()
+        self.recent_days = recent_days
         
         # Determine what to process
         self.process_environments = process_environments
@@ -538,13 +542,14 @@ class ArchivedTagsFinder:
             
         except Exception as e:
             self.logger.error(f"Error calculating freed space: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            from utils.logging_utils import log_exception
+            log_exception(self.logger, "Error calculating freed space", exc_info=e)
             return 0
     
     def delete_archived_tags(self, archived_tags: List[ArchivedTagInfo], backup: bool = False,
-                             s3_bucket: str = None, region: str = 'us-west-2',
-                             mongo_cleanup: bool = False) -> Dict[str, int]:
+                             s3_bucket: Optional[str] = None, region: str = 'us-west-2',
+                             mongo_cleanup: bool = False, resume: bool = False,
+                             operation_id: Optional[str] = None) -> Dict[str, int]:
         """Delete archived Docker images and clean up MongoDB records
         
         Args:
@@ -600,10 +605,9 @@ class ArchivedTagsFinder:
             
             # Enable deletion in registry if it's in the same Kubernetes cluster
             registry_in_cluster = self.skopeo_client.is_registry_in_cluster()
+            registry_enabled = False
             if registry_in_cluster:
-                self.logger.info("Registry is in-cluster, enabling deletion...")
-                if not self.skopeo_client.enable_registry_deletion():
-                    self.logger.warning("Failed to enable registry deletion - continuing anyway")
+                registry_enabled = self.enable_registry_deletion()
             
             try:
                 # Deduplicate tags before deletion (a tag may appear multiple times if it contains multiple ObjectIDs)
@@ -618,6 +622,34 @@ class ArchivedTagsFinder:
                         }
                     unique_tags[key]['object_ids'].append(tag_info.object_id)
                 
+                # Check for existing checkpoint if resuming
+                tag_identifiers = [f"{img_type}:{tag}" for (img_type, tag), _ in unique_tags.items()]
+                if resume:
+                    remaining_tags = self.checkpoint_manager.get_remaining_items(
+                        'delete_archived_tags',
+                        tag_identifiers,
+                        operation_id
+                    )
+                    if remaining_tags:
+                        self.logger.info(f"📋 Resuming from checkpoint: {len(remaining_tags)} items remaining out of {len(tag_identifiers)} total")
+                        # Filter unique_tags to only include remaining items
+                        remaining_set = set(remaining_tags)
+                        unique_tags = {
+                            k: v for k, v in unique_tags.items()
+                            if f"{k[0]}:{k[1]}" in remaining_set
+                        }
+                    else:
+                        self.logger.info("📋 Checkpoint found but all items are already completed")
+                        return deletion_results
+                else:
+                    # Create initial checkpoint
+                    self.checkpoint_manager.save_checkpoint(
+                        'delete_archived_tags',
+                        [],
+                        len(tag_identifiers),
+                        operation_id=operation_id
+                    )
+                
                 self.logger.info(f"Deleting {len(unique_tags)} unique Docker images from registry ({len(archived_tags)} total references)...")
                 if len(unique_tags) < len(archived_tags):
                     self.logger.info(f"  Note: {len(archived_tags) - len(unique_tags)} tags contain multiple archived ObjectIDs")
@@ -628,6 +660,8 @@ class ArchivedTagsFinder:
                 successfully_deleted_object_ids = set()
                 
                 # Check which tags are in use before attempting deletion
+                # Ensure MongoDB reports are fresh
+                ensure_mongodb_reports()
                 service = ImageUsageService()
                 tags_to_check = [tag_info.tag for tag_info in archived_tags]
                 in_use_tags, usage_info = service.check_tags_in_use(tags_to_check, recent_days=self.recent_days)
@@ -689,6 +723,10 @@ class ArchivedTagsFinder:
                             for item in unique_tags.items()
                         }
                         
+                        completed_items = []
+                        failed_items = []
+                        skipped_items = []
+                        
                         for future in concurrent.futures.as_completed(future_to_tag):
                             try:
                                 result = future.result()
@@ -696,38 +734,91 @@ class ArchivedTagsFinder:
                                 if status == 'success':
                                     deleted_count += 1
                                     successfully_deleted_object_ids.update(object_ids)
+                                    completed_items.append(full_image)
                                 elif status == 'skipped_in_use':
                                     failed_deletions.append(full_image)
+                                    skipped_items.append(full_image)
                                     failed_deletions_with_reason[full_image] = {
                                         'reason': 'in_use',
                                         'usage_summary': usage_summary
                                     }
                                 else:
                                     failed_deletions.append(full_image)
+                                    failed_items.append(full_image)
                                     failed_deletions_with_reason[full_image] = {
                                         'reason': 'deletion_failed'
                                     }
+                                
+                                # Save checkpoint periodically (every 10 items)
+                                total_processed = len(completed_items) + len(failed_items) + len(skipped_items)
+                                if total_processed % 10 == 0:
+                                    self.checkpoint_manager.save_checkpoint(
+                                        'delete_archived_tags',
+                                        completed_items,
+                                        len(tag_identifiers),
+                                        failed_items=failed_items,
+                                        skipped_items=skipped_items,
+                                        operation_id=operation_id
+                                    )
                             except Exception as e:
                                 self.logger.error(f"Error processing deletion result: {e}")
+                        
+                        # Final checkpoint save
+                        self.checkpoint_manager.save_checkpoint(
+                            'delete_archived_tags',
+                            completed_items,
+                            len(tag_identifiers),
+                            failed_items=failed_items,
+                            skipped_items=skipped_items,
+                            operation_id=operation_id
+                        )
                 else:
                     # Sequential deletion for small batches or single worker
-                    for (image_type, tag), data in unique_tags.items():
+                    completed_items = []
+                    failed_items = []
+                    skipped_items = []
+                    
+                    for idx, ((image_type, tag), data) in enumerate(unique_tags.items()):
                         result = delete_single_tag(((image_type, tag), data))
                         status, full_image, object_ids, usage_summary = result
                         if status == 'success':
                             deleted_count += 1
                             successfully_deleted_object_ids.update(object_ids)
+                            completed_items.append(full_image)
                         elif status == 'skipped_in_use':
                             failed_deletions.append(full_image)
+                            skipped_items.append(full_image)
                             failed_deletions_with_reason[full_image] = {
                                 'reason': 'in_use',
                                 'usage_summary': usage_summary
                             }
                         else:
                             failed_deletions.append(full_image)
+                            failed_items.append(full_image)
                             failed_deletions_with_reason[full_image] = {
                                 'reason': 'deletion_failed'
                             }
+                        
+                        # Save checkpoint periodically (every 10 items)
+                        if (idx + 1) % 10 == 0:
+                            self.checkpoint_manager.save_checkpoint(
+                                'delete_archived_tags',
+                                completed_items,
+                                len(tag_identifiers),
+                                failed_items=failed_items,
+                                skipped_items=skipped_items,
+                                operation_id=operation_id
+                            )
+                    
+                    # Final checkpoint save
+                    self.checkpoint_manager.save_checkpoint(
+                        'delete_archived_tags',
+                        completed_items,
+                        len(tag_identifiers),
+                        failed_items=failed_items,
+                        skipped_items=skipped_items,
+                        operation_id=operation_id
+                    )
                 
                 deletion_results['docker_images_deleted'] = deleted_count
                 
@@ -873,13 +964,24 @@ class ArchivedTagsFinder:
                 
             finally:
                 # Always disable deletion in registry if it was enabled
-                if registry_in_cluster:
-                    self.logger.info("Disabling deletion in registry...")
-                    if not self.skopeo_client.disable_registry_deletion():
-                        self.logger.warning("Failed to disable registry deletion")
-            
+                if registry_enabled:
+                    self.disable_registry_deletion()
+                
+                # Clean up checkpoint if operation completed successfully
+                total_processed = deletion_results.get('docker_images_deleted', 0) + len(failed_deletions)
+                if total_processed > 0:
+                    # Check if all items were processed
+                    checkpoint = self.checkpoint_manager.load_checkpoint('delete_archived_tags', operation_id)
+                    if checkpoint:
+                        total_completed = len(checkpoint.completed_items) + len(checkpoint.failed_items) + len(checkpoint.skipped_items)
+                        if total_completed >= checkpoint.total_items:
+                            # Operation completed - delete checkpoint
+                            self.checkpoint_manager.delete_checkpoint('delete_archived_tags', operation_id)
+                            self.logger.info("✓ Checkpoint cleaned up (operation completed)")
+        
         except Exception as e:
             self.logger.error(f"Error deleting archived tags: {e}")
+            self.logger.info("💾 Progress saved to checkpoint - use --resume to continue")
             raise
         
         return deletion_results
@@ -1108,6 +1210,17 @@ Examples:
         action='store_true',
         help='Also clean up MongoDB records after Docker image deletion (default: off)'
     )
+    
+    parser.add_argument(
+        '--resume',
+        action='store_true',
+        help='Resume from previous checkpoint if operation was interrupted'
+    )
+    
+    parser.add_argument(
+        '--operation-id',
+        help='Unique identifier for this operation run (used for checkpoint management)'
+    )
     parser.add_argument(
         '--unused-since-days',
         dest='days',
@@ -1320,32 +1433,22 @@ def main():
                 sys.exit(0)
             
             # Confirmation prompt (unless --force)
-            if not args.force:
-                print("\n" + "="*60)
-                print("⚠️  WARNING: You are about to DELETE Docker images from the registry!")
-                print("="*60)
-                print(f"This will delete {len(archived_tags)} archived {processing_str} tags.")
-                print("This action cannot be undone.")
-                print("Make sure you have reviewed the analysis output above.")
-                print("="*60)
-                
-                while True:
-                    response = input("Are you sure you want to proceed with deletion? (yes/no): ").lower().strip()
-                    if response in ['yes', 'y']:
-                        break
-                    elif response in ['no', 'n']:
-                        logger.info("Operation cancelled by user")
-                        sys.exit(0)
-                    else:
-                        print("Please enter 'yes' or 'no'.")
+            if not finder.confirm_deletion(len(archived_tags), f"archived {processing_str} tags", force=args.force):
+                logger.info("Operation cancelled by user")
+                sys.exit(0)
             
             logger.info(f"\n🗑️  Deleting {len(archived_tags)} archived {processing_str} tags...")
+            # Generate operation ID if not provided
+            operation_id = args.operation_id or get_timestamp_suffix()
+            
             deletion_results = finder.delete_archived_tags(
                 archived_tags,
                 backup=args.backup,
                 s3_bucket=s3_bucket,
                 region=s3_region,
                 mongo_cleanup=args.mongo_cleanup,
+                resume=args.resume,
+                operation_id=operation_id,
             )
             
             # Print deletion summary
@@ -1413,8 +1516,8 @@ def main():
         sys.exit(1)
     except Exception as e:
         logger.error(f"\n❌ Operation failed: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        from logging_utils import log_exception
+        log_exception(logger, "Error in main", exc_info=e)
         sys.exit(1)
 
 

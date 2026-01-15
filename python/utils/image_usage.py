@@ -23,13 +23,13 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from config_manager import config_manager
-from mongo_utils import get_mongo_client, bson_to_jsonable
-from report_utils import save_json
+from utils.config_manager import config_manager
+from utils.mongo_utils import get_mongo_client, bson_to_jsonable
+from utils.report_utils import save_json
 
 logger = logging.getLogger(__name__)
 
-from extract_metadata import (
+from utils.extract_metadata import (
     model_env_usage_pipeline,
     workspace_env_usage_pipeline,
     runs_env_usage_pipeline,
@@ -162,10 +162,11 @@ class ImageUsageService:
             else:
                 consolidated[key] = []
         
-        # Save to consolidated file
+        # Save to consolidated file with timestamp
         save_json(
             config_manager.get_mongodb_usage_path(),
             consolidated,
+            timestamp=True,
         )
 
     # ------------------------------------------------------------------
@@ -175,11 +176,27 @@ class ImageUsageService:
     def load_usage_reports(self) -> Dict[str, List[dict]]:
         """Load MongoDB usage reports from saved consolidated JSON file.
         
+        Supports both timestamped and non-timestamped report files.
+        If exact file doesn't exist, finds the most recent timestamped version.
+        
         Returns:
             Dict with keys: 'runs', 'workspaces', 'models', 'projects', 
             'scheduler_jobs', 'organizations', 'app_versions'
         """
+        from utils.report_utils import get_latest_report, get_reports_dir
+        
         consolidated_path = Path(config_manager.get_mongodb_usage_path())
+        
+        # If exact file doesn't exist, try to find latest timestamped version
+        if not consolidated_path.exists():
+            reports_dir = get_reports_dir()
+            stem = consolidated_path.stem
+            suffix = consolidated_path.suffix
+            pattern = f"{stem}-*-*-*-*-*-*{suffix}"
+            latest = get_latest_report(pattern, reports_dir)
+            if latest:
+                consolidated_path = latest
+                logger.info(f"Using latest timestamped report: {consolidated_path.name}")
         
         if not consolidated_path.exists():
             return {

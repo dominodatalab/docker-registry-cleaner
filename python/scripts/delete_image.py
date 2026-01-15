@@ -48,19 +48,25 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone, timedelta
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from backup_restore import process_backup
-from config_manager import config_manager, SkopeoClient, ConfigManager
-from image_data_analysis import ImageAnalyzer
-from logging_utils import setup_logging, get_logger
-from object_id_utils import read_typed_object_ids_from_file
-from report_utils import save_json
-from image_usage import ImageUsageService
-from pathlib import Path
+# Add parent directory to path for imports
+_parent_dir = Path(__file__).parent.parent.absolute()
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
+from scripts.backup_restore import process_backup
+from utils.image_data_analysis import ImageAnalyzer
+from utils.config_manager import ConfigManager, SkopeoClient, config_manager
+from utils.deletion_base import BaseDeletionScript
+from utils.image_usage import ImageUsageService
+from utils.logging_utils import get_logger, setup_logging
+from utils.object_id_utils import read_typed_object_ids_from_file
+from utils.report_utils import ensure_image_analysis_reports, ensure_mongodb_reports, save_json
 
 
 @dataclass
@@ -82,31 +88,45 @@ class LayerAnalysis:
     is_used: bool
 
 
-class IntelligentImageDeleter:
+class IntelligentImageDeleter(BaseDeletionScript):
     """Main class for intelligent Docker image deletion"""
     
     def __init__(self, registry_url: str = None, repository: str = None, namespace: str = None,
                  enable_docker_deletion: bool = False, registry_statefulset: str = None):
-        self.registry_url = registry_url or config_manager.get_registry_url()
-        self.repository = repository or config_manager.get_repository()
-        self.namespace = namespace or config_manager.get_domino_platform_namespace()
-        self.logger = get_logger(__name__)
-        
-        # Initialize Skopeo client for local execution (same as other delete scripts)
-        # SkopeoClient now handles registry deletion enable/disable via enable_registry_deletion()
-        self.skopeo_client = SkopeoClient(
-            config_manager, 
-            use_pod=config_manager.get_skopeo_use_pod(),
+        super().__init__(
+            registry_url=registry_url,
+            repository=repository,
+            namespace=namespace,
             enable_docker_deletion=enable_docker_deletion,
             registry_statefulset=registry_statefulset
         )
     
     def load_image_analysis_report(self, report_path: Optional[str] = None) -> Dict:
-        """Load image analysis report from JSON file"""
+        """Load image analysis report from JSON file.
+        
+        Supports both timestamped and non-timestamped report files.
+        If exact file doesn't exist, finds the most recent timestamped version.
+        """
+        from utils.report_utils import get_latest_report, get_reports_dir
+        
         if report_path is None:
             report_path = config_manager.get_image_analysis_path()
+        
+        report_file = Path(report_path)
+        
+        # If exact file doesn't exist, try to find latest timestamped version
+        if not report_file.exists():
+            reports_dir = get_reports_dir()
+            stem = report_file.stem
+            suffix = report_file.suffix
+            pattern = f"{stem}-*-*-*-*-*-*{suffix}"
+            latest = get_latest_report(pattern, reports_dir)
+            if latest:
+                report_file = latest
+                self.logger.info(f"Using latest timestamped report: {report_file.name}")
+        
         try:
-            with open(report_path, 'r') as f:
+            with open(report_file, 'r') as f:
                 return json.load(f)
         except FileNotFoundError:
             self.logger.error(f"Image analysis report not found: {report_path}")
@@ -141,7 +161,7 @@ class IntelligentImageDeleter:
             self.logger.info(f"  - {len(reports.get('app_versions', []))} app versions")
         else:
             self.logger.warning("No MongoDB usage reports found")
-            self.logger.info("  Tip: Run 'python main.py extract_metadata' to generate reports")
+            self.logger.info("  Tip: Reports will be auto-generated when needed")
         
         return reports
     
@@ -730,8 +750,8 @@ class IntelligentImageDeleter:
             
         except Exception as e:
             self.logger.error(f"Error calculating freed space: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            from utils.logging_utils import log_exception
+            log_exception(self.logger, "Error calculating freed space", exc_info=e)
             return 0, {}
 
     def generate_deletion_report(self, analysis: WorkloadAnalysis, output_file: str = "deletion-analysis.json") -> None:
@@ -796,12 +816,12 @@ class IntelligentImageDeleter:
         except Exception as e:
             self.logger.error(f"Failed to save deletion report: {e}")
         
-        # Print summary
-        print(f"\n📊 Deletion Analysis Summary:")
-        print(f"   Total images analyzed: {report['summary']['total_images_analyzed']}")
-        print(f"   Images in use: {report['summary']['used_images']}")
-        print(f"   Images unused: {report['summary']['unused_images']}")
-        print(f"   Potential space saved: {report['summary']['total_size_saved_gb']:.2f} GB")
+        # Log summary
+        self.logger.info(f"\n📊 Deletion Analysis Summary:")
+        self.logger.info(f"   Total images analyzed: {report['summary']['total_images_analyzed']}")
+        self.logger.info(f"   Images in use: {report['summary']['used_images']}")
+        self.logger.info(f"   Images unused: {report['summary']['unused_images']}")
+        self.logger.info(f"   Potential space saved: {report['summary']['total_size_saved_gb']:.2f} GB")
 
     def save_deletion_results(self, analysis: WorkloadAnalysis, deleted_tags: List[str], 
                               successful_deletions: int, failed_deletions: int, 
@@ -942,21 +962,11 @@ class IntelligentImageDeleter:
 
     def enable_deletion_of_docker_images(self):
         """Enable deletion of Docker images in the registry"""
-        print("Enabling deletion of Docker images in registry...")
-        success = self.skopeo_client.enable_registry_deletion(namespace=self.namespace)
-        if success:
-            print("✓ Deletion enabled in registry")
-        else:
-            self.logger.warning("Failed to enable registry deletion - continuing anyway")
+        return self.enable_registry_deletion()
 
     def disable_deletion_of_docker_images(self):
         """Disable deletion of Docker images in the registry"""
-        print("Disabling deletion of Docker images in registry...")
-        success = self.skopeo_client.disable_registry_deletion(namespace=self.namespace)
-        if success:
-            print("✓ Deletion disabled in registry")
-        else:
-            self.logger.warning("Failed to disable registry deletion - continuing anyway")
+        return self.disable_registry_deletion()
 
     def delete_unused_images(self, analysis: WorkloadAnalysis, password: str, dry_run: bool = True, backup: bool = False, s3_bucket: str = None, region: str = 'us-west-2') -> List[str]:
         """Delete unused images based on analysis. Returns list of successfully deleted image tags.
@@ -970,12 +980,12 @@ class IntelligentImageDeleter:
             region: AWS region for S3 and ECR operations
         """
         if not analysis.unused_images:
-            print("No unused images found to delete.")
+            self.logger.info("No unused images found to delete.")
             return []
         
         # Backup images to S3 if requested (only in non-dry-run mode)
         if not dry_run and backup and s3_bucket:
-            print(f"\n📦 Backing up {len(analysis.unused_images)} images to S3 bucket: {s3_bucket}")
+            self.logger.info(f"\n📦 Backing up {len(analysis.unused_images)} images to S3 bucket: {s3_bucket}")
             
             # Extract tags from unused images
             # Unused images are in format: type:tag (e.g., "environment:abc123...") or just "tag" (legacy)
@@ -1009,13 +1019,13 @@ class IntelligentImageDeleter:
                     tmpdir=None,
                     failed_tags_file=None
                 )
-                print(f"✅ Successfully backed up {len(tags_to_backup)} images to S3")
+                self.logger.info(f"✅ Successfully backed up {len(tags_to_backup)} images to S3")
             except Exception as backup_err:
-                print(f"❌ Backup failed: {backup_err}")
-                print("Aborting deletion to prevent data loss")
+                self.logger.error(f"❌ Backup failed: {backup_err}")
+                self.logger.error("Aborting deletion to prevent data loss")
                 raise
         
-        print(f"\n🗑️  {'DRY RUN: ' if dry_run else ''}Deleting {len(analysis.unused_images)} unused images...")
+        self.logger.info(f"\n🗑️  {'DRY RUN: ' if dry_run else ''}Deleting {len(analysis.unused_images)} unused images...")
         
         total_size_deleted = 0
         successful_deletions = 0
@@ -1048,49 +1058,49 @@ class IntelligentImageDeleter:
             
             if dry_run:
                 if repository:
-                    print(f"  Would delete: {repository}:{tag} ({size / (1024**3):.2f} GB)")
+                    self.logger.info(f"  Would delete: {repository}:{tag} ({size / (1024**3):.2f} GB)")
                 else:
-                    print(f"  Would delete: environment:{tag} or model:{tag} ({size / (1024**3):.2f} GB)")
+                    self.logger.info(f"  Would delete: environment:{tag} or model:{tag} ({size / (1024**3):.2f} GB)")
                 successful_deletions += 1
                 total_size_deleted += size
             else:
                 if repository:
-                    print(f"  Deleting: {repository}:{tag} ({size / (1024**3):.2f} GB)")
+                    self.logger.info(f"  Deleting: {repository}:{tag} ({size / (1024**3):.2f} GB)")
                     # Use standardized Skopeo client for deletion
                     if self.skopeo_client.delete_image(repository, tag):
-                        print(f"    ✅ Deleted successfully")
+                        self.logger.info(f"    ✅ Deleted successfully")
                         successful_deletions += 1
                         total_size_deleted += size
                         deleted_tags.append(f"{repository}:{tag}")
                     else:
-                        print(f"    ❌ Failed to delete")
+                        self.logger.warning(f"    ❌ Failed to delete")
                         failed_deletions += 1
                 else:
                     # Try both environment and model repositories
                     deleted = False
                     for repo_type in ['environment', 'model']:
                         try_repo = f"{self.repository}/{repo_type}"
-                        print(f"  Trying to delete: {try_repo}:{tag}")
+                        self.logger.info(f"  Trying to delete: {try_repo}:{tag}")
                         if self.skopeo_client.delete_image(try_repo, tag):
-                            print(f"    ✅ Deleted successfully from {try_repo}")
+                            self.logger.info(f"    ✅ Deleted successfully from {try_repo}")
                             successful_deletions += 1
                             total_size_deleted += size
                             deleted_tags.append(f"{try_repo}:{tag}")
                             deleted = True
                             break
                     if not deleted:
-                        print(f"    ❌ Failed to delete from both environment and model repositories")
+                        self.logger.warning(f"    ❌ Failed to delete from both environment and model repositories")
                         failed_deletions += 1
         
-        print(f"\n📊 Deletion Summary:")
-        print(f"   {'Would delete' if dry_run else 'Successfully deleted'}: {successful_deletions} images")
+        self.logger.info(f"\n📊 Deletion Summary:")
+        self.logger.info(f"   {'Would delete' if dry_run else 'Successfully deleted'}: {successful_deletions} images")
         if not dry_run:
-            print(f"   Failed deletions: {failed_deletions} images")
+            self.logger.info(f"   Failed deletions: {failed_deletions} images")
         
         # Show images that couldn't be deleted and why
         used_images_count = len(analysis.used_images)
         if used_images_count > 0:
-            print(f"\n🔒 Images in use (not deleted): {used_images_count}")
+            self.logger.info(f"\n🔒 Images in use (not deleted): {used_images_count}")
             # Show a few examples
             shown_count = 0
             for image_tag in list(analysis.used_images)[:5]:
@@ -1127,15 +1137,15 @@ class IntelligentImageDeleter:
                 
                 # Extract tag name for display
                 tag_name = image_tag.split(':', 1)[1] if ':' in image_tag else image_tag
-                print(f"   • {tag_name}: {usage_summary}")
+                self.logger.info(f"   • {tag_name}: {usage_summary}")
                 shown_count += 1
             if used_images_count > shown_count:
-                print(f"   ... and {used_images_count - shown_count} more (see report file for details)")
+                self.logger.info(f"   ... and {used_images_count - shown_count} more (see report file for details)")
         
         # Use total_size_saved from analysis for accurate freed space (accounts for shared layers)
         # This is calculated correctly using ImageAnalyzer
         summary_size = analysis.total_size_saved if analysis.total_size_saved > 0 else total_size_deleted
-        print(f"   {'Would save' if dry_run else 'Saved'}: {summary_size / (1024**3):.2f} GB")
+        self.logger.info(f"   {'Would save' if dry_run else 'Saved'}: {summary_size / (1024**3):.2f} GB")
         
         # Save results to JSON file
         results_file = self.save_deletion_results(
@@ -1146,7 +1156,7 @@ class IntelligentImageDeleter:
             total_size_deleted=total_size_deleted,
             dry_run=dry_run
         )
-        print(f"   Results saved to: {results_file}")
+        self.logger.info(f"   Results saved to: {results_file}")
         
         return deleted_tags
 
@@ -1162,7 +1172,7 @@ class IntelligentImageDeleter:
         if not deleted_tags:
             return
         
-        print(f"\n🗄️  Cleaning up Mongo references for {len(deleted_tags)} deleted tags...")
+        self.logger.info(f"\n🗄️  Cleaning up Mongo references for {len(deleted_tags)} deleted tags...")
         
         # Separate tags by image type
         environment_tags = []
@@ -1189,7 +1199,7 @@ class IntelligentImageDeleter:
             self._cleanup_collection(model_tags, "model_versions", script_path)
         
         if environment_tags or model_tags:
-            print("✅ Mongo references cleaned up successfully")
+            self.logger.info("✅ Mongo references cleaned up successfully")
     
     def _cleanup_collection(self, tags: List[str], collection_name: str, script_path: str) -> None:
         """Helper method to clean up a specific MongoDB collection.
@@ -1205,20 +1215,20 @@ class IntelligentImageDeleter:
                 for tag in tags:
                     f.write(f"{tag}\n")
             
-            print(f"  Cleaning {len(tags)} tags from {collection_name}...")
+            self.logger.info(f"  Cleaning {len(tags)} tags from {collection_name}...")
             cmd = [sys.executable, script_path, "delete", "--file", temp_file, "--collection", collection_name]
             
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True, check=True)
                 if result.stdout:
-                    print(f"    {result.stdout}")
+                    self.logger.info(f"    {result.stdout}")
             except subprocess.CalledProcessError as e:
                 self.logger.error(f"Failed to clean up {collection_name}: {e}")
                 if e.stdout:
-                    print(f"    stdout: {e.stdout}")
+                    self.logger.error(f"    stdout: {e.stdout}")
                 if e.stderr:
-                    print(f"    stderr: {e.stderr}")
-                print(f"    ⚠️  Cleanup of {collection_name} failed - you may need to clean up references manually")
+                    self.logger.error(f"    stderr: {e.stderr}")
+                self.logger.warning(f"    ⚠️  Cleanup of {collection_name} failed - you may need to clean up references manually")
         
         finally:
             # Clean up temporary file
@@ -1276,23 +1286,18 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def confirm_deletion():
-    """Ask for user confirmation before deleting images"""
-    print("\n" + "="*60)
-    print("⚠️  WARNING: You are about to DELETE Docker images from the registry!")
-    print("="*60)
-    print("This action cannot be undone.")
-    print("Make sure you have reviewed the analysis output above.")
-    print("="*60)
+def confirm_deletion(count: int = 0, item_type: str = "images"):
+    """Ask for user confirmation before deleting images
     
-    while True:
-        response = input("Are you sure you want to proceed with deletion? (yes/no): ").lower().strip()
-        if response in ['yes', 'y']:
-            return True
-        elif response in ['no', 'n']:
-            return False
-        else:
-            print("Please enter 'yes' or 'no'.")
+    Args:
+        count: Number of items to be deleted
+        item_type: Type of items being deleted
+    
+    Returns:
+        True if user confirmed, False otherwise
+    """
+    deleter = IntelligentImageDeleter()
+    return deleter.confirm_deletion(count, item_type)
 
 
 def main():
@@ -1306,8 +1311,9 @@ def main():
     
     # Validate backup arguments
     if args.backup and not s3_bucket:
-        print("❌ Error: --s3-bucket is required when --backup is set")
-        print("   You can provide it via --s3-bucket flag, S3_BUCKET env var, or config.yaml")
+        logger = get_logger(__name__)
+        logger.error("❌ Error: --s3-bucket is required when --backup is set")
+        logger.error("   You can provide it via --s3-bucket flag, S3_BUCKET env var, or config.yaml")
         sys.exit(1)
     
     # Parse ObjectIDs (typed) from file if provided
@@ -1319,9 +1325,11 @@ def main():
         model_ids = list(object_ids_map.get('model', [])) if object_ids_map else []
         model_ver_ids = list(object_ids_map.get('model_version', [])) if object_ids_map else []
         if not (env_ids or env_rev_ids or model_ids or model_ver_ids):
-            print(f"Error: No valid ObjectIDs found in file '{args.input}' (prefixes required: environment:, environmentRevision:, model:, modelVersion:)")
+            logger = get_logger(__name__)
+            logger.error(f"Error: No valid ObjectIDs found in file '{args.input}' (prefixes required: environment:, environmentRevision:, model:, modelVersion:)")
             sys.exit(1)
-        print(f"Filtering images by ObjectIDs from file '{args.input}': environment={len(env_ids)}, environmentRevision={len(env_rev_ids)}, model={len(model_ids)}, modelVersion={len(model_ver_ids)}")
+        logger = get_logger(__name__)
+        logger.info(f"Filtering images by ObjectIDs from file '{args.input}': environment={len(env_ids)}, environmentRevision={len(env_rev_ids)}, model={len(model_ids)}, modelVersion={len(model_ver_ids)}")
     
     # Get password from env var or config
     password = os.environ.get('REGISTRY_PASSWORD') or config_manager.get_registry_password()
@@ -1329,20 +1337,21 @@ def main():
     # Default to dry-run unless --apply is specified
     dry_run = not args.apply
     
+    logger = get_logger(__name__)
     if dry_run:
-        print("🔍 DRY RUN MODE (default)")
-        print("Images will NOT be deleted. Use --apply to actually delete images.")
+        logger.info("🔍 DRY RUN MODE (default)")
+        logger.info("Images will NOT be deleted. Use --apply to actually delete images.")
     else:
-        print("🗑️  DELETE MODE")
-        print("Images WILL be deleted!")
+        logger.info("🗑️  DELETE MODE")
+        logger.info("Images WILL be deleted!")
         
         # Require confirmation unless --force is used
         if not args.force:
             if not confirm_deletion():
-                print("Deletion cancelled by user.")
+                logger.info("Deletion cancelled by user.")
                 sys.exit(0)
         else:
-            print("⚠️  Force mode enabled - skipping confirmation prompt")
+            logger.warning("⚠️  Force mode enabled - skipping confirmation prompt")
     
     try:
         # Create deleter
@@ -1353,11 +1362,12 @@ def main():
         
         # Handle direct image deletion if image argument is provided
         if args.image:
-            print(f"🎯 Deleting specific image: {args.image}")
+            logger = get_logger(__name__)
+            logger.info(f"🎯 Deleting specific image: {args.image}")
             
             # Parse image format: repository/type:tag
             if ':' not in args.image:
-                print(f"❌ Error: Invalid image format. Expected format: repository/type:tag (e.g., dominodatalab/environment:abc-123)")
+                logger.error(f"❌ Error: Invalid image format. Expected format: repository/type:tag (e.g., dominodatalab/environment:abc-123)")
                 sys.exit(1)
             
             parts = args.image.split(':')
@@ -1379,16 +1389,17 @@ def main():
             try:
                 # Delete the image
                 deleted_tags = []
+                logger = get_logger(__name__)
                 if dry_run:
-                    print(f"  Would delete: {args.image}")
+                    logger.info(f"  Would delete: {args.image}")
                     deleted_tags = [args.image]
                 else:
-                    print(f"  Deleting: {args.image}")
+                    logger.info(f"  Deleting: {args.image}")
                     if deleter.skopeo_client.delete_image(repository, tag):
-                        print(f"    ✅ Deleted successfully")
+                        logger.info(f"    ✅ Deleted successfully")
                         deleted_tags = [args.image]
                     else:
-                        print(f"    ❌ Failed to delete")
+                        logger.warning(f"    ❌ Failed to delete")
                 
                 # Clean up Mongo references for deleted tags
                 if deleted_tags and not dry_run and not args.skip_cleanup_mongo:
@@ -1404,49 +1415,50 @@ def main():
         # Backup-only mode when --backup is provided without --apply
         if (not args.apply) and args.backup:
             # In backup-only mode, target the set of unused images from analysis
-            print("\n📦 BACKUP-ONLY MODE: Images will be backed up to S3 without deletion.")
+            logger = get_logger(__name__)
+            logger.info("\n📦 BACKUP-ONLY MODE: Images will be backed up to S3 without deletion.")
             if not args.force:
                 resp = input("Proceed with backup only (no deletions)? (yes/no): ").strip().lower()
                 if resp not in ['yes', 'y']:
-                    print("Operation cancelled by user")
+                    logger.info("Operation cancelled by user")
                     sys.exit(0)
 
             # Load reports for analysis (auto-generate if missing)
-            print("📊 Loading image analysis report...")
+            logger.info("📊 Loading image analysis report...")
             image_analysis = deleter.load_image_analysis_report(args.image_analysis)
             if not image_analysis:
-                print("⚠️  Image analysis report not found. Generating it now with image_data_analysis.py ...")
+                logger.warning("⚠️  Image analysis report not found. Generating it now with image_data_analysis.py ...")
                 analysis_script = os.path.join(os.path.dirname(__file__), "image_data_analysis.py")
                 try:
                     subprocess.run([sys.executable, analysis_script], check=True)
                     image_analysis = deleter.load_image_analysis_report(args.image_analysis)
                 except subprocess.CalledProcessError as e:
-                    print(f"❌ Failed to generate image analysis report: {e}")
+                    logger.error(f"❌ Failed to generate image analysis report: {e}")
                     sys.exit(1)
             
             if not image_analysis:
-                print("❌ Missing image analysis report even after regeneration. Aborting.")
+                logger.error("❌ Missing image analysis report even after regeneration. Aborting.")
                 sys.exit(1)
             
             # Load MongoDB usage reports (auto-generate if missing)
-            print("📊 Loading MongoDB usage reports (runs, workspaces, models)...")
+            logger.info("📊 Loading MongoDB usage reports (runs, workspaces, models)...")
             mongodb_reports = deleter.load_mongodb_usage_reports()
             if not any(mongodb_reports.values()):
-                print("⚠️  No MongoDB usage reports found. Generating them now with extract_metadata.py ...")
-                extract_script = os.path.join(os.path.dirname(__file__), "extract_metadata.py")
+                logger.warning("⚠️  No MongoDB usage reports found. Generating them now with extract_metadata.py ...")
+                extract_script = os.path.join(os.path.dirname(__file__), "..", "scripts", "extract_metadata.py")
                 try:
                     subprocess.run([sys.executable, extract_script, "--target", "all"], check=True)
                     mongodb_reports = deleter.load_mongodb_usage_reports()
                 except subprocess.CalledProcessError as e:
-                    print(f"❌ Failed to generate MongoDB usage reports: {e}")
+                    logger.error(f"❌ Failed to generate MongoDB usage reports: {e}")
                     sys.exit(1)
             
             if not any(mongodb_reports.values()):
-                print("❌ MongoDB usage reports are still missing or empty after regeneration. Aborting to avoid unsafe deletions.")
+                logger.error("❌ MongoDB usage reports are still missing or empty after regeneration. Aborting to avoid unsafe deletions.")
                 sys.exit(1)
             else:
                 total_records = sum(len(v) for v in mongodb_reports.values())
-                print(f"   ✓ Loaded {total_records} MongoDB records")
+                logger.info(f"   ✓ Loaded {total_records} MongoDB records")
             
             merged_ids = None
             if object_ids_map:
@@ -1456,7 +1468,7 @@ def main():
                 merged.update(object_ids_map.get('model', []))
                 merged.update(object_ids_map.get('model_version', []))
                 merged_ids = sorted(merged)
-                print(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
+                logger.info(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
             analysis = deleter.analyze_image_usage(image_analysis, merged_ids, object_ids_map, mongodb_reports, recent_days=args.days)
 
             # Prepare tags to backup
@@ -1470,7 +1482,7 @@ def main():
                     tag = image_tag
                 tags_to_backup.append(tag)
             if not tags_to_backup:
-                print("No unused images found to back up.")
+                logger.info("No unused images found to back up.")
                 sys.exit(0)
 
             full_repo = f"{deleter.registry_url}/{deleter.repository}"
@@ -1490,56 +1502,43 @@ def main():
                     tmpdir=None,
                     failed_tags_file=None
                 )
-                print(f"✅ Successfully backed up {len(tags_to_backup)} images to S3")
+                logger.info(f"✅ Successfully backed up {len(tags_to_backup)} images to S3")
             except Exception as e:
-                print(f"❌ Backup failed: {e}")
+                logger.error(f"❌ Backup failed: {e}")
                 sys.exit(1)
-            print("\n✅ Backup-only operation completed successfully!")
+            logger.info("\n✅ Backup-only operation completed successfully!")
             return
 
         if not args.skip_analysis:
+            logger = get_logger(__name__)
             # Load analysis reports (auto-generate if missing)
-            print("📊 Loading image analysis report...")
+            logger.info("📊 Loading image analysis report...")
             image_analysis = deleter.load_image_analysis_report(args.image_analysis)
             
+            # Ensure reports are fresh (auto-generate if missing or stale)
             if not image_analysis:
-                print("⚠️  Image analysis report not found. Generating it now with image_data_analysis.py ...")
-                analysis_script = os.path.join(os.path.dirname(__file__), "image_data_analysis.py")
-                try:
-                    subprocess.run([sys.executable, analysis_script], check=True)
-                    image_analysis = deleter.load_image_analysis_report(args.image_analysis)
-                except subprocess.CalledProcessError as e:
-                    print(f"❌ Failed to generate image analysis report: {e}")
-                    sys.exit(1)
+                logger.info("📊 Image analysis report not found or stale. Generating now...")
+                ensure_image_analysis_reports()
+                image_analysis = deleter.load_image_analysis_report(args.image_analysis)
             
             if not image_analysis:
-                print("❌ Missing image analysis report even after regeneration. Aborting.")
+                logger.error("❌ Missing image analysis report even after regeneration. Aborting.")
                 sys.exit(1)
             
-            # Load MongoDB usage reports (runs, workspaces, models, auto-generate if missing)
-            print("📊 Loading MongoDB usage reports (runs, workspaces, models)...")
+            # Load MongoDB usage reports (auto-generate if missing or stale)
+            logger.info("📊 Loading MongoDB usage reports (runs, workspaces, models)...")
+            ensure_mongodb_reports()
             mongodb_reports = deleter.load_mongodb_usage_reports()
             
-            # If MongoDB reports are missing, generate them via extract_metadata.py
             if not any(mongodb_reports.values()):
-                print("⚠️  No MongoDB usage reports found. Generating them now with extract_metadata.py ...")
-                extract_script = os.path.join(os.path.dirname(__file__), "extract_metadata.py")
-                try:
-                    subprocess.run([sys.executable, extract_script, "--target", "all"], check=True)
-                    mongodb_reports = deleter.load_mongodb_usage_reports()
-                except subprocess.CalledProcessError as e:
-                    print(f"❌ Failed to generate MongoDB usage reports: {e}")
-                    sys.exit(1)
-            
-            if not any(mongodb_reports.values()):
-                print("❌ MongoDB usage reports are still missing or empty after regeneration. Aborting to avoid unsafe deletions.")
+                logger.error("❌ MongoDB usage reports are still missing or empty after regeneration. Aborting to avoid unsafe deletions.")
                 sys.exit(1)
             else:
                 total_records = sum(len(v) for v in mongodb_reports.values())
-                print(f"   ✓ Loaded {total_records} MongoDB records (runs: {len(mongodb_reports['runs'])}, workspaces: {len(mongodb_reports['workspaces'])}, models: {len(mongodb_reports['models'])})")
+                logger.info(f"   ✓ Loaded {total_records} MongoDB records (runs: {len(mongodb_reports['runs'])}, workspaces: {len(mongodb_reports['workspaces'])}, models: {len(mongodb_reports['models'])})")
             
             # Analyze image usage
-            print("🔍 Analyzing image usage patterns...")
+            logger.info("🔍 Analyzing image usage patterns...")
             # For deletion, merge all typed IDs to a single set since we evaluate tags after registry prefix removal
             merged_ids = None
             if object_ids_map:
@@ -1549,7 +1548,7 @@ def main():
                 merged.update(object_ids_map.get('model', []))
                 merged.update(object_ids_map.get('model_version', []))
                 merged_ids = sorted(merged)
-                print(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
+                logger.info(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
             analysis = deleter.analyze_image_usage(image_analysis, merged_ids, object_ids_map, mongodb_reports, recent_days=args.days)
             
             # Generate deletion report
@@ -1583,24 +1582,30 @@ def main():
             
         else:
             # Use traditional environments file method
-            print("📋 Using traditional environments file method...")
+            logger = get_logger(__name__)
+            logger.info("📋 Using traditional environments file method...")
             # ... existing environments file logic would go here
-            print("Traditional method not yet implemented. Use workload analysis instead.")
+            logger.warning("Traditional method not yet implemented. Use workload analysis instead.")
         
+        logger = get_logger(__name__)
         if dry_run:
-            print("\n✅ DRY RUN COMPLETED")
-            print("No images were deleted.")
-            print("To actually delete images, run with --apply flag:")
-            print("  python delete_image.py --apply")
+            logger.info("\n✅ DRY RUN COMPLETED")
+            logger.info("No images were deleted.")
+            logger.info("To actually delete images, run with --apply flag:")
+            logger.info("  python delete_image.py --apply")
         else:
-            print("\n✅ DELETION COMPLETED")
-            print("Images have been deleted from the registry.")
+            logger.info("\n✅ DELETION COMPLETED")
+            logger.info("Images have been deleted from the registry.")
         
     except KeyboardInterrupt:
-        print("\n⚠️  Deletion interrupted by user")
+        logger = get_logger(__name__)
+        logger.warning("\n⚠️  Deletion interrupted by user")
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ Deletion failed: {e}")
+        logger = get_logger(__name__)
+        logger.error(f"\n❌ Deletion failed: {e}")
+        from utils.logging_utils import log_exception
+        log_exception(logger, "Error in main", exc_info=e)
         sys.exit(1)
 
 

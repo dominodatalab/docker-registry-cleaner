@@ -32,12 +32,18 @@ from bson import ObjectId
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
-from config_manager import config_manager, SkopeoClient
-from logging_utils import setup_logging, get_logger
-from mongo_utils import get_mongo_client
-from report_utils import save_json
+# Add parent directory to path for imports
+_parent_dir = Path(__file__).parent.parent.absolute()
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
+from utils.config_manager import SkopeoClient, config_manager
+from utils.logging_utils import get_logger, setup_logging
+from utils.mongo_utils import get_mongo_client
+from utils.report_utils import save_json
 
 logger = get_logger(__name__)
 

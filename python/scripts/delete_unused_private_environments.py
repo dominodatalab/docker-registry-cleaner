@@ -47,20 +47,26 @@ import os
 import requests
 import sys
 
+from bson import ObjectId
 from dataclasses import dataclass
 from datetime import datetime
+from keycloak import KeycloakAdmin
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from keycloak import KeycloakAdmin
-from bson import ObjectId
+# Add parent directory to path for imports
+_parent_dir = Path(__file__).parent.parent.absolute()
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
 
-from backup_restore import process_backup
-from config_manager import config_manager, SkopeoClient, ConfigManager
-from image_data_analysis import ImageAnalyzer
-from logging_utils import setup_logging, get_logger
-from mongo_utils import get_mongo_client
-from report_utils import save_json
-from image_usage import ImageUsageService
+from scripts.backup_restore import process_backup
+from utils.image_data_analysis import ImageAnalyzer
+from utils.config_manager import ConfigManager, SkopeoClient, config_manager
+from utils.deletion_base import BaseDeletionScript
+from utils.image_usage import ImageUsageService
+from utils.logging_utils import get_logger, setup_logging
+from utils.mongo_utils import get_mongo_client
+from utils.report_utils import ensure_mongodb_reports, get_timestamp_suffix, save_json
 
 # Disable SSL warnings for Keycloak
 requests.packages.urllib3.disable_warnings()
@@ -81,20 +87,17 @@ class DeactivatedUserEnvInfo:
     size_bytes: int = 0
 
 
-class DeactivatedUserEnvFinder:
+class DeactivatedUserEnvFinder(BaseDeletionScript):
     """Main class for finding and managing private environments owned by deactivated users"""
     
     def __init__(self, registry_url: str, repository: str,
-                 enable_docker_deletion: bool = False, registry_statefulset: str = None, recent_days: Optional[int] = None):
-        self.registry_url = registry_url
-        self.repository = repository
-        self.skopeo_client = SkopeoClient(
-            config_manager, 
-            use_pod=config_manager.get_skopeo_use_pod(),
+                 enable_docker_deletion: bool = False, registry_statefulset: Optional[str] = None, recent_days: Optional[int] = None):
+        super().__init__(
+            registry_url=registry_url,
+            repository=repository,
             enable_docker_deletion=enable_docker_deletion,
             registry_statefulset=registry_statefulset
         )
-        self.logger = get_logger(__name__)
         self.recent_days = recent_days
         
         # Image types to scan (only environment images contain environment ObjectIDs)
@@ -399,14 +402,15 @@ class DeactivatedUserEnvFinder:
             
         except Exception as e:
             self.logger.error(f"Error calculating freed space: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            from utils.logging_utils import log_exception
+            log_exception(self.logger, "Error calculating freed space", exc_info=e)
             return 0
     
     def delete_deactivated_user_envs(self, deactivated_user_tags: List[DeactivatedUserEnvInfo],
                                    environment_ids: List[str], revision_ids: List[str], backup: bool = False, 
-                                   s3_bucket: str = None, region: str = 'us-west-2',
-                                   mongo_cleanup: bool = False) -> Dict[str, int]:
+                                   s3_bucket: Optional[str] = None, region: str = 'us-west-2',
+                                   mongo_cleanup: bool = False, resume: bool = False,
+                                   operation_id: Optional[str] = None) -> Dict[str, int]:
         """Delete Docker images and clean up MongoDB records for deactivated user environments
         
         Args:
@@ -461,10 +465,9 @@ class DeactivatedUserEnvFinder:
             
             # Enable deletion in registry if it's in the same Kubernetes cluster
             registry_in_cluster = self.skopeo_client.is_registry_in_cluster()
+            registry_enabled = False
             if registry_in_cluster:
-                self.logger.info("Registry is in-cluster, enabling deletion...")
-                if not self.skopeo_client.enable_registry_deletion():
-                    self.logger.warning("Failed to enable registry deletion - continuing anyway")
+                registry_enabled = self.enable_registry_deletion()
             
             try:
                 # Deduplicate tags before deletion (a tag may appear multiple times if it contains multiple ObjectIDs)
@@ -489,6 +492,8 @@ class DeactivatedUserEnvFinder:
                 successfully_deleted_object_ids = set()
                 
                 # Check which tags are in use before attempting deletion
+                # Ensure MongoDB reports are fresh
+                ensure_mongodb_reports()
                 service = ImageUsageService()
                 tags_to_check = [tag_info.tag for tag_info in deactivated_user_tags]
                 in_use_tags, usage_info = service.check_tags_in_use(tags_to_check, recent_days=self.recent_days)
@@ -505,7 +510,39 @@ class DeactivatedUserEnvFinder:
                             'usage': usage
                         }
                 
-                for (image_type, tag), data in unique_tags.items():
+                # Check for existing checkpoint if resuming
+                tag_identifiers = [f"{img_type}:{tag}" for (img_type, tag), _ in unique_tags.items()]
+                if resume:
+                    remaining_tags = self.checkpoint_manager.get_remaining_items(
+                        'delete_unused_private_environments',
+                        tag_identifiers,
+                        operation_id
+                    )
+                    if remaining_tags:
+                        self.logger.info(f"📋 Resuming from checkpoint: {len(remaining_tags)} items remaining out of {len(tag_identifiers)} total")
+                        # Filter unique_tags to only include remaining items
+                        remaining_set = set(remaining_tags)
+                        unique_tags = {
+                            k: v for k, v in unique_tags.items()
+                            if f"{k[0]}:{k[1]}" in remaining_set
+                        }
+                    else:
+                        self.logger.info("📋 Checkpoint found but all items are already completed")
+                        return deletion_results
+                else:
+                    # Create initial checkpoint
+                    self.checkpoint_manager.save_checkpoint(
+                        'delete_unused_private_environments',
+                        [],
+                        len(tag_identifiers),
+                        operation_id=operation_id
+                    )
+                
+                completed_items = []
+                failed_items = []
+                skipped_items = []
+                
+                for idx, ((image_type, tag), data) in enumerate(unique_tags.items()):
                     tag_info = data['tag_info']
                     associated_object_ids = data['object_ids']
                     
@@ -515,6 +552,7 @@ class DeactivatedUserEnvFinder:
                         usage_summary = service.generate_usage_summary(usage)
                         self.logger.warning(f"  Skipping {tag_info.full_image} (user: {tag_info.user_email}, in use: {usage_summary})")
                         failed_deletions.append(tag_info.full_image)
+                        skipped_items.append(tag_info.full_image)
                         failed_deletions_with_reason[tag_info.full_image] = {
                             'reason': 'in_use',
                             'usage_summary': usage_summary
@@ -531,22 +569,46 @@ class DeactivatedUserEnvFinder:
                             deleted_count += 1
                             # Add all ObjectIDs associated with this tag
                             successfully_deleted_object_ids.update(associated_object_ids)
+                            completed_items.append(tag_info.full_image)
                             if len(associated_object_ids) > 1:
                                 self.logger.info(f"    ✓ Deleted successfully (contains {len(associated_object_ids)} deactivated user ObjectIDs)")
                             else:
                                 self.logger.info(f"    ✓ Deleted successfully")
                         else:
                             failed_deletions.append(tag_info.full_image)
+                            failed_items.append(tag_info.full_image)
                             failed_deletions_with_reason[tag_info.full_image] = {
                                 'reason': 'deletion_failed'
                             }
                             self.logger.warning(f"    ✗ Failed to delete - MongoDB record will NOT be cleaned")
                     except Exception as e:
                         failed_deletions.append(tag_info.full_image)
+                        failed_items.append(tag_info.full_image)
                         failed_deletions_with_reason[tag_info.full_image] = {
                             'reason': 'deletion_failed'
                         }
                         self.logger.error(f"    ✗ Error deleting: {e} - MongoDB record will NOT be cleaned")
+                    
+                    # Save checkpoint periodically (every 10 items)
+                    if (idx + 1) % 10 == 0:
+                        self.checkpoint_manager.save_checkpoint(
+                            'delete_unused_private_environments',
+                            completed_items,
+                            len(tag_identifiers),
+                            failed_items=failed_items,
+                            skipped_items=skipped_items,
+                            operation_id=operation_id
+                        )
+                
+                # Final checkpoint save
+                self.checkpoint_manager.save_checkpoint(
+                    'delete_unused_private_environments',
+                    completed_items,
+                    len(tag_identifiers),
+                    failed_items=failed_items,
+                    skipped_items=skipped_items,
+                    operation_id=operation_id
+                )
             
                 deletion_results['docker_images_deleted'] = deleted_count
                 
@@ -647,13 +709,24 @@ class DeactivatedUserEnvFinder:
                 
             finally:
                 # Always disable deletion in registry if it was enabled
-                if registry_in_cluster:
-                    self.logger.info("Disabling deletion in registry...")
-                    if not self.skopeo_client.disable_registry_deletion():
-                        self.logger.warning("Failed to disable registry deletion")
-            
+                if registry_enabled:
+                    self.disable_registry_deletion()
+                
+                # Clean up checkpoint if operation completed successfully
+                total_processed = deletion_results.get('docker_images_deleted', 0) + len(failed_deletions)
+                if total_processed > 0:
+                    # Check if all items were processed
+                    checkpoint = self.checkpoint_manager.load_checkpoint('delete_unused_private_environments', operation_id)
+                    if checkpoint:
+                        total_completed = len(checkpoint.completed_items) + len(checkpoint.failed_items) + len(checkpoint.skipped_items)
+                        if total_completed >= checkpoint.total_items:
+                            # Operation completed - delete checkpoint
+                            self.checkpoint_manager.delete_checkpoint('delete_unused_private_environments', operation_id)
+                            self.logger.info("✓ Checkpoint cleaned up (operation completed)")
+        
         except Exception as e:
             self.logger.error(f"Error deleting deactivated user environments: {e}")
+            self.logger.info("💾 Progress saved to checkpoint - use --resume to continue")
             raise
         
         return deletion_results
@@ -862,6 +935,17 @@ Environment Variables Required:
         action='store_true',
         help='Also clean up MongoDB records after Docker image deletion (default: off)'
     )
+    
+    parser.add_argument(
+        '--resume',
+        action='store_true',
+        help='Resume from previous checkpoint if operation was interrupted'
+    )
+    
+    parser.add_argument(
+        '--operation-id',
+        help='Unique identifier for this operation run (used for checkpoint management)'
+    )
     parser.add_argument(
         '--unused-since-days',
         dest='days',
@@ -1029,34 +1113,24 @@ def main():
                 sys.exit(0)
             
             # Confirmation prompt (unless --force)
-            if not args.force:
-                print("\n" + "="*60)
-                print("⚠️  WARNING: You are about to DELETE Docker images from the registry!")
-                print("="*60)
-                print(f"This will delete {len(deactivated_user_tags)} tags for private environments owned by deactivated users.")
-                print("This action cannot be undone.")
-                print("Make sure you have reviewed the analysis output above.")
-                print("="*60)
-                
-                while True:
-                    response = input("Are you sure you want to proceed with deletion? (yes/no): ").lower().strip()
-                    if response in ['yes', 'y']:
-                        break
-                    elif response in ['no', 'n']:
-                        logger.info("Operation cancelled by user")
-                        sys.exit(0)
-                    else:
-                        print("Please enter 'yes' or 'no'.")
+            if not finder.confirm_deletion(len(deactivated_user_tags), "tags for private environments owned by deactivated users", force=args.force):
+                logger.info("Operation cancelled by user")
+                sys.exit(0)
             
             logger.info(f"\n🗑️  Deleting {len(deactivated_user_tags)} tags...")
+            # Generate operation ID if not provided
+            operation_id = args.operation_id or get_timestamp_suffix()
+            
             deletion_results = finder.delete_deactivated_user_envs(
-                deactivated_user_tags, 
-                environment_ids, 
+                deactivated_user_tags,
+                environment_ids,
                 revision_ids,
                 backup=args.backup,
                 s3_bucket=s3_bucket,
                 region=s3_region,
                 mongo_cleanup=args.mongo_cleanup,
+                resume=args.resume,
+                operation_id=operation_id,
             )
             
             # Print deletion summary
@@ -1115,8 +1189,8 @@ def main():
         sys.exit(1)
     except Exception as e:
         logger.error(f"\n❌ Operation failed: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        from logging_utils import log_exception
+        log_exception(logger, "Error in main", exc_info=e)
         sys.exit(1)
 
 

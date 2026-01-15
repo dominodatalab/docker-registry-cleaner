@@ -50,6 +50,10 @@ config:
     region: "us-west-2"
   skopeo:
     use_pod: false
+    rate_limit:
+      enabled: true  # Enable rate limiting for registry operations
+      requests_per_second: 10.0  # Maximum requests per second (adjust based on registry capacity)
+      burst_size: 20  # Allow burst of up to N requests (helps with parallel operations)
   reports:
     archived_tags: "archived-tags.json"
     deletion_analysis: "deletion-analysis.json"
