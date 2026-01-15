@@ -1289,14 +1289,23 @@ def main():
             
             # Confirmation prompt (unless --force)
             if not args.force:
-                logger.warning(f"\n⚠️  WARNING: About to delete {len(unused_tags)} unused environment tags!")
-                logger.warning("This will delete Docker images and clean up MongoDB records.")
-                logger.warning("This action cannot be undone.")
+                print("\n" + "="*60)
+                print("⚠️  WARNING: You are about to DELETE Docker images from the registry!")
+                print("="*60)
+                print(f"This will delete {len(unused_tags)} unused environment tags.")
+                print("This action cannot be undone.")
+                print("Make sure you have reviewed the analysis output above.")
+                print("="*60)
                 
-                response = input("\nDo you want to continue? (yes/no): ").strip().lower()
-                if response not in ['yes', 'y']:
-                    logger.info("Operation cancelled by user")
-                    sys.exit(0)
+                while True:
+                    response = input("Are you sure you want to proceed with deletion? (yes/no): ").lower().strip()
+                    if response in ['yes', 'y']:
+                        break
+                    elif response in ['no', 'n']:
+                        logger.info("Operation cancelled by user")
+                        sys.exit(0)
+                    else:
+                        print("Please enter 'yes' or 'no'.")
             
             logger.info(f"\n🗑️  Deleting {len(unused_tags)} unused environment tags...")
             deletion_results = finder.delete_unused_tags(

@@ -7,9 +7,8 @@ from the registry while preserving all actively used ones.
 
 Configuration:
   Registry password is sourced from (in priority order):
-  1. --password command-line flag (highest priority)
-  2. REGISTRY_PASSWORD environment variable
-  3. config.yaml registry.password field (lowest priority)
+  1. REGISTRY_PASSWORD environment variable
+  2. config.yaml registry.password field
 
 Usage examples:
   # Delete a specific image (dry-run)
@@ -27,8 +26,6 @@ Usage examples:
   # Force deletion without confirmation
   python delete_image.py --apply --force
 
-  # Provide Docker Registry password manually (overrides env and config)
-  python delete_image.py --apply --password mypassword
 
   # Back up images to S3 before deletion
   python delete_image.py --apply --backup
@@ -37,10 +34,10 @@ Usage examples:
   python delete_image.py --apply --backup --s3-bucket my-backup-bucket --region us-east-1
 
   # Optional: Filter by ObjectIDs from file (requires prefixes: environment:, environmentRevision:, model:, or modelVersion:)
-  python delete_image.py --apply --file object_ids.txt
+  python delete_image.py --apply --input object_ids.txt
 
   # Optional: Custom report paths
-  python delete_image.py --image-analysis reports/analysis.json
+  python delete_image.py --image-analysis reports/analysis.json --output reports/deletion-analysis.json
 
 # Optional: Clean up MongoDB references after deletion (disabled by default)
 python delete_image.py --apply --mongo-cleanup
@@ -1235,13 +1232,12 @@ def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="Intelligent Docker image deletion with workload analysis")
     parser.add_argument("image", nargs="?", help="Specific image to delete (format: repository/type:tag, e.g., dominodatalab/environment:abc-123)")
-    parser.add_argument("--password", help="Password for registry access (optional; defaults to REGISTRY_PASSWORD env var or config.yaml)")
     parser.add_argument("--apply", action="store_true", help="Actually apply changes and delete images (default is dry-run)")
     parser.add_argument("--force", action="store_true", help="Skip confirmation prompt when using --apply")
     parser.add_argument("--image-analysis", default=config_manager.get_image_analysis_path(), help="Path to image analysis report")
-    parser.add_argument("--output-report", default=config_manager.get_deletion_analysis_path(), help="Path for deletion analysis report")
+    parser.add_argument("--output", default=config_manager.get_deletion_analysis_path(), help="Path for deletion analysis report")
     parser.add_argument("--skip-analysis", action="store_true", help="Skip workload analysis and use traditional environments file")
-    parser.add_argument("--file", help="File containing ObjectIDs (one per line) to filter images (supports prefixes: environment:, environmentRevision:, model:, modelVersion:, or bare IDs)")
+    parser.add_argument("--input", help="File containing ObjectIDs (one per line) to filter images, or pre-generated report file (supports prefixes: environment:, environmentRevision:, model:, modelVersion:, or bare IDs)")
     parser.add_argument("--mongo-cleanup", action="store_true", help="Also clean up MongoDB records after deleting images (disabled by default)")
     parser.add_argument(
         '--backup',
@@ -1316,19 +1312,19 @@ def main():
     
     # Parse ObjectIDs (typed) from file if provided
     object_ids_map = None
-    if args.file:
-        object_ids_map = read_typed_object_ids_from_file(args.file)
+    if args.input:
+        object_ids_map = read_typed_object_ids_from_file(args.input)
         env_ids = list(object_ids_map.get('environment', [])) if object_ids_map else []
         env_rev_ids = list(object_ids_map.get('environment_revision', [])) if object_ids_map else []
         model_ids = list(object_ids_map.get('model', [])) if object_ids_map else []
         model_ver_ids = list(object_ids_map.get('model_version', [])) if object_ids_map else []
         if not (env_ids or env_rev_ids or model_ids or model_ver_ids):
-            print(f"Error: No valid ObjectIDs found in file '{args.file}' (prefixes required: environment:, environmentRevision:, model:, modelVersion:)")
+            print(f"Error: No valid ObjectIDs found in file '{args.input}' (prefixes required: environment:, environmentRevision:, model:, modelVersion:)")
             sys.exit(1)
-        print(f"Filtering images by ObjectIDs from file '{args.file}': environment={len(env_ids)}, environmentRevision={len(env_rev_ids)}, model={len(model_ids)}, modelVersion={len(model_ver_ids)}")
+        print(f"Filtering images by ObjectIDs from file '{args.input}': environment={len(env_ids)}, environmentRevision={len(env_rev_ids)}, model={len(model_ids)}, modelVersion={len(model_ver_ids)}")
     
-    # Get password with priority: CLI arg > env var > config
-    password = args.password or os.environ.get('REGISTRY_PASSWORD') or config_manager.get_registry_password()
+    # Get password from env var or config
+    password = os.environ.get('REGISTRY_PASSWORD') or config_manager.get_registry_password()
     
     # Default to dry-run unless --apply is specified
     dry_run = not args.apply
@@ -1557,7 +1553,7 @@ def main():
             analysis = deleter.analyze_image_usage(image_analysis, merged_ids, object_ids_map, mongodb_reports, recent_days=args.days)
             
             # Generate deletion report
-            deleter.generate_deletion_report(analysis, args.output_report)
+            deleter.generate_deletion_report(analysis, args.output)
             
             # Enable deletion in registry (if running in Kubernetes)
             registry_enabled = False

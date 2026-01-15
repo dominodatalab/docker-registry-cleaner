@@ -70,7 +70,7 @@ All Docker deletion scripts share a standardized interface with these common opt
 
 ```bash
 # Analyze registry contents
-python python/main.py image_data_analysis [--file OBJECTIDS]
+python python/main.py image_data_analysis [--input OBJECTIDS]
 
 # Generate usage reports
 python python/main.py reports [--generate-reports]
@@ -187,7 +187,7 @@ python python/main.py delete_image environment:abc-123 --apply
 python python/main.py delete_image --apply --backup --s3-bucket my-bucket
 
 # Filter by ObjectIDs from file (prefixes required; see ObjectID Filtering)
-python python/main.py delete_image --file environments --apply
+python python/main.py delete_image --input environments --apply
 
 # Clean up MongoDB references (opt-in)
 python python/main.py delete_image --apply --mongo-cleanup
@@ -217,8 +217,8 @@ modelVersion:627d94043035a63be6140e94
 EOF
 
 # Use with any analysis or deletion command
-python python/main.py image_data_analysis --file environments
-python python/main.py delete_image --file environments --apply
+python python/main.py image_data_analysis --input environments
+python python/main.py delete_image --input environments --apply
 ```
 
 ## 📦 Backup and Restore

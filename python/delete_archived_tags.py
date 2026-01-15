@@ -81,10 +81,10 @@ class ArchivedTagsFinder:
     """Main class for finding and managing archived tags"""
     
     def __init__(self, registry_url: str, repository: str, process_environments: bool = False, process_models: bool = False,
-                 enable_docker_deletion: bool = False, registry_statefulset: str = None, max_workers: int = 4, recent_days: Optional[int] = None):
+                 enable_docker_deletion: bool = False, registry_statefulset: str = None, recent_days: Optional[int] = None):
         self.registry_url = registry_url
         self.repository = repository
-        self.max_workers = max_workers
+        self.max_workers = config_manager.get_max_workers()
         self.recent_days = recent_days
         self.skopeo_client = SkopeoClient(
             config_manager, 
@@ -1104,12 +1104,6 @@ Examples:
     )
     
     parser.add_argument(
-        '--max-workers',
-        type=int,
-        help='Maximum number of parallel workers for tag inspection (default: from config)'
-    )
-    
-    parser.add_argument(
         '--mongo-cleanup',
         action='store_true',
         help='Also clean up MongoDB records after Docker image deletion (default: off)'
@@ -1153,7 +1147,6 @@ def main():
     registry_url = args.registry_url or config_manager.get_registry_url()
     repository = args.repository or config_manager.get_repository()
     output_file = args.output or config_manager.get_archived_tags_report_path()
-    max_workers = args.max_workers or config_manager.get_max_workers()
     
     try:
         # Determine operation mode
@@ -1178,7 +1171,6 @@ def main():
         logger.info("=" * 60)
         logger.info(f"Registry URL: {registry_url}")
         logger.info(f"Repository: {repository}")
-        logger.info(f"Max Workers: {max_workers}")
         
         if use_input_file:
             logger.info(f"Input file: {args.input}")
@@ -1193,7 +1185,6 @@ def main():
             process_models=args.model,
             enable_docker_deletion=args.enable_docker_deletion,
             registry_statefulset=args.registry_statefulset,
-            max_workers=max_workers,
             recent_days=args.days
         )
         
@@ -1330,14 +1321,23 @@ def main():
             
             # Confirmation prompt (unless --force)
             if not args.force:
-                logger.warning(f"\n⚠️  WARNING: About to delete {len(archived_tags)} archived {processing_str} tags!")
-                logger.warning("This will delete Docker images and clean up MongoDB records.")
-                logger.warning("This action cannot be undone.")
+                print("\n" + "="*60)
+                print("⚠️  WARNING: You are about to DELETE Docker images from the registry!")
+                print("="*60)
+                print(f"This will delete {len(archived_tags)} archived {processing_str} tags.")
+                print("This action cannot be undone.")
+                print("Make sure you have reviewed the analysis output above.")
+                print("="*60)
                 
-                response = input("\nDo you want to continue? (yes/no): ").strip().lower()
-                if response not in ['yes', 'y']:
-                    logger.info("Operation cancelled by user")
-                    sys.exit(0)
+                while True:
+                    response = input("Are you sure you want to proceed with deletion? (yes/no): ").lower().strip()
+                    if response in ['yes', 'y']:
+                        break
+                    elif response in ['no', 'n']:
+                        logger.info("Operation cancelled by user")
+                        sys.exit(0)
+                    else:
+                        print("Please enter 'yes' or 'no'.")
             
             logger.info(f"\n🗑️  Deleting {len(archived_tags)} archived {processing_str} tags...")
             deletion_results = finder.delete_archived_tags(
