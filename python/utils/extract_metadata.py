@@ -216,9 +216,13 @@ def runs_env_usage_pipeline() -> List[dict]:
 			"environment_docker_repo": {"$first": "$environment_docker_repo"},
 			"environment_docker_tag": {"$first": "$environment_docker_tag"},
 			"last_used": {"$max": "$completed"},
-			# Preserve a representative started/completed if needed for compatibility (kept as most recent when sorting next)
+			# Preserve a representative started/completed for compatibility
 			"any_started": {"$max": "$started"},
-			"any_completed": {"$max": "$completed"}
+			"any_completed": {"$max": "$completed"},
+			# Preserve representative identifiers for reporting
+			"run_id": {"$first": "$run_id"},
+			"project_id": {"$first": "$project_id"},
+			"status": {"$first": "$status"}
 		}},
 		# Final projection, keep both last_used and a started field for compatibility
 		{"$project": {
@@ -229,7 +233,10 @@ def runs_env_usage_pipeline() -> List[dict]:
 			"environment_docker_tag": 1,
 			"last_used": 1,
 			"started": "$any_started",
-			"completed": "$any_completed"
+			"completed": "$any_completed",
+			"run_id": 1,
+			"project_id": 1,
+			"status": 1
 		}}
 	]
 

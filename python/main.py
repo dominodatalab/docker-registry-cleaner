@@ -209,6 +209,12 @@ Examples:
 
   # Filter by ObjectIDs from file (first column contains ObjectIDs)
   python main.py delete_image --input environments
+  
+  # Only consider images as unused if not used in last 30 days
+  python main.py delete_image --unused-since-days 30
+  
+  # Delete unused images (only if not used in last 30 days)
+  python main.py delete_image --unused-since-days 30 --apply
 
   # Mongo cleanup
   python main.py mongo_cleanup --file environments
@@ -235,6 +241,9 @@ Examples:
   # Delete archived model tags
   python main.py delete_archived_tags --model --apply
   
+  # Only consider tags as in-use if used in last 30 days
+  python main.py delete_archived_tags --environment --unused-since-days 30 --apply
+  
   # Delete both with backup to S3
   python main.py delete_archived_tags --environment --model --apply --backup --s3-bucket my-bucket
 
@@ -258,6 +267,9 @@ Examples:
 
   # Delete from pre-generated file
    python main.py delete_unused_private_environments --apply --input deactivated-user-envs.json
+  
+  # Only consider tags as in-use if used in last 30 days
+   python main.py delete_unused_private_environments --unused-since-days 30 --apply
 
   # Find unused environments (auto-generates required reports if missing)
    python main.py delete_unused_environments
@@ -356,6 +368,20 @@ Safety Notes:
     )
     
     parser.add_argument(
+        '--unused-since-days',
+        dest='unused_since_days',
+        type=int,
+        metavar='N',
+        help='Only consider images/environments as "in-use" if they were used in a workload within the last N days. '
+             'If the last usage was more than N days ago, they will be considered unused and eligible for deletion/archiving. '
+             'If omitted, any historical usage marks them as in-use. '
+             'Supported by: delete_image, delete_archived_tags, delete_unused_environments, '
+             'delete_unused_private_environments, archive_unused_environments. '
+             'This filters based on the last_used, completed, or started timestamp from runs, '
+             'and workspace_last_change from workspaces.'
+    )
+    
+    parser.add_argument(
         '--config', 
         action='store_true',
         help="Show current configuration and exit"
@@ -436,6 +462,20 @@ Safety Notes:
     
     # Determine if we're in dry-run mode for delete_image, and propagate flags
     dry_run = True  # Default to dry-run for safety
+    
+    # Forward --unused-since-days to scripts that support it
+    scripts_with_unused_since_days = [
+        "delete_image",
+        "delete_archived_tags",
+        "delete_unused_environments",
+        "delete_unused_private_environments",
+        "archive_unused_environments"
+    ]
+    
+    if args.script_keyword in scripts_with_unused_since_days:
+        if args.unused_since_days is not None and '--unused-since-days' not in args.additional_args:
+            args.additional_args.extend(['--unused-since-days', str(args.unused_since_days)])
+    
     if args.script_keyword == "delete_image":
         # Forward top-level flags to the delete_image.py script
         if args.apply and '--apply' not in args.additional_args:

@@ -1189,7 +1189,7 @@ def main():
         sys.exit(1)
     except Exception as e:
         logger.error(f"\n❌ Operation failed: {e}")
-        from logging_utils import log_exception
+        from utils.logging_utils import log_exception
         log_exception(logger, "Error in main", exc_info=e)
         sys.exit(1)
 

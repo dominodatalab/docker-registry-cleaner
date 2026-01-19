@@ -42,7 +42,7 @@ class HealthChecker:
             HealthCheckResult indicating registry connectivity status
         """
         try:
-            from config_manager import SkopeoClient
+            from utils.config_manager import SkopeoClient
             
             registry_url = config_manager.get_registry_url()
             repository = config_manager.get_repository()
