@@ -143,8 +143,6 @@ class IntelligentImageDeleter(BaseDeletionScript):
         Returns:
             Dict with keys: 'runs', 'workspaces', 'models', 'projects', 'scheduler_jobs', 'organizations', 'app_versions' containing lists of records
         """
-        from image_usage import ImageUsageService
-        
         service = ImageUsageService()
         reports = service.load_usage_reports()
         
@@ -196,11 +194,12 @@ class IntelligentImageDeleter(BaseDeletionScript):
         tags, _ = self.extract_docker_tags_with_usage_info_from_mongodb_reports(mongodb_reports)
         return tags
     
-    def _parse_timestamp(self, timestamp_str: str) -> Optional[datetime]:
+    def _parse_timestamp(self, timestamp_str) -> Optional[datetime]:
         """Parse a timestamp string to datetime object
         
         Args:
-            timestamp_str: ISO format timestamp string (may end with 'Z')
+            timestamp_str: ISO format timestamp string (may end with 'Z') or
+                MongoDB extended JSON dict like {"$date": "..."}.
         
         Returns:
             datetime object or None if parsing fails
@@ -208,6 +207,19 @@ class IntelligentImageDeleter(BaseDeletionScript):
         if not timestamp_str:
             return None
         try:
+            # Handle MongoDB extended JSON: {"$date": "..."}
+            if isinstance(timestamp_str, dict) and "$date" in timestamp_str:
+                timestamp_str = timestamp_str["$date"]
+            
+            # Handle numeric epoch milliseconds (defensive, not expected from current pipelines)
+            if isinstance(timestamp_str, (int, float)):
+                # Assume milliseconds since epoch
+                return datetime.fromtimestamp(timestamp_str / 1000.0, tz=timezone.utc)
+            
+            # At this point we expect a string
+            if not isinstance(timestamp_str, str):
+                return None
+            
             # Handle ISO strings possibly ending with 'Z'
             ts = timestamp_str.replace('Z', '+00:00')
             return datetime.fromisoformat(ts)

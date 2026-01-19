@@ -254,6 +254,38 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
         json_str = re.sub(r'ISODate\("([^"]+)"\)', r'"\1"', json_str)
         return json_str
     
+    def _parse_timestamp(self, timestamp_str) -> Optional[datetime]:
+        """Parse a timestamp string to datetime object
+        
+        Args:
+            timestamp_str: ISO format timestamp string (may end with 'Z') or
+                MongoDB extended JSON dict like {"$date": "..."}.
+        
+        Returns:
+            datetime object or None if parsing fails
+        """
+        if not timestamp_str:
+            return None
+        try:
+            # Handle MongoDB extended JSON: {"$date": "..."}
+            if isinstance(timestamp_str, dict) and "$date" in timestamp_str:
+                timestamp_str = timestamp_str["$date"]
+            
+            # Handle numeric epoch milliseconds (defensive, not expected from current pipelines)
+            if isinstance(timestamp_str, (int, float)):
+                # Assume milliseconds since epoch
+                return datetime.fromtimestamp(timestamp_str / 1000.0, tz=timezone.utc)
+            
+            # At this point we expect a string
+            if not isinstance(timestamp_str, str):
+                return None
+            
+            # Handle ISO strings possibly ending with 'Z'
+            ts = timestamp_str.replace('Z', '+00:00')
+            return datetime.fromisoformat(ts)
+        except Exception:
+            return None
+    
     def extract_used_environment_ids(self, model_env_data: List[dict], 
                                      workspace_env_data: List[dict],
                                      runs_env_data: List[dict],
@@ -312,15 +344,7 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
                 when_raw = record.get('last_used') or record.get('completed') or record.get('started')
                 if not when_raw:
                     continue
-                try:
-                    # Handle ISO strings possibly ending with 'Z'
-                    if isinstance(when_raw, str):
-                        ts = when_raw.replace('Z', '+00:00')
-                        when_dt = datetime.fromisoformat(ts)
-                    else:
-                        continue
-                except Exception:
-                    when_dt = None
+                when_dt = self._parse_timestamp(when_raw)
                 if when_dt is None or when_dt < threshold:
                     continue
 
@@ -641,8 +665,8 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
         
         # Backup images to S3 if requested
         if backup and s3_bucket:
-            from backup_restore import process_backup
-            from config_manager import ConfigManager
+            from scripts.backup_restore import process_backup
+            from utils.config_manager import ConfigManager
             
             self.logger.info(f"📦 Backing up {len(unused_tags)} images to S3 bucket: {s3_bucket}")
             
@@ -652,7 +676,7 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
             
             # Initialize ConfigManager and SkopeoClient for backup
             cfg_mgr = ConfigManager()
-            from config_manager import SkopeoClient
+            from utils.config_manager import SkopeoClient
             backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
             
             # Call process_backup from backup_restore
@@ -1354,8 +1378,8 @@ def main():
             tags_to_backup = [t.tag for t in unused_tags]
             full_repo = f"{registry_url}/{repository}"
 
-            from backup_restore import process_backup
-            from config_manager import ConfigManager, SkopeoClient
+            from scripts.backup_restore import process_backup
+            from utils.config_manager import ConfigManager, SkopeoClient
             cfg_mgr = ConfigManager()
             backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
 
@@ -1461,7 +1485,7 @@ def main():
         sys.exit(1)
     except Exception as e:
         logger.error(f"\n❌ Operation failed: {e}")
-        from logging_utils import log_exception
+        from utils.logging_utils import log_exception
         log_exception(logger, "Error in main", exc_info=e)
         sys.exit(1)
 
