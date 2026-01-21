@@ -14,7 +14,21 @@
         "image_type": "environment",
         "tag": "68e65295caf3254005314ca0-1",
         "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-1",
-        "size_bytes": 196586587
+        "size_bytes": 196586587,
+        "status": "unused",
+        "usage": {
+          "runs_count": 0,
+          "runs": [],
+          "workspaces_count": 0,
+          "workspaces": [],
+          "models_count": 0,
+          "models": [],
+          "scheduler_jobs": [],
+          "projects": [],
+          "organizations": [],
+          "app_versions": []
+        },
+        "usage_summary": "No usage found (no usage data available)"
       },
       {
         "object_id": "68e65295caf3254005314ca0",
@@ -22,7 +36,21 @@
         "image_type": "environment",
         "tag": "68e65295caf3254005314ca0-2",
         "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e65295caf3254005314ca0-2",
-        "size_bytes": 196586181
+        "size_bytes": 196586181,
+        "status": "unused",
+        "usage": {
+          "runs_count": 0,
+          "runs": [],
+          "workspaces_count": 0,
+          "workspaces": [],
+          "models_count": 0,
+          "models": [],
+          "scheduler_jobs": [],
+          "projects": [],
+          "organizations": [],
+          "app_versions": []
+        },
+        "usage_summary": "No usage found (no usage data available)"
       }
     ],
     "68e52daec2659d0a6fbc59b4": [
@@ -32,7 +60,46 @@
         "image_type": "environment",
         "tag": "68e52daec2659d0a6fbc59b4-1",
         "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e52daec2659d0a6fbc59b4-1",
-        "size_bytes": 7256701429
+        "size_bytes": 7256701429,
+        "status": "in_use",
+        "usage": {
+          "runs_count": 2,
+          "runs": [
+            {
+              "run_id": "64f1a2b3c4d5e6f7a8b9c0d1",
+              "project_id": "5f9d88f5b1e3c40012d3cabc",
+              "project_name": "Data Pipeline",
+              "project_owner_id": "5ab3c4d5e6f7a8b9c0d1e2f",
+              "project_owner_name": "John Smith",
+              "status": "Succeeded",
+              "started": {
+                "$date": "2025-06-10T08:00:00.000Z"
+              },
+              "completed": {
+                "$date": "2025-06-10T08:30:00.000Z"
+              }
+            }
+          ],
+          "workspaces_count": 1,
+          "workspaces": [
+            {
+              "workspace_id": "64a1b2c3d4e5f6a7b8c9d0e1",
+              "workspace_name": "Spark Analysis",
+              "project_name": "Data Pipeline",
+              "usage_type": "environment",
+              "workspace_last_change": {
+                "$date": "2025-05-15T10:00:00Z"
+              }
+            }
+          ],
+          "models_count": 0,
+          "models": [],
+          "scheduler_jobs": [],
+          "projects": [],
+          "organizations": [],
+          "app_versions": []
+        },
+        "usage_summary": "2 executions in MongoDB, 1 workspace"
       }
     ],
     "68e52daec2659d0a6fbc59b3": [
@@ -42,7 +109,21 @@
         "image_type": "environment",
         "tag": "68e52daec2659d0a6fbc59b3-1",
         "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e52daec2659d0a6fbc59b3-1",
-        "size_bytes": 2493781840
+        "size_bytes": 2493781840,
+        "status": "unused",
+        "usage": {
+          "runs_count": 0,
+          "runs": [],
+          "workspaces_count": 0,
+          "workspaces": [],
+          "models_count": 0,
+          "models": [],
+          "scheduler_jobs": [],
+          "projects": [],
+          "organizations": [],
+          "app_versions": []
+        },
+        "usage_summary": "No usage found (no usage data available)"
       }
     ],
     "68e52daec2659d0a6fbc59b5": [
@@ -52,7 +133,21 @@
         "image_type": "environment",
         "tag": "68e52daec2659d0a6fbc59b5-1",
         "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e52daec2659d0a6fbc59b5-1",
-        "size_bytes": 82195854
+        "size_bytes": 82195854,
+        "status": "unused",
+        "usage": {
+          "runs_count": 0,
+          "runs": [],
+          "workspaces_count": 0,
+          "workspaces": [],
+          "models_count": 0,
+          "models": [],
+          "scheduler_jobs": [],
+          "projects": [],
+          "organizations": [],
+          "app_versions": []
+        },
+        "usage_summary": "No usage found (no usage data available)"
       }
     ]
   },

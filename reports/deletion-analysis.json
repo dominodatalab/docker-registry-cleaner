@@ -1,0 +1,106 @@
+{
+  "summary": {
+    "total_images_analyzed": 217,
+    "used_images": 150,
+    "unused_images": 67,
+    "total_size_saved": 197880000000,
+    "total_size_saved_gb": 197.88
+  },
+  "unused_images": [
+    {
+      "tag": "environment:68cbc4f8fc1a38393d898d24-5",
+      "size_bytes": 1635778560,
+      "size_gb": 1.52,
+      "status": "unused",
+      "usage": {
+        "runs_count": 0,
+        "runs": [],
+        "workspaces_count": 0,
+        "workspaces": [],
+        "models_count": 0,
+        "models": [],
+        "scheduler_jobs": [],
+        "projects": [],
+        "organizations": [],
+        "app_versions": []
+      }
+    },
+    {
+      "tag": "environment:68cbc4f8fc1a38393d898d25-3",
+      "size_bytes": 2147483648,
+      "size_gb": 2.0,
+      "status": "unused",
+      "usage": {
+        "runs_count": 1,
+        "runs": [
+          {
+            "run_id": "64f1a2b3c4d5e6f7a8b9c0d1",
+            "project_id": "5f9d88f5b1e3c40012d3cabc",
+            "project_name": "Churn Analysis",
+            "project_owner_id": "5ab3c4d5e6f7a8b9c0d1e2f",
+            "project_owner_name": "Jane Doe",
+            "status": "Succeeded",
+            "started": {
+              "$date": "2024-12-15T10:30:00.000Z"
+            },
+            "completed": {
+              "$date": "2024-12-15T11:00:00.000Z"
+            }
+          }
+        ],
+        "workspaces_count": 0,
+        "workspaces": [],
+        "models_count": 0,
+        "models": [],
+        "scheduler_jobs": [],
+        "projects": [],
+        "organizations": [],
+        "app_versions": []
+      }
+    }
+  ],
+  "used_images": [
+    {
+      "tag": "environment:68cbc4f8fc1a38393d898d26-1",
+      "size_bytes": 1073741824,
+      "size_gb": 1.0,
+      "status": "used",
+      "runs_count": 3,
+      "workspaces_count": 1,
+      "models_count": 0,
+      "scheduler_jobs_count": 0,
+      "projects_count": 1,
+      "organizations_count": 0,
+      "app_versions_count": 0,
+      "why_cannot_delete": "3 executions in MongoDB, 1 workspace, 1 project using as default"
+    },
+    {
+      "tag": "environment:68cbc4f8fc1a38393d898d27-2",
+      "size_bytes": 2147483648,
+      "size_gb": 2.0,
+      "status": "used",
+      "runs_count": 0,
+      "workspaces_count": 2,
+      "models_count": 1,
+      "scheduler_jobs_count": 1,
+      "projects_count": 0,
+      "organizations_count": 0,
+      "app_versions_count": 0,
+      "why_cannot_delete": "2 workspaces, 1 model, 1 scheduler job"
+    },
+    {
+      "tag": "model:68cbc4f8fc1a38393d898d28-1",
+      "size_bytes": 3221225472,
+      "size_gb": 3.0,
+      "status": "used",
+      "runs_count": 5,
+      "workspaces_count": 0,
+      "models_count": 0,
+      "scheduler_jobs_count": 0,
+      "projects_count": 0,
+      "organizations_count": 1,
+      "app_versions_count": 0,
+      "why_cannot_delete": "5 executions in MongoDB, 1 organization using as default"
+    }
+  ]
+}
