@@ -765,27 +765,81 @@ class DeactivatedUserEnvFinder(BaseDeletionScript):
             'freed_space_gb': round(freed_space_bytes / (1024 * 1024 * 1024), 2)
         }
         
-        # Prepare grouped data by user
+        # Prepare grouped data by user, enriched with usage information similar to other delete scripts
+        service = ImageUsageService()
+        mongodb_reports = service.load_mongodb_usage_reports()
+        _, usage_info = service.extract_docker_tags_with_usage_info(mongodb_reports)
+
         grouped_data = {}
         for email, info in by_user.items():
+            user_tags = []
+            for t in info['tags']:
+                raw_usage = usage_info.get(
+                    t.tag,
+                    {
+                        'runs': [],
+                        'workspaces': [],
+                        'models': [],
+                        'scheduler_jobs': [],
+                        'projects': [],
+                        'organizations': [],
+                        'app_versions': [],
+                    },
+                )
+
+                runs = raw_usage.get('runs', [])
+                workspaces = raw_usage.get('workspaces', [])
+                models = raw_usage.get('models', [])
+                scheduler_jobs = raw_usage.get('scheduler_jobs', [])
+                projects = raw_usage.get('projects', [])
+                organizations = raw_usage.get('organizations', [])
+                app_versions = raw_usage.get('app_versions', [])
+
+                usage_for_report = {
+                    'runs_count': len(runs),
+                    'runs': runs[:5],
+                    'workspaces_count': len(workspaces),
+                    'workspaces': workspaces[:5],
+                    'models_count': len(models),
+                    'models': models[:5],
+                    'scheduler_jobs': scheduler_jobs,
+                    'projects': projects,
+                    'organizations': organizations,
+                    'app_versions': app_versions,
+                }
+
+                usage_summary = service.generate_usage_summary(usage_for_report)
+                is_in_use = (
+                    usage_for_report['runs_count'] > 0
+                    or usage_for_report['workspaces_count'] > 0
+                    or usage_for_report['models_count'] > 0
+                    or len(scheduler_jobs) > 0
+                    or len(projects) > 0
+                    or len(organizations) > 0
+                    or len(app_versions) > 0
+                )
+                status = 'in_use' if is_in_use else 'unused'
+
+                user_tags.append({
+                    'object_id': t.object_id,
+                    'image_type': t.image_type,
+                    'tag': t.tag,
+                    'full_image': t.full_image,
+                    'user_email': t.user_email,
+                    'user_id': t.user_id,
+                    'env_name': t.env_name,
+                    'size_bytes': t.size_bytes,
+                    'status': status,
+                    'usage': usage_for_report,
+                    'usage_summary': usage_summary,
+                })
+
             grouped_data[email] = {
                 'user_id': info['user_id'],
                 'tag_count': info['tag_count'],
                 'environment_count': info['environment_count'],
                 'environments': info['environments'],
-                'tags': [
-                    {
-                        'object_id': t.object_id,
-                        'image_type': t.image_type,
-                        'tag': t.tag,
-                        'full_image': t.full_image,
-                        'user_email': t.user_email,
-                        'user_id': t.user_id,
-                        'env_name': t.env_name,
-                        'size_bytes': t.size_bytes
-                    }
-                    for t in info['tags']
-                ]
+                'tags': user_tags,
             }
         
         report = {

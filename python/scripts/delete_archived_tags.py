@@ -1046,7 +1046,8 @@ class ArchivedTagsFinder(BaseDeletionScript):
         
         detailed_tags = []
         for tag in archived_tags:
-            tag_usage = usage_info.get(
+            # Raw usage from consolidated reports (full lists)
+            raw_usage = usage_info.get(
                 tag.tag,
                 {
                     'runs': [],
@@ -1058,6 +1059,42 @@ class ArchivedTagsFinder(BaseDeletionScript):
                     'app_versions': [],
                 },
             )
+
+            runs = raw_usage.get('runs', [])
+            workspaces = raw_usage.get('workspaces', [])
+            models = raw_usage.get('models', [])
+            scheduler_jobs = raw_usage.get('scheduler_jobs', [])
+            projects = raw_usage.get('projects', [])
+            organizations = raw_usage.get('organizations', [])
+            app_versions = raw_usage.get('app_versions', [])
+
+            # Build usage block similar to delete_image: include counts and truncate long lists
+            usage_for_report = {
+                'runs_count': len(runs),
+                'runs': runs[:5],
+                'workspaces_count': len(workspaces),
+                'workspaces': workspaces[:5],
+                'models_count': len(models),
+                'models': models[:5],
+                'scheduler_jobs': scheduler_jobs,
+                'projects': projects,
+                'organizations': organizations,
+                'app_versions': app_versions,
+            }
+
+            # Human-readable summary and simple status flag
+            usage_summary = service.generate_usage_summary(usage_for_report)
+            is_in_use = (
+                usage_for_report['runs_count'] > 0
+                or usage_for_report['workspaces_count'] > 0
+                or usage_for_report['models_count'] > 0
+                or len(scheduler_jobs) > 0
+                or len(projects) > 0
+                or len(organizations) > 0
+                or len(app_versions) > 0
+            )
+            status = 'in_use' if is_in_use else 'unused'
+
             detailed_tags.append({
                 'object_id': tag.object_id,
                 'image_type': tag.image_type,
@@ -1065,7 +1102,9 @@ class ArchivedTagsFinder(BaseDeletionScript):
                 'full_image': tag.full_image,
                 'size_bytes': tag.size_bytes,
                 'size_gb': round(tag.size_bytes / (1024 * 1024 * 1024), 2) if tag.size_bytes > 0 else 0.0,
-                'usage': tag_usage,
+                'status': status,
+                'usage': usage_for_report,
+                'usage_summary': usage_summary,
             })
         
         report = {
