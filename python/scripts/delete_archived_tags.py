@@ -112,6 +112,86 @@ class ArchivedTagsFinder(BaseDeletionScript):
         if not self.image_types:
             raise ValueError("Must specify at least one of --environment or --model")
     
+    def _generate_usage_summary(self, usage: Dict) -> str:
+        """Generate a human-readable summary of why an image/tag is in use.
+        
+        Mirrors the behavior used in delete_image, using count fields when available.
+        """
+        reasons = []
+        
+        # Check runs - prefer count field, fall back to list length
+        runs_count = usage.get('runs_count', 0)
+        if runs_count == 0:
+            runs_list = usage.get('runs', [])
+            runs_count = len(runs_list) if runs_list else 0
+        if runs_count > 0:
+            reasons.append(f"{runs_count} execution{'s' if runs_count > 1 else ''} in MongoDB")
+        
+        # Check workspaces - prefer count field, fall back to list length
+        workspaces_count = usage.get('workspaces_count', 0)
+        if workspaces_count == 0:
+            workspaces_list = usage.get('workspaces', [])
+            workspaces_count = len(workspaces_list) if workspaces_list else 0
+        if workspaces_count > 0:
+            reasons.append(f"{workspaces_count} workspace{'s' if workspaces_count > 1 else ''}")
+        
+        # Check models - prefer count field, fall back to list length
+        models_count = usage.get('models_count', 0)
+        if models_count == 0:
+            models_list = usage.get('models', [])
+            models_count = len(models_list) if models_list else 0
+        if models_count > 0:
+            reasons.append(f"{models_count} model{'s' if models_count > 1 else ''}")
+        
+        # Check scheduler_jobs (always a list)
+        scheduler_jobs = usage.get('scheduler_jobs', [])
+        if scheduler_jobs:
+            scheduler_count = len(scheduler_jobs)
+            reasons.append(f"{scheduler_count} scheduler job{'s' if scheduler_count > 1 else ''}")
+        
+        # Check projects (always a list)
+        projects = usage.get('projects', [])
+        if projects:
+            project_count = len(projects)
+            reasons.append(f"{project_count} project{'s' if project_count > 1 else ''} using as default")
+        
+        # Check organizations (always a list)
+        organizations = usage.get('organizations', [])
+        if organizations:
+            org_count = len(organizations)
+            reasons.append(f"{org_count} organization{'s' if org_count > 1 else ''} using as default")
+        
+        # Check app_versions (always a list)
+        app_versions = usage.get('app_versions', [])
+        if app_versions:
+            app_version_count = len(app_versions)
+            reasons.append(f"{app_version_count} app version{'s' if app_version_count > 1 else ''}")
+        
+        if not reasons:
+            # Try to provide more context about what we checked
+            checked_fields = []
+            if usage.get('runs') or usage.get('runs_count'):
+                checked_fields.append("runs")
+            if usage.get('workspaces') or usage.get('workspaces_count'):
+                checked_fields.append("workspaces")
+            if usage.get('models') or usage.get('models_count'):
+                checked_fields.append("models")
+            if usage.get('scheduler_jobs'):
+                checked_fields.append("scheduler_jobs")
+            if usage.get('projects'):
+                checked_fields.append("projects")
+            if usage.get('organizations'):
+                checked_fields.append("organizations")
+            if usage.get('app_versions'):
+                checked_fields.append("app_versions")
+            
+            if checked_fields:
+                return f"Referenced in system (checked: {', '.join(checked_fields)}, all empty)"
+            else:
+                return "Referenced in system (source unknown - no usage data available)"
+        
+        return ", ".join(reasons)
+    
     def fetch_archived_object_ids(self) -> Tuple[List[str], Dict[str, str]]:
         """Fetch archived ObjectIDs from MongoDB
         
@@ -1083,7 +1163,7 @@ class ArchivedTagsFinder(BaseDeletionScript):
             }
 
             # Human-readable summary and simple status flag
-            usage_summary = service.generate_usage_summary(usage_for_report)
+            usage_summary = self._generate_usage_summary(usage_for_report)
             is_in_use = (
                 usage_for_report['runs_count'] > 0
                 or usage_for_report['workspaces_count'] > 0
