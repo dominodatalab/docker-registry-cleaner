@@ -421,9 +421,9 @@ class IntelligentImageDeleter(BaseDeletionScript):
                 checked_fields.append("app_versions")
             
             if checked_fields:
-                return f"Referenced in system (checked: {', '.join(checked_fields)}, all empty)"
+                return f"No usage found (checked: {', '.join(checked_fields)}, all empty)"
             else:
-                return "Referenced in system (source unknown - no usage data available)"
+                return "No usage found (no usage data available)"
         
         return ", ".join(reasons)
 
@@ -784,16 +784,22 @@ class IntelligentImageDeleter(BaseDeletionScript):
             stats = analysis.image_usage_stats.get(image_tag, {})
             size_bytes = stats.get('size', 0)
             usage = stats.get('usage', {})
-            report["unused_images"].append({
+            unused_entry = {
                 "tag": image_tag,
                 "size_bytes": size_bytes,
                 "size_gb": round(size_bytes / (1024**3), 2),
-                "layer_id": stats.get('layer_id', ''),
                 "status": stats.get('status', 'unused'),
                 "usage": usage
-            })
+            }
+            # Only include layer_id if it's non-empty
+            layer_id = stats.get('layer_id', '')
+            if layer_id:
+                unused_entry["layer_id"] = layer_id
+            report["unused_images"].append(unused_entry)
         
         # Add details for each used image (images that can't be deleted)
+        # For used images, we only include summary info (counts and why_cannot_delete)
+        # to keep file size manageable - full usage details are available in unused_images
         report["used_images"] = []
         for image_tag in analysis.used_images:
             # Find matching stats - need to search through all stats
@@ -807,8 +813,9 @@ class IntelligentImageDeleter(BaseDeletionScript):
             if matching_stats:
                 size_bytes = matching_stats.get('size', 0)
                 usage = matching_stats.get('usage', {})
-                # Flatten some key usage counts for convenience
-                report["used_images"].append({
+                # Include only summary info - counts and why_cannot_delete
+                # Full usage details removed to reduce file size (available in unused_images if needed)
+                used_entry = {
                     "tag": image_tag,
                     "size_bytes": size_bytes,
                     "size_gb": round(size_bytes / (1024**3), 2),
@@ -818,9 +825,11 @@ class IntelligentImageDeleter(BaseDeletionScript):
                     "models_count": usage.get('models_count', 0),
                     "scheduler_jobs_count": len(usage.get('scheduler_jobs', [])),
                     "projects_count": len(usage.get('projects', [])),
-                    "usage": usage,
+                    "organizations_count": len(usage.get('organizations', [])),
+                    "app_versions_count": len(usage.get('app_versions', [])),
                     "why_cannot_delete": self._generate_usage_summary(usage)
-                })
+                }
+                report["used_images"].append(used_entry)
         
         try:
             save_json(output_file, report)

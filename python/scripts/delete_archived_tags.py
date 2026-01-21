@@ -186,9 +186,9 @@ class ArchivedTagsFinder(BaseDeletionScript):
                 checked_fields.append("app_versions")
             
             if checked_fields:
-                return f"Referenced in system (checked: {', '.join(checked_fields)}, all empty)"
+                return f"No usage found (checked: {', '.join(checked_fields)}, all empty)"
             else:
-                return "Referenced in system (source unknown - no usage data available)"
+                return "No usage found (no usage data available)"
         
         return ", ".join(reasons)
     
@@ -1187,18 +1187,11 @@ class ArchivedTagsFinder(BaseDeletionScript):
                 'usage_summary': usage_summary,
             })
         
+        # Report structure: keep summary (counts only), archived_tags, and metadata
+        # Remove large ObjectID lists and redundant grouped_by_object_id (not needed for deletion)
         report = {
             'summary': summary,
-            'archived_object_ids': archived_ids,
-            'archived_environment_ids': ids_by_type['environment'],
-            'archived_revision_ids': ids_by_type['revision'],
-            'archived_model_ids': ids_by_type['model'],
-            'archived_version_ids': ids_by_type['version'],
             'archived_tags': detailed_tags,
-            'grouped_by_object_id': {
-                obj_id: [tag.to_dict() if hasattr(tag, 'to_dict') else tag.__dict__ for tag in tags]
-                for obj_id, tags in by_object_id.items()
-            },
             'metadata': {
                 'registry_url': self.registry_url,
                 'repository': self.repository,
@@ -1471,13 +1464,7 @@ def main():
                         'object_ids_with_tags': 0,
                         'object_ids_without_tags': 0
                     },
-                    'archived_object_ids': [],
-                    'archived_environment_ids': [],
-                    'archived_revision_ids': [],
-                    'archived_model_ids': [],
-                    'archived_version_ids': [],
                     'archived_tags': [],
-                    'grouped_by_object_id': {},
                     'metadata': {
                         'registry_url': registry_url,
                         'repository': repository,

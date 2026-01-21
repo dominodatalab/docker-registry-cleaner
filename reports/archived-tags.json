@@ -14,54 +14,99 @@
     "object_ids_with_tags": 1,
     "object_ids_without_tags": 2
   },
-  "archived_object_ids": [
-    "68e64edfcaf3254005314c90",
-    "68e64ee0caf3254005314c92",
-    "68e64ee0caf3254005314c95"
-  ],
-  "archived_environment_ids": [
-    "68e64edfcaf3254005314c90"
-  ],
-  "archived_revision_ids": [
-    "68e64ee0caf3254005314c92",
-    "68e64ee0caf3254005314c95"
-  ],
-  "archived_model_ids": [],
-  "archived_version_ids": [],
   "archived_tags": [
     {
       "object_id": "68e64edfcaf3254005314c90",
       "image_type": "environment",
       "tag": "68e64edfcaf3254005314c90-1",
-      "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e64edfcaf3254005314c90-1"
+      "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e64edfcaf3254005314c90-1",
+      "size_bytes": 1635778560,
+      "size_gb": 1.52,
+      "status": "in_use",
+      "usage": {
+        "runs_count": 3,
+        "runs": [
+          {
+            "run_id": "64f1a2b3c4d5e6f7a8b9c0d1",
+            "project_id": "5f9d88f5b1e3c40012d3cabc",
+            "project_name": "Churn Analysis",
+            "project_owner_id": "5ab3c4d5e6f7a8b9c0d1e2f",
+            "project_owner_name": "Jane Doe",
+            "status": "Succeeded",
+            "started": {
+              "$date": "2025-06-17T14:22:38.914Z"
+            },
+            "completed": {
+              "$date": "2025-06-17T14:36:32.725Z"
+            }
+          },
+          {
+            "run_id": "64f1a2b3c4d5e6f7a8b9c0d2",
+            "project_id": "5f9d88f5b1e3c40012d3cabc",
+            "project_name": "Churn Analysis",
+            "project_owner_id": "5ab3c4d5e6f7a8b9c0d1e2f",
+            "project_owner_name": "Jane Doe",
+            "status": "Failed",
+            "started": {
+              "$date": "2025-05-10T09:15:00.000Z"
+            },
+            "completed": {
+              "$date": "2025-05-10T09:45:00.000Z"
+            }
+          }
+        ],
+        "workspaces_count": 1,
+        "workspaces": [
+          {
+            "workspace_id": "64a1b2c3d4e5f6a7b8c9d0e1",
+            "workspace_name": "EDA Notebook",
+            "project_name": "Churn Analysis",
+            "usage_type": "environment",
+            "workspace_last_change": {
+              "$date": "2025-05-10T09:15:00Z"
+            }
+          }
+        ],
+        "models_count": 0,
+        "models": [],
+        "scheduler_jobs": [],
+        "projects": [
+          {
+            "_id": "5f9d88f5b1e3c40012d3cabc",
+            "name": "Churn Analysis",
+            "ownerId": "5ab3c4d5e6f7a8b9c0d1e2f"
+          }
+        ],
+        "organizations": [],
+        "app_versions": []
+      },
+      "usage_summary": "3 executions in MongoDB, 1 workspace, 1 project using as default",
+      "record_type": "environment"
     },
     {
       "object_id": "68e64edfcaf3254005314c90",
       "image_type": "environment",
       "tag": "68e64edfcaf3254005314c90-2",
-      "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e64edfcaf3254005314c90-2"
+      "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e64edfcaf3254005314c90-2",
+      "size_bytes": 1635778560,
+      "size_gb": 1.52,
+      "status": "unused",
+      "usage": {
+        "runs_count": 0,
+        "runs": [],
+        "workspaces_count": 0,
+        "workspaces": [],
+        "models_count": 0,
+        "models": [],
+        "scheduler_jobs": [],
+        "projects": [],
+        "organizations": [],
+        "app_versions": []
+      },
+      "usage_summary": "No usage found (no usage data available)",
+      "record_type": "environment"
     }
   ],
-  "grouped_by_object_id": {
-    "68e64edfcaf3254005314c90": [
-      {
-        "object_id": "68e64edfcaf3254005314c90",
-        "image_type": "environment",
-        "tag": "68e64edfcaf3254005314c90-1",
-        "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e64edfcaf3254005314c90-1",
-        "size_bytes": 0,
-        "record_type": "environment"
-      },
-      {
-        "object_id": "68e64edfcaf3254005314c90",
-        "image_type": "environment",
-        "tag": "68e64edfcaf3254005314c90-2",
-        "full_image": "946429944765.dkr.ecr.eu-west-1.amazonaws.com/itgdock99244/environment:68e64edfcaf3254005314c90-2",
-        "size_bytes": 0,
-        "record_type": "environment"
-      }
-    ]
-  },
   "metadata": {
     "registry_url": "946429944765.dkr.ecr.eu-west-1.amazonaws.com",
     "repository": "itgdock99244",

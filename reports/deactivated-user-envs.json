@@ -23,7 +23,21 @@
           "user_email": "elliott.whiting+test@dominodatalab.com",
           "user_id": "68e65672e79bcd6ca2c07619",
           "env_name": "private_env",
-          "size_bytes": 196586587
+          "size_bytes": 196586587,
+          "status": "unused",
+          "usage": {
+            "runs_count": 0,
+            "runs": [],
+            "workspaces_count": 0,
+            "workspaces": [],
+            "models_count": 0,
+            "models": [],
+            "scheduler_jobs": [],
+            "projects": [],
+            "organizations": [],
+            "app_versions": []
+          },
+          "usage_summary": "No usage found (no usage data available)"
         },
         {
           "object_id": "68e65295caf3254005314ca0",
@@ -33,7 +47,36 @@
           "user_email": "elliott.whiting+test@dominodatalab.com",
           "user_id": "68e65672e79bcd6ca2c07619",
           "env_name": "private_env",
-          "size_bytes": 196586181
+          "size_bytes": 196586181,
+          "status": "in_use",
+          "usage": {
+            "runs_count": 1,
+            "runs": [
+              {
+                "run_id": "64f1a2b3c4d5e6f7a8b9c0d1",
+                "project_id": "5f9d88f5b1e3c40012d3cabc",
+                "project_name": "Test Project",
+                "project_owner_id": "5ab3c4d5e6f7a8b9c0d1e2f",
+                "project_owner_name": "Test User",
+                "status": "Succeeded",
+                "started": {
+                  "$date": "2025-07-01T10:00:00.000Z"
+                },
+                "completed": {
+                  "$date": "2025-07-01T10:15:00.000Z"
+                }
+              }
+            ],
+            "workspaces_count": 0,
+            "workspaces": [],
+            "models_count": 0,
+            "models": [],
+            "scheduler_jobs": [],
+            "projects": [],
+            "organizations": [],
+            "app_versions": []
+          },
+          "usage_summary": "1 execution in MongoDB"
         }
       ]
     }
