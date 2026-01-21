@@ -59,6 +59,7 @@ if str(_parent_dir) not in sys.path:
 from utils.config_manager import SkopeoClient, config_manager
 from utils.deletion_base import BaseDeletionScript
 from utils.image_usage import ImageUsageService
+from utils.image_data_analysis import ImageAnalyzer
 from utils.logging_utils import get_logger, setup_logging
 from utils.mongo_utils import get_mongo_client
 from utils.report_utils import ensure_mongodb_reports, get_timestamp_suffix, save_json
@@ -1061,18 +1062,71 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
             'object_ids_without_tags': len(unused_envs) - len(by_object_id)
         }
         
-        # Prepare grouped data
+        # Prepare grouped data, enriched with usage information similar to delete_image/delete_archived_tags
+        service = ImageUsageService()
+        mongodb_reports = service.load_mongodb_usage_reports()
+        _, usage_info = service.extract_docker_tags_with_usage_info(mongodb_reports)
+
         grouped_data = {}
         for obj_id, tags in by_object_id.items():
             grouped_data[obj_id] = []
             for tag in tags:
+                raw_usage = usage_info.get(
+                    tag.tag,
+                    {
+                        'runs': [],
+                        'workspaces': [],
+                        'models': [],
+                        'scheduler_jobs': [],
+                        'projects': [],
+                        'organizations': [],
+                        'app_versions': [],
+                    },
+                )
+
+                runs = raw_usage.get('runs', [])
+                workspaces = raw_usage.get('workspaces', [])
+                models = raw_usage.get('models', [])
+                scheduler_jobs = raw_usage.get('scheduler_jobs', [])
+                projects = raw_usage.get('projects', [])
+                organizations = raw_usage.get('organizations', [])
+                app_versions = raw_usage.get('app_versions', [])
+
+                usage_for_report = {
+                    'runs_count': len(runs),
+                    'runs': runs[:5],
+                    'workspaces_count': len(workspaces),
+                    'workspaces': workspaces[:5],
+                    'models_count': len(models),
+                    'models': models[:5],
+                    'scheduler_jobs': scheduler_jobs,
+                    'projects': projects,
+                    'organizations': organizations,
+                    'app_versions': app_versions,
+                }
+
+                usage_summary = service.generate_usage_summary(usage_for_report)
+                is_in_use = (
+                    usage_for_report['runs_count'] > 0
+                    or usage_for_report['workspaces_count'] > 0
+                    or usage_for_report['models_count'] > 0
+                    or len(scheduler_jobs) > 0
+                    or len(projects) > 0
+                    or len(organizations) > 0
+                    or len(app_versions) > 0
+                )
+                status = 'in_use' if is_in_use else 'unused'
+
                 grouped_data[obj_id].append({
                     'object_id': tag.object_id,
                     'env_name': tag.env_name,
                     'image_type': tag.image_type,
                     'tag': tag.tag,
                     'full_image': tag.full_image,
-                    'size_bytes': tag.size_bytes
+                    'size_bytes': tag.size_bytes,
+                    'status': status,
+                    'usage': usage_for_report,
+                    'usage_summary': usage_summary,
                 })
         
         report = {
