@@ -59,6 +59,7 @@ if str(_parent_dir) not in sys.path:
 from utils.config_manager import SkopeoClient, config_manager
 from utils.deletion_base import BaseDeletionScript
 from utils.image_usage import ImageUsageService
+from utils.image_data_analysis import ImageAnalyzer
 from utils.logging_utils import get_logger, setup_logging
 from utils.mongo_utils import get_mongo_client
 from utils.report_utils import ensure_mongodb_reports, get_timestamp_suffix, save_json
