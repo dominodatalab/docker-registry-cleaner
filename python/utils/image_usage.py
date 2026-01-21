@@ -288,6 +288,9 @@ class ImageUsageService:
                 run_info = {
                     'run_id': record.get('run_id') or record.get('_id', 'unknown'),
                     'project_id': record.get('project_id', 'unknown'),
+                    'project_name': record.get('project_name', 'unknown'),
+                    'project_owner_id': record.get('project_owner_id', 'unknown'),
+                    'project_owner_name': record.get('project_owner_name', 'unknown'),
                     'status': record.get('status', 'unknown'),
                     'started': record.get('started') or record.get('any_started'),
                     'completed': record.get('completed') or record.get('any_completed') or record.get('last_used')
