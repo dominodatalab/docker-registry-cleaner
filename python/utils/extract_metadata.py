@@ -208,6 +208,16 @@ def runs_env_usage_pipeline() -> List[dict]:
 			"environment_docker_repo": {"$first": "$env_rev.metadata.dockerImageName.repository"},
 			"environment_docker_tag": {"$first": "$env_rev.metadata.dockerImageName.tag"}
 		}},
+		# Enrich with project and project owner info
+		{"$lookup": {"from": "projects", "localField": "project_id", "foreignField": "_id", "as": "project_doc"}},
+		{"$addFields": {
+			"project_name": {"$first": "$project_doc.name"},
+			"project_owner_id": {"$first": "$project_doc.ownerId"}
+		}},
+		{"$lookup": {"from": "users", "localField": "project_owner_id", "foreignField": "_id", "as": "owner_doc"}},
+		{"$addFields": {
+			"project_owner_name": {"$first": "$owner_doc.fullName"}
+		}},
 		# Group by environment + revision to compute most recent completion time as last_used
 		{"$group": {
 			"_id": {"env": "$environment_id", "rev": "$environment_revision_id"},
@@ -222,7 +232,10 @@ def runs_env_usage_pipeline() -> List[dict]:
 			# Preserve representative identifiers for reporting
 			"run_id": {"$first": "$run_id"},
 			"project_id": {"$first": "$project_id"},
-			"status": {"$first": "$status"}
+			"status": {"$first": "$status"},
+			"project_name": {"$first": "$project_name"},
+			"project_owner_id": {"$first": "$project_owner_id"},
+			"project_owner_name": {"$first": "$project_owner_name"}
 		}},
 		# Final projection, keep both last_used and a started field for compatibility
 		{"$project": {
@@ -236,7 +249,10 @@ def runs_env_usage_pipeline() -> List[dict]:
 			"completed": "$any_completed",
 			"run_id": 1,
 			"project_id": 1,
-			"status": 1
+			"status": 1,
+			"project_name": 1,
+			"project_owner_id": 1,
+			"project_owner_name": 1
 		}}
 	]
 

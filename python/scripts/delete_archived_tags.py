@@ -1039,15 +1039,33 @@ class ArchivedTagsFinder(BaseDeletionScript):
         }
         
         # Prepare detailed data
+        # Enrich with usage information (runs, workspaces, models, projects, etc.)
+        service = ImageUsageService()
+        mongodb_reports = service.load_mongodb_usage_reports()
+        _, usage_info = service.extract_docker_tags_with_usage_info(mongodb_reports)
+        
         detailed_tags = []
         for tag in archived_tags:
+            tag_usage = usage_info.get(
+                tag.tag,
+                {
+                    'runs': [],
+                    'workspaces': [],
+                    'models': [],
+                    'scheduler_jobs': [],
+                    'projects': [],
+                    'organizations': [],
+                    'app_versions': [],
+                },
+            )
             detailed_tags.append({
                 'object_id': tag.object_id,
                 'image_type': tag.image_type,
                 'tag': tag.tag,
                 'full_image': tag.full_image,
                 'size_bytes': tag.size_bytes,
-                'size_gb': round(tag.size_bytes / (1024 * 1024 * 1024), 2) if tag.size_bytes > 0 else 0.0
+                'size_gb': round(tag.size_bytes / (1024 * 1024 * 1024), 2) if tag.size_bytes > 0 else 0.0,
+                'usage': tag_usage,
             })
         
         report = {
