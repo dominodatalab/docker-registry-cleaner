@@ -1114,8 +1114,8 @@ class ArchivedTagsFinder(BaseDeletionScript):
             'total_matching_tags': len(archived_tags),
             'freed_space_gb': round(freed_space_bytes / (1024 * 1024 * 1024), 2),
             'tags_by_image_type': by_image_type,
-            'object_ids_with_tags': len(by_object_id),
-            'object_ids_without_tags': len(archived_ids) - len(by_object_id)
+            'mongo_records_with_docker_tags': len(by_object_id),
+            'mongo_records_without_docker_tags': len(archived_ids) - len(by_object_id)
         }
         
         # Prepare detailed data
@@ -1461,8 +1461,8 @@ def main():
                         'total_matching_tags': 0,
                         'freed_space_gb': 0,
                         'tags_by_image_type': {img_type: 0 for img_type in finder.image_types},
-                        'object_ids_with_tags': 0,
-                        'object_ids_without_tags': 0
+                        'mongo_records_with_docker_tags': 0,
+                        'mongo_records_without_docker_tags': 0
                     },
                     'archived_tags': [],
                     'metadata': {
@@ -1617,8 +1617,8 @@ def main():
             logger.info(f"Tags by image type:")
             for img_type, count in summary['tags_by_image_type'].items():
                 logger.info(f"  {img_type}: {count} tags")
-            logger.info(f"ObjectIDs with tags: {summary['object_ids_with_tags']}")
-            logger.info(f"ObjectIDs without tags: {summary['object_ids_without_tags']}")
+            logger.info(f"Mongo records with Docker tags: {summary['mongo_records_with_docker_tags']}")
+            logger.info(f"Mongo records without Docker tags: {summary['mongo_records_without_docker_tags']}")
             
             logger.info(f"\nDetailed report saved to: {output_file}")
             

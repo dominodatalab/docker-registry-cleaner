@@ -3,8 +3,8 @@
     "total_unused_environment_ids": 13,
     "total_matching_tags": 5,
     "freed_space_gb": 17.5,
-    "object_ids_with_tags": 4,
-    "object_ids_without_tags": 9
+    "mongo_records_with_docker_tags": 4,
+    "mongo_records_without_docker_tags": 9
   },
   "grouped_by_object_id": {
     "68e65295caf3254005314ca0": [

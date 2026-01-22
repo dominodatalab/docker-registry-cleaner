@@ -11,8 +11,8 @@
       "environment": 2,
       "model": 0
     },
-    "object_ids_with_tags": 1,
-    "object_ids_without_tags": 2
+    "mongo_records_with_docker_tags": 1,
+    "mongo_records_without_docker_tags": 2
   },
   "archived_tags": [
     {

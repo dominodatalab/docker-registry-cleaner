@@ -1058,8 +1058,8 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
             'total_unused_environment_ids': len(unused_envs),
             'total_matching_tags': len(unused_tags),
             'freed_space_gb': round(freed_space_bytes / (1024 * 1024 * 1024), 2),
-            'object_ids_with_tags': len(by_object_id),
-            'object_ids_without_tags': len(unused_envs) - len(by_object_id)
+            'mongo_records_with_docker_tags': len(by_object_id),
+            'mongo_records_without_docker_tags': len(unused_envs) - len(by_object_id)
         }
         
         # Prepare grouped data, enriched with usage information similar to delete_image/delete_archived_tags
@@ -1386,8 +1386,8 @@ def main():
                         'total_unused_environment_ids': 0,
                         'total_matching_tags': 0,
                         'freed_space_gb': 0,
-                        'object_ids_with_tags': 0,
-                        'object_ids_without_tags': 0
+                        'mongo_records_with_docker_tags': 0,
+                        'mongo_records_without_docker_tags': 0
                     },
                     'grouped_by_object_id': {},
                     'metadata': {
@@ -1516,8 +1516,8 @@ def main():
             logger.info(f"Total unused environment IDs: {summary['total_unused_environment_ids']}")
             logger.info(f"Total matching tags: {summary['total_matching_tags']}")
             logger.info(f"Space that would be freed: {summary['freed_space_gb']:.2f} GB")
-            logger.info(f"Environment IDs with tags: {summary['object_ids_with_tags']}")
-            logger.info(f"Environment IDs without tags: {summary['object_ids_without_tags']}")
+            logger.info(f"Mongo records with Docker tags: {summary['mongo_records_with_docker_tags']}")
+            logger.info(f"Mongo records without Docker tags: {summary['mongo_records_without_docker_tags']}")
             
             logger.info(f"\nDetailed report saved to: {output_file}")
             
