@@ -22,6 +22,8 @@ def load_script_paths() -> Dict[str, Optional[str]]:
         "find_environment_usage": "scripts/find_environment_usage.py",
         "mongo_cleanup": "scripts/mongo_cleanup.py",
         "reports": "scripts/reports.py",
+        "image_size_report": "scripts/image_size_report.py",
+        "user_size_report": "scripts/user_size_report.py",
         "delete_image": "scripts/delete_image.py",  
         "delete_archived_tags": "scripts/delete_archived_tags.py",
         "archive_unused_environments": "scripts/archive_unused_environments.py",
@@ -36,6 +38,8 @@ def get_script_descriptions() -> Dict[str, str]:
         "find_environment_usage": "Find where a specific environment ID is used (projects, jobs, workspaces, runs, workloads)",
         "mongo_cleanup": "Simple tag/ObjectID-based Mongo cleanup (consider using delete_unused_references for advanced features)",
         "reports": "Generate tag usage reports from analysis data (auto-generates metadata)",
+        "image_size_report": "Generate a report of the largest images sorted by total size, showing space that would be freed if deleted",
+        "user_size_report": "Generate a report of image sizes grouped by user/owner, showing who is using the most space",
         "delete_image": "Delete specific Docker image or analyze/delete unused images",
         "delete_archived_tags": "Find and optionally delete Docker tags associated with archived environments and/or models",
         "archive_unused_environments": "Mark unused environments as archived in MongoDB",
@@ -172,6 +176,8 @@ Available scripts:
   find_environment_usage             - Find where a specific environment ID is used (projects, jobs, workspaces, runs, workloads)
   mongo_cleanup                      - Simple tag/ObjectID-based Mongo cleanup
   reports                            - Generate tag usage reports from analysis data (auto-generates metadata)
+  image_size_report                  - Generate a report of the largest images sorted by total size, showing space that would be freed if deleted
+  user_size_report                   - Generate a report of image sizes grouped by user/owner, showing who is using the most space
   delete_image [image]               - Delete specific Docker image or analyze/delete unused images
   delete_archived_tags               - Find and optionally delete Docker tags associated with archived environments and/or models
   archive_unused_environments        - Mark unused environments as archived in MongoDB
@@ -225,6 +231,18 @@ Examples:
   
   # Force regeneration of metadata before generating reports
   python main.py reports --generate-reports
+  
+  # Generate image size report (auto-generates image analysis if missing)
+  python main.py image_size_report
+  
+  # Force regeneration of image analysis before generating size report
+  python main.py image_size_report --generate-reports
+  
+  # Generate user size report (auto-generates reports if missing)
+  python main.py user_size_report
+  
+  # Force regeneration of all reports before generating user report
+  python main.py user_size_report --generate-reports
   
   # Find archived environment tags (dry-run)
   python main.py delete_archived_tags --environment --output archived-tags.json

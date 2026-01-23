@@ -1,0 +1,249 @@
+{
+  "summary": {
+    "total_users": 8,
+    "total_images": 15,
+    "total_size_bytes": 15728640000,
+    "total_size_gb": 14.66,
+    "total_freed_if_all_deleted_bytes": 9437184000,
+    "total_freed_if_all_deleted_gb": 8.8,
+    "image_types": [
+      "environment",
+      "model"
+    ],
+    "generated_at": "2026-01-23T10:45:00.000000"
+  },
+  "users": [
+    {
+      "user_id": "5ab3c4d5e6f7a8b9c0d1e2f",
+      "user_name": "John Smith",
+      "image_count": 3,
+      "total_size_bytes": 9750583296,
+      "total_size_gb": 9.08,
+      "freed_space_bytes": 4875291648,
+      "freed_space_gb": 4.54,
+      "images": [
+        {
+          "image_id": "environment:68e52daec2659d0a6fbc59b4-1",
+          "image_type": "environment",
+          "tag": "68e52daec2659d0a6fbc59b4-1",
+          "total_size_bytes": 7256701429,
+          "total_size_gb": 6.76,
+          "freed_space_bytes": 3628350714,
+          "freed_space_gb": 3.38
+        },
+        {
+          "image_id": "environment:68e52daec2659d0a6fbc59b3-1",
+          "image_type": "environment",
+          "tag": "68e52daec2659d0a6fbc59b3-1",
+          "total_size_bytes": 2493781840,
+          "total_size_gb": 2.32,
+          "freed_space_bytes": 1246890920,
+          "freed_space_gb": 1.16
+        },
+        {
+          "image_id": "model:68e663fbcaf3254005314cdc-v1-2025108131540_0fPPRse8",
+          "image_type": "model",
+          "tag": "68e663fbcaf3254005314cdc-v1-2025108131540_0fPPRse8",
+          "total_size_bytes": 1048576,
+          "total_size_gb": 0.0,
+          "freed_space_bytes": 1048576,
+          "freed_space_gb": 0.0
+        }
+      ]
+    },
+    {
+      "user_id": "5cd4e5f6a7b8c9d0e1f2a3b",
+      "user_name": "Jane Doe",
+      "image_count": 4,
+      "total_size_bytes": 3670016000,
+      "total_size_gb": 3.42,
+      "freed_space_bytes": 1835008000,
+      "freed_space_gb": 1.71,
+      "images": [
+        {
+          "image_id": "model:68e663fbcaf3254005314cdc-v1-2025108131540_0fPPRse8",
+          "image_type": "model",
+          "tag": "68e663fbcaf3254005314cdc-v1-2025108131540_0fPPRse8",
+          "total_size_bytes": 5242880000,
+          "total_size_gb": 4.88,
+          "freed_space_bytes": 2621440000,
+          "freed_space_gb": 2.44
+        },
+        {
+          "image_id": "model:68e52daec2659d0a6fbc59b9-v1-2025108131540_0fPPRse8",
+          "image_type": "model",
+          "tag": "68e52daec2659d0a6fbc59b9-v1-2025108131540_0fPPRse8",
+          "total_size_bytes": 3145728000,
+          "total_size_gb": 2.93,
+          "freed_space_bytes": 1572864000,
+          "freed_space_gb": 1.46
+        },
+        {
+          "image_id": "model:68e52daec2659d0a6fbc59b9-v2-2025108131540_0fPPRse8",
+          "image_type": "model",
+          "tag": "68e52daec2659d0a6fbc59b9-v2-2025108131540_0fPPRse8",
+          "total_size_bytes": 3145728000,
+          "total_size_gb": 2.93,
+          "freed_space_bytes": 1048576000,
+          "freed_space_gb": 0.98
+        },
+        {
+          "image_id": "environment:68e52daec2659d0a6fbc59b2-1",
+          "image_type": "environment",
+          "tag": "68e52daec2659d0a6fbc59b2-1",
+          "total_size_bytes": 1048576000,
+          "total_size_gb": 0.98,
+          "freed_space_bytes": 524288000,
+          "freed_space_gb": 0.49
+        }
+      ]
+    },
+    {
+      "user_id": "5ef6a7b8c9d0e1f2a3b4c5d",
+      "user_name": "Bob Johnson",
+      "image_count": 2,
+      "total_size_bytes": 196586768,
+      "total_size_gb": 0.18,
+      "freed_space_bytes": 196586768,
+      "freed_space_gb": 0.18,
+      "images": [
+        {
+          "image_id": "environment:68e65295caf3254005314ca0-1",
+          "image_type": "environment",
+          "tag": "68e65295caf3254005314ca0-1",
+          "total_size_bytes": 196586587,
+          "total_size_gb": 0.18,
+          "freed_space_bytes": 196586587,
+          "freed_space_gb": 0.18
+        },
+        {
+          "image_id": "environment:68e65295caf3254005314ca0-2",
+          "image_type": "environment",
+          "tag": "68e65295caf3254005314ca0-2",
+          "total_size_bytes": 196586181,
+          "total_size_gb": 0.18,
+          "freed_space_bytes": 196586181,
+          "freed_space_gb": 0.18
+        }
+      ]
+    },
+    {
+      "user_id": "5gh7b8c9d0e1f2a3b4c5d6e",
+      "user_name": "Alice Williams",
+      "image_count": 3,
+      "total_size_bytes": 891154054,
+      "total_size_gb": 0.83,
+      "freed_space_bytes": 445577027,
+      "freed_space_gb": 0.42,
+      "images": [
+        {
+          "image_id": "environment:68e52daec2659d0a6fbc59b5-1",
+          "image_type": "environment",
+          "tag": "68e52daec2659d0a6fbc59b5-1",
+          "total_size_bytes": 82195854,
+          "total_size_gb": 0.08,
+          "freed_space_bytes": 82195854,
+          "freed_space_gb": 0.08
+        },
+        {
+          "image_id": "environment:68e52daec2659d0a6fbc59b6-1",
+          "image_type": "environment",
+          "tag": "68e52daec2659d0a6fbc59b6-1",
+          "total_size_bytes": 524288000,
+          "total_size_gb": 0.49,
+          "freed_space_bytes": 262144000,
+          "freed_space_gb": 0.24
+        },
+        {
+          "image_id": "environment:68e52daec2659d0a6fbc59b7-1",
+          "image_type": "environment",
+          "tag": "68e52daec2659d0a6fbc59b7-1",
+          "total_size_bytes": 262144000,
+          "total_size_gb": 0.24,
+          "freed_space_bytes": 262144000,
+          "freed_space_gb": 0.24
+        }
+      ]
+    },
+    {
+      "user_id": "5ij8c9d0e1f2a3b4c5d6e7f",
+      "user_name": "Charlie Brown",
+      "image_count": 1,
+      "total_size_bytes": 131072000,
+      "total_size_gb": 0.12,
+      "freed_space_bytes": 65536000,
+      "freed_space_gb": 0.06,
+      "images": [
+        {
+          "image_id": "model:68e52daec2659d0a6fbc59b8-v1-2025108131540_0fPPRse8",
+          "image_type": "model",
+          "tag": "68e52daec2659d0a6fbc59b8-v1-2025108131540_0fPPRse8",
+          "total_size_bytes": 131072000,
+          "total_size_gb": 0.12,
+          "freed_space_bytes": 65536000,
+          "freed_space_gb": 0.06
+        }
+      ]
+    },
+    {
+      "user_id": "5kl9d0e1f2a3b4c5d6e7f8a",
+      "user_name": "Diana Prince",
+      "image_count": 1,
+      "total_size_bytes": 65536000,
+      "total_size_gb": 0.06,
+      "freed_space_bytes": 65536000,
+      "freed_space_gb": 0.06,
+      "images": [
+        {
+          "image_id": "environment:68e52daec2659d0a6fbc59ba-1",
+          "image_type": "environment",
+          "tag": "68e52daec2659d0a6fbc59ba-1",
+          "total_size_bytes": 65536000,
+          "total_size_gb": 0.06,
+          "freed_space_bytes": 65536000,
+          "freed_space_gb": 0.06
+        }
+      ]
+    },
+    {
+      "user_id": "5mn0e1f2a3b4c5d6e7f8a9b",
+      "user_name": "Edward Norton",
+      "image_count": 1,
+      "total_size_bytes": 32768000,
+      "total_size_gb": 0.03,
+      "freed_space_bytes": 32768000,
+      "freed_space_gb": 0.03,
+      "images": [
+        {
+          "image_id": "model:68e52daec2659d0a6fbc59bb-v1-2025108131540_0fPPRse8",
+          "image_type": "model",
+          "tag": "68e52daec2659d0a6fbc59bb-v1-2025108131540_0fPPRse8",
+          "total_size_bytes": 32768000,
+          "total_size_gb": 0.03,
+          "freed_space_bytes": 32768000,
+          "freed_space_gb": 0.03
+        }
+      ]
+    },
+    {
+      "user_id": "unknown",
+      "user_name": "Unknown",
+      "image_count": 1,
+      "total_size_bytes": 16384000,
+      "total_size_gb": 0.02,
+      "freed_space_bytes": 16384000,
+      "freed_space_gb": 0.02,
+      "images": [
+        {
+          "image_id": "environment:68e52daec2659d0a6fbc59bc-1",
+          "image_type": "environment",
+          "tag": "68e52daec2659d0a6fbc59bc-1",
+          "total_size_bytes": 16384000,
+          "total_size_gb": 0.02,
+          "freed_space_bytes": 16384000,
+          "freed_space_gb": 0.02
+        }
+      ]
+    }
+  ]
+}

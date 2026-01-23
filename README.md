@@ -103,6 +103,12 @@ The tool includes built-in rate limiting for registry operations to prevent over
 ```bash
 # Generate usage reports (automatically generates required metadata and image analysis if needed)
 python python/main.py reports [--generate-reports]
+
+# Generate per-image size report (largest images by total size and potential freed space)
+python python/main.py image_size_report [--generate-reports] [--output image-size-report.json]
+
+# Generate per-user size report (who is using the most registry space)
+python python/main.py user_size_report [--generate-reports] [--output user-size-report.json]
 ```
 
 ### Deletion Commands
@@ -413,6 +419,8 @@ All deletion scripts follow the same pattern and support common options:
 #### Analysis Scripts
 
 - **`python/scripts/reports.py`** - Generate tag usage reports (automatically generates required metadata and image analysis if needed)
+- **`python/scripts/image_size_report.py`** - Generate per-image size report (total size and space freed if deleted, accounting for shared layers)
+- **`python/scripts/user_size_report.py`** - Generate per-user size report (aggregate image sizes and potential freed space by owner)
 - **`python/scripts/find_environment_usage.py`** - Find where a specific environment ID is used
 
 #### Other Scripts

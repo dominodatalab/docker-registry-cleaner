@@ -195,6 +195,24 @@ class ImageAnalyzer:
             self.logger.error(f"Error: {e}")
             return False
     
+    def get_image_total_size(self, image_id: str) -> int:
+        """Calculate total size of an image (sum of all its layers).
+        
+        Args:
+            image_id: Image ID to calculate size for
+        
+        Returns:
+            Total bytes for all layers in the image
+        """
+        total_size = 0
+        for mapping in self.image_layers:
+            if mapping['image_id'] == image_id:
+                layer_id = mapping['layer_id']
+                layer_data = self.layers.get(layer_id)
+                if layer_data:
+                    total_size += layer_data['size_bytes']
+        return int(total_size)
+    
     def freed_space_if_deleted(self, image_ids: List[str]) -> int:
         """Calculate space that would be freed by deleting one or more images.
         
