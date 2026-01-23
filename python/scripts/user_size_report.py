@@ -83,7 +83,7 @@ def extract_owners_from_usage_info(
     tag: str,
     usage_info: Dict,
     mongodb_reports: Dict[str, List[Dict]],
-    model_created_by_map: Dict[str, str] = None,
+    tag_to_model_version_created_by: Dict[str, Tuple[str, str, str]] = None,
     tag_to_author_map: Dict[str, Tuple[str, str]] = None
 ) -> Set[Tuple[str, str]]:
     """Extract owner (user_id, user_name) pairs for a given tag from usage info.
@@ -92,7 +92,7 @@ def extract_owners_from_usage_info(
         tag: Docker image tag
         usage_info: Usage info dict for the tag
         mongodb_reports: Full MongoDB reports for additional lookups
-        model_created_by_map: Mapping from model_id -> createdBy ObjectId
+        tag_to_model_version_created_by: Mapping from Docker tag -> (version_id, createdBy_id, createdBy_name) from model_versions
         tag_to_author_map: Mapping from Docker tag -> authorId from environment_revisions
     
     Returns:
@@ -111,6 +111,18 @@ def extract_owners_from_usage_info(
         normalized_id = normalize_object_id(author_id)
         if normalized_id:
             owners.add((normalized_id, author_name))
+    
+    # Check if this is a model tag and we have createdBy from model_versions
+    if tag_to_model_version_created_by is None:
+        tag_to_model_version_created_by = {}
+    
+    model_version_info = tag_to_model_version_created_by.get(tag)
+    if model_version_info:
+        # This is a model version image with a known creator
+        version_id, created_by_id, created_by_name = model_version_info
+        normalized_id = normalize_object_id(created_by_id)
+        if normalized_id:
+            owners.add((normalized_id, created_by_name))
     
     # From runs: use project_owner_id and project_owner_name
     for run in usage_info.get('runs', []):
@@ -144,30 +156,22 @@ def extract_owners_from_usage_info(
                         owners.add(('workspace:' + str(workspace_id), user_name))
                     break
     
-    # From models: use metadata.createdBy (ObjectId) from MongoDB
-    # Models have their owner in metadata.createdBy which references the users collection
-    if model_created_by_map is None:
-        model_created_by_map = {}
-    
-    for model in usage_info.get('models', []):
-        model_owner = model.get('model_owner', '')  # Name from pipeline
-        model_created_by = model.get('model_created_by', '')  # Name from pipeline
-        model_id = model.get('model_id', '')
-        
-        if model_id:
-            model_id_str = str(model_id)
-            # Look up createdBy ObjectId from the pre-built mapping
-            created_by_id = model_created_by_map.get(model_id_str)
+    # From models: fallback to pipeline data if we didn't get it from direct query
+    # (This handles cases where the tag might not be in model_versions or query failed)
+    if not model_version_info:
+        for model in usage_info.get('models', []):
+            model_owner = model.get('model_owner', '')  # Name from pipeline
+            model_created_by = model.get('model_created_by', '')  # Name from pipeline
+            version_id = model.get('version_id') or model.get('model_version_id', '')
             
-            if created_by_id:
-                # Use model_created_by name if available, otherwise model_owner, otherwise 'Unknown'
-                owner_name = model_created_by or model_owner or 'Unknown'
-                normalized_id = normalize_object_id(created_by_id)
-                if normalized_id:
-                    owners.add((normalized_id, owner_name))
-            elif model_owner and model_owner != 'unknown':
-                # Fallback: use model_owner name with model_id as identifier
-                owners.add(('model:' + model_id_str, model_owner))
+            if model_owner and model_owner != 'unknown':
+                # Fallback: use model_owner name with version_id as identifier
+                if version_id and version_id != 'unknown':
+                    owners.add(('model_version:' + str(version_id), model_owner))
+                else:
+                    model_id = model.get('model_id', '')
+                    if model_id:
+                        owners.add(('model:' + str(model_id), model_owner))
     
     # From projects: use owner_id
     for project in usage_info.get('projects', []):
@@ -203,68 +207,86 @@ def extract_owners_from_usage_info(
     return owners
 
 
-def build_model_created_by_mapping(mongodb_reports: Dict[str, List[Dict]]) -> Dict[str, str]:
-    """Build a mapping from model_id to createdBy ObjectId by querying MongoDB.
+def build_tag_to_model_version_created_by_mapping(analyzer: ImageAnalyzer) -> Dict[str, Tuple[str, str]]:
+    """Build a mapping from Docker tag to (model_version_id, createdBy) by querying MongoDB.
+    
+    Model versions have their owner in metadata.createdBy, and the Docker tag is stored
+    in metadata.builds.slug.image.tag.
     
     Args:
-        mongodb_reports: MongoDB usage reports
+        analyzer: ImageAnalyzer instance with analyzed images
     
     Returns:
-        Dict mapping model_id -> createdBy ObjectId (as string)
+        Dict mapping tag -> (model_version_id as string, createdBy ObjectId as string)
     """
-    model_to_created_by = {}
+    tag_to_version_created_by = {}
     
-    # Collect all unique model IDs from the reports
-    model_ids = set()
-    for model_record in mongodb_reports.get('models', []):
-        model_id = model_record.get('model_id') or model_record.get('_id', '')
-        if model_id:
-            model_ids.add(str(model_id))
+    # Collect all model tags from the analyzer
+    model_tags = set()
+    for image_id, image_data in analyzer.images.items():
+        if image_id.startswith('model:'):
+            tag = image_data['tag']
+            model_tags.add(tag)
     
-    if not model_ids:
-        return model_to_created_by
+    if not model_tags:
+        return tag_to_version_created_by
     
-    # Query MongoDB in batch to get metadata.createdBy for all models
+    # Query MongoDB to get model_version_id and createdBy for each tag
     try:
         from utils.mongo_utils import get_mongo_client
         from utils.config_manager import config_manager
-        from bson import ObjectId
         
         mongo_client = get_mongo_client()
         db = mongo_client[config_manager.get_mongo_db()]
         
-        # Build list of ObjectIds (filtering out invalid ones)
-        object_ids = []
-        id_to_str = {}
-        for model_id_str in model_ids:
-            try:
-                obj_id = ObjectId(model_id_str)
-                object_ids.append(obj_id)
-                id_to_str[str(obj_id)] = model_id_str
-            except (ValueError, TypeError):
-                continue
+        # Query model_versions for tags that match
+        # Tags in model_versions are stored in metadata.builds.slug.image.tag
+        model_versions = db.model_versions.find(
+            {'metadata.builds.slug.image.tag': {'$in': list(model_tags)}},
+            {'_id': 1, 'metadata.builds.slug.image.tag': 1, 'metadata.createdBy': 1}
+        )
         
-        if object_ids:
-            # Query all models at once
-            models = db.models.find(
-                {'_id': {'$in': object_ids}},
-                {'_id': 1, 'metadata.createdBy': 1}
-            )
+        # Collect createdBy IDs to look up names
+        created_by_ids = set()
+        tag_to_version_id = {}
+        tag_to_created_by_id = {}
+        
+        for version_doc in model_versions:
+            tag = version_doc.get('metadata', {}).get('builds', {}).get('slug', {}).get('image', {}).get('tag')
+            version_id = version_doc.get('_id')
+            created_by = version_doc.get('metadata', {}).get('createdBy')
             
-            for model_doc in models:
-                model_id_str = id_to_str.get(str(model_doc['_id']), str(model_doc['_id']))
-                created_by = model_doc.get('metadata', {}).get('createdBy')
-                if created_by:
-                    # Normalize createdBy to string to ensure consistency
-                    normalized_created_by = normalize_object_id(created_by)
-                    if normalized_created_by:
-                        model_to_created_by[model_id_str] = normalized_created_by
+            if tag and version_id and created_by:
+                version_id_str = normalize_object_id(version_id)
+                created_by_id = created_by
+                created_by_ids.add(created_by)
+                tag_to_version_id[tag] = version_id_str
+                tag_to_created_by_id[tag] = created_by_id
+        
+        # Look up user names for all createdBy IDs
+        created_by_id_to_name = {}
+        if created_by_ids:
+            users = db.users.find(
+                {'_id': {'$in': list(created_by_ids)}},
+                {'_id': 1, 'fullName': 1}
+            )
+            for user_doc in users:
+                user_id_str = normalize_object_id(user_doc['_id'])
+                created_by_id_to_name[user_id_str] = user_doc.get('fullName', 'Unknown')
+        
+        # Build final mapping
+        for tag, version_id_str in tag_to_version_id.items():
+            created_by_id = tag_to_created_by_id.get(tag)
+            if created_by_id:
+                normalized_created_by = normalize_object_id(created_by_id)
+                created_by_name = created_by_id_to_name.get(normalized_created_by, 'Unknown')
+                tag_to_version_created_by[tag] = (version_id_str, normalized_created_by, created_by_name)
         
         mongo_client.close()
     except Exception as e:
-        logger.warning(f"Could not query MongoDB for model owners: {e}")
+        logger.warning(f"Could not query MongoDB for model version owners: {e}")
     
-    return model_to_created_by
+    return tag_to_version_created_by
 
 
 def build_tag_to_author_mapping(analyzer: ImageAnalyzer) -> Dict[str, Tuple[str, str]]:
@@ -359,8 +381,9 @@ def build_tag_to_owners_mapping(
     service = ImageUsageService()
     _, all_usage_info = service.extract_docker_tags_with_usage_info(mongodb_reports)
     
-    # Build model_id -> createdBy mapping once
-    model_created_by_map = build_model_created_by_mapping(mongodb_reports)
+    # Build tag -> (version_id, createdBy_id, createdBy_name) mapping for model versions
+    # Model versions have their owner in metadata.createdBy
+    tag_to_model_version_created_by = build_tag_to_model_version_created_by_mapping(analyzer)
     
     # Build tag -> authorId mapping for environment revisions
     tag_to_author_map = build_tag_to_author_mapping(analyzer)
@@ -387,7 +410,7 @@ def build_tag_to_owners_mapping(
         ))
         
         # Extract owners from usage info (pass both mappings)
-        owners = extract_owners_from_usage_info(tag, usage_info, mongodb_reports, model_created_by_map, tag_to_author_map)
+        owners = extract_owners_from_usage_info(tag, usage_info, mongodb_reports, tag_to_model_version_created_by, tag_to_author_map)
         
         if owners:
             tag_to_owners[tag].update(owners)
