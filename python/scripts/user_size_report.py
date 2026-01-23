@@ -35,6 +35,41 @@ from utils.report_utils import save_json, ensure_all_reports
 logger = get_logger(__name__)
 
 
+def normalize_object_id(obj_id) -> str:
+    """Normalize an ObjectId to a string, handling both string and dict formats.
+    
+    Args:
+        obj_id: ObjectId in any format (string, ObjectId, dict with $oid, etc.)
+    
+    Returns:
+        Normalized ObjectId as string, or empty string if invalid
+    """
+    if not obj_id:
+        return ''
+    
+    # Handle dict format: {'$oid': '...'}
+    if isinstance(obj_id, dict):
+        if '$oid' in obj_id:
+            return str(obj_id['$oid'])
+        # If it's a dict but not $oid format, try to get string representation
+        return str(obj_id)
+    
+    # Handle string format
+    if isinstance(obj_id, str):
+        return obj_id
+    
+    # Handle BSON ObjectId
+    try:
+        from bson import ObjectId
+        if isinstance(obj_id, ObjectId):
+            return str(obj_id)
+    except ImportError:
+        pass
+    
+    # Fallback: convert to string
+    return str(obj_id)
+
+
 def sizeof_fmt(num: float, suffix: str = "B") -> str:
     """Format bytes into human-readable size"""
     for unit in ("", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi"):
@@ -73,14 +108,18 @@ def extract_owners_from_usage_info(
     if author_info:
         # This is an environment image with a known author
         author_id, author_name = author_info
-        owners.add((author_id, author_name))
+        normalized_id = normalize_object_id(author_id)
+        if normalized_id:
+            owners.add((normalized_id, author_name))
     
     # From runs: use project_owner_id and project_owner_name
     for run in usage_info.get('runs', []):
         owner_id = run.get('project_owner_id', '')
         owner_name = run.get('project_owner_name', '')
         if owner_id and owner_id != 'unknown':
-            owners.add((str(owner_id), owner_name or 'Unknown'))
+            normalized_id = normalize_object_id(owner_id)
+            if normalized_id:
+                owners.add((normalized_id, owner_name or 'Unknown'))
     
     # From workspaces: look up workspace owner from MongoDB reports
     # Workspace records in MongoDB have ownerId field
@@ -97,7 +136,9 @@ def extract_owners_from_usage_info(
                     # But the pipeline may not include it, so use user_name as fallback
                     owner_id = ws_record.get('ownerId', '')
                     if owner_id:
-                        owners.add((str(owner_id), user_name or 'Unknown'))
+                        normalized_id = normalize_object_id(owner_id)
+                        if normalized_id:
+                            owners.add((normalized_id, user_name or 'Unknown'))
                     elif user_name and user_name != 'unknown':
                         # Fallback: use workspace_id as identifier if we can't find ownerId
                         owners.add(('workspace:' + str(workspace_id), user_name))
@@ -121,7 +162,9 @@ def extract_owners_from_usage_info(
             if created_by_id:
                 # Use model_created_by name if available, otherwise model_owner, otherwise 'Unknown'
                 owner_name = model_created_by or model_owner or 'Unknown'
-                owners.add((created_by_id, owner_name))
+                normalized_id = normalize_object_id(created_by_id)
+                if normalized_id:
+                    owners.add((normalized_id, owner_name))
             elif model_owner and model_owner != 'unknown':
                 # Fallback: use model_owner name with model_id as identifier
                 owners.add(('model:' + model_id_str, model_owner))
@@ -137,7 +180,9 @@ def extract_owners_from_usage_info(
                 if str(proj_id) == str(project.get('_id', '')):
                     # Projects have owner_id, but pipeline may not include owner name
                     # Use owner_id
-                    owners.add((str(owner_id), owner_name))
+                    normalized_id = normalize_object_id(owner_id)
+                    if normalized_id:
+                        owners.add((normalized_id, owner_name))
                     break
     
     # From scheduler_jobs: need to look up project owner
@@ -150,7 +195,9 @@ def extract_owners_from_usage_info(
                 if str(proj_id) == str(project_id):
                     owner_id = proj_record.get('owner_id', '')
                     if owner_id:
-                        owners.add((str(owner_id), 'Unknown'))
+                        normalized_id = normalize_object_id(owner_id)
+                        if normalized_id:
+                            owners.add((normalized_id, 'Unknown'))
                     break
     
     return owners
@@ -208,7 +255,10 @@ def build_model_created_by_mapping(mongodb_reports: Dict[str, List[Dict]]) -> Di
                 model_id_str = id_to_str.get(str(model_doc['_id']), str(model_doc['_id']))
                 created_by = model_doc.get('metadata', {}).get('createdBy')
                 if created_by:
-                    model_to_created_by[model_id_str] = str(created_by)
+                    # Normalize createdBy to string to ensure consistency
+                    normalized_created_by = normalize_object_id(created_by)
+                    if normalized_created_by:
+                        model_to_created_by[model_id_str] = normalized_created_by
         
         mongo_client.close()
     except Exception as e:
@@ -276,12 +326,15 @@ def build_tag_to_author_mapping(analyzer: ImageAnalyzer) -> Dict[str, Tuple[str,
                 {'_id': 1, 'fullName': 1}
             )
             for user_doc in users:
-                author_id_to_name[str(user_doc['_id'])] = user_doc.get('fullName', 'Unknown')
+                # Normalize the user ID to string
+                user_id_str = normalize_object_id(user_doc['_id'])
+                author_id_to_name[user_id_str] = user_doc.get('fullName', 'Unknown')
         
-        # Build final mapping with names
+        # Build final mapping with names (normalize author_id_str to ensure consistency)
         for tag, author_id_str in tag_to_author_id.items():
-            author_name = author_id_to_name.get(author_id_str, 'Unknown')
-            tag_to_author[tag] = (author_id_str, author_name)
+            normalized_author_id = normalize_object_id(author_id_str)
+            author_name = author_id_to_name.get(normalized_author_id, 'Unknown')
+            tag_to_author[tag] = (normalized_author_id, author_name)
         
         mongo_client.close()
     except Exception as e:
@@ -414,10 +467,15 @@ def generate_user_size_report(
         
         # Add to each owner's stats
         for owner_id, owner_name in owners:
-            user_key = owner_id  # Use user_id as key
+            # Normalize owner_id to string to merge duplicates (handles $oid format)
+            normalized_id = normalize_object_id(owner_id)
+            if not normalized_id:
+                continue
+            
+            user_key = normalized_id  # Use normalized user_id as key
             
             if user_stats[user_key]['user_id'] == '':
-                user_stats[user_key]['user_id'] = owner_id
+                user_stats[user_key]['user_id'] = normalized_id
                 user_stats[user_key]['user_name'] = owner_name
             
             user_stats[user_key]['image_count'] += 1
