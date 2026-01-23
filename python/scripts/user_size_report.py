@@ -48,7 +48,8 @@ def extract_owners_from_usage_info(
     tag: str,
     usage_info: Dict,
     mongodb_reports: Dict[str, List[Dict]],
-    model_created_by_map: Dict[str, str] = None
+    model_created_by_map: Dict[str, str] = None,
+    tag_to_author_map: Dict[str, Tuple[str, str]] = None
 ) -> Set[Tuple[str, str]]:
     """Extract owner (user_id, user_name) pairs for a given tag from usage info.
     
@@ -56,11 +57,23 @@ def extract_owners_from_usage_info(
         tag: Docker image tag
         usage_info: Usage info dict for the tag
         mongodb_reports: Full MongoDB reports for additional lookups
+        model_created_by_map: Mapping from model_id -> createdBy ObjectId
+        tag_to_author_map: Mapping from Docker tag -> authorId from environment_revisions
     
     Returns:
         Set of (user_id, user_name) tuples
     """
     owners = set()
+    
+    # First, check if this is an environment tag and we have authorId from environment_revisions
+    if tag_to_author_map is None:
+        tag_to_author_map = {}
+    
+    author_info = tag_to_author_map.get(tag)
+    if author_info:
+        # This is an environment image with a known author
+        author_id, author_name = author_info
+        owners.add((author_id, author_name))
     
     # From runs: use project_owner_id and project_owner_name
     for run in usage_info.get('runs', []):
@@ -204,6 +217,79 @@ def build_model_created_by_mapping(mongodb_reports: Dict[str, List[Dict]]) -> Di
     return model_to_created_by
 
 
+def build_tag_to_author_mapping(analyzer: ImageAnalyzer) -> Dict[str, Tuple[str, str]]:
+    """Build a mapping from Docker tag to (authorId, authorName) by querying environment_revisions.
+    
+    Environment revisions store the author in metadata.authorId.
+    
+    Args:
+        analyzer: ImageAnalyzer instance with analyzed images
+    
+    Returns:
+        Dict mapping tag -> (authorId ObjectId as string, authorName)
+    """
+    tag_to_author = {}
+    
+    # Collect all environment tags from the analyzer
+    environment_tags = set()
+    for image_id, image_data in analyzer.images.items():
+        if image_id.startswith('environment:'):
+            tag = image_data['tag']
+            environment_tags.add(tag)
+    
+    if not environment_tags:
+        return tag_to_author
+    
+    # Query MongoDB to get authorId for each tag
+    try:
+        from utils.mongo_utils import get_mongo_client
+        from utils.config_manager import config_manager
+        from bson import ObjectId
+        
+        mongo_client = get_mongo_client()
+        db = mongo_client[config_manager.get_mongo_db()]
+        
+        # Query environment_revisions for tags that match
+        # Note: tags in environment_revisions are stored in metadata.dockerImageName.tag
+        revisions = db.environment_revisions.find(
+            {'metadata.dockerImageName.tag': {'$in': list(environment_tags)}},
+            {'metadata.dockerImageName.tag': 1, 'metadata.authorId': 1}
+        )
+        
+        # Collect author IDs to look up names
+        author_ids = set()
+        tag_to_author_id = {}
+        
+        for rev_doc in revisions:
+            tag = rev_doc.get('metadata', {}).get('dockerImageName', {}).get('tag')
+            author_id = rev_doc.get('metadata', {}).get('authorId')
+            if tag and author_id:
+                author_id_str = str(author_id)
+                author_ids.add(author_id)
+                tag_to_author_id[tag] = author_id_str
+        
+        # Look up user names for all author IDs
+        author_id_to_name = {}
+        if author_ids:
+            users = db.users.find(
+                {'_id': {'$in': list(author_ids)}},
+                {'_id': 1, 'fullName': 1}
+            )
+            for user_doc in users:
+                author_id_to_name[str(user_doc['_id'])] = user_doc.get('fullName', 'Unknown')
+        
+        # Build final mapping with names
+        for tag, author_id_str in tag_to_author_id.items():
+            author_name = author_id_to_name.get(author_id_str, 'Unknown')
+            tag_to_author[tag] = (author_id_str, author_name)
+        
+        mongo_client.close()
+    except Exception as e:
+        logger.warning(f"Could not query MongoDB for environment revision authors: {e}")
+    
+    return tag_to_author
+
+
 def build_tag_to_owners_mapping(
     analyzer: ImageAnalyzer,
     mongodb_reports: Dict[str, List[Dict]]
@@ -222,6 +308,9 @@ def build_tag_to_owners_mapping(
     
     # Build model_id -> createdBy mapping once
     model_created_by_map = build_model_created_by_mapping(mongodb_reports)
+    
+    # Build tag -> authorId mapping for environment revisions
+    tag_to_author_map = build_tag_to_author_mapping(analyzer)
     
     tag_to_owners = defaultdict(set)
     unknown_tags_info = []  # Track why tags are unknown
@@ -244,8 +333,8 @@ def build_tag_to_owners_mapping(
             usage_info.get('app_versions')
         ))
         
-        # Extract owners from usage info (pass the model mapping)
-        owners = extract_owners_from_usage_info(tag, usage_info, mongodb_reports, model_created_by_map)
+        # Extract owners from usage info (pass both mappings)
+        owners = extract_owners_from_usage_info(tag, usage_info, mongodb_reports, model_created_by_map, tag_to_author_map)
         
         if owners:
             tag_to_owners[tag].update(owners)
