@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
 # Add parent directory to path for imports
-_parent_dir = Path(__file__).parent.parent.parent.absolute()
+_parent_dir = Path(__file__).parent.parent.absolute()
 if str(_parent_dir) not in sys.path:
     sys.path.insert(0, str(_parent_dir))
 
@@ -47,7 +47,8 @@ def sizeof_fmt(num: float, suffix: str = "B") -> str:
 def extract_owners_from_usage_info(
     tag: str,
     usage_info: Dict,
-    mongodb_reports: Dict[str, List[Dict]]
+    mongodb_reports: Dict[str, List[Dict]],
+    model_created_by_map: Dict[str, str] = None
 ) -> Set[Tuple[str, str]]:
     """Extract owner (user_id, user_name) pairs for a given tag from usage info.
     
@@ -89,20 +90,28 @@ def extract_owners_from_usage_info(
                         owners.add(('workspace:' + str(workspace_id), user_name))
                     break
     
-    # From models: use model_owner name
-    # Model records have model_owner (name) but we need to find the owner ID
-    # For now, use model_id as identifier since we don't have owner ID in the pipeline
+    # From models: use metadata.createdBy (ObjectId) from MongoDB
+    # Models have their owner in metadata.createdBy which references the users collection
+    if model_created_by_map is None:
+        model_created_by_map = {}
+    
     for model in usage_info.get('models', []):
-        model_owner = model.get('model_owner', '')
+        model_owner = model.get('model_owner', '')  # Name from pipeline
+        model_created_by = model.get('model_created_by', '')  # Name from pipeline
         model_id = model.get('model_id', '')
-        if model_owner and model_owner != 'unknown' and model_id:
-            # Look up model record to see if we can find owner ID
-            for model_record in mongodb_reports.get('models', []):
-                if str(model_record.get('model_id') or model_record.get('_id', '')) == str(model_id):
-                    # Models may have createdBy or owner info, but pipeline doesn't include it
-                    # Use model_id as identifier
-                    owners.add(('model:' + str(model_id), model_owner))
-                    break
+        
+        if model_id:
+            model_id_str = str(model_id)
+            # Look up createdBy ObjectId from the pre-built mapping
+            created_by_id = model_created_by_map.get(model_id_str)
+            
+            if created_by_id:
+                # Use model_created_by name if available, otherwise model_owner, otherwise 'Unknown'
+                owner_name = model_created_by or model_owner or 'Unknown'
+                owners.add((created_by_id, owner_name))
+            elif model_owner and model_owner != 'unknown':
+                # Fallback: use model_owner name with model_id as identifier
+                owners.add(('model:' + model_id_str, model_owner))
     
     # From projects: use owner_id
     for project in usage_info.get('projects', []):
@@ -134,6 +143,67 @@ def extract_owners_from_usage_info(
     return owners
 
 
+def build_model_created_by_mapping(mongodb_reports: Dict[str, List[Dict]]) -> Dict[str, str]:
+    """Build a mapping from model_id to createdBy ObjectId by querying MongoDB.
+    
+    Args:
+        mongodb_reports: MongoDB usage reports
+    
+    Returns:
+        Dict mapping model_id -> createdBy ObjectId (as string)
+    """
+    model_to_created_by = {}
+    
+    # Collect all unique model IDs from the reports
+    model_ids = set()
+    for model_record in mongodb_reports.get('models', []):
+        model_id = model_record.get('model_id') or model_record.get('_id', '')
+        if model_id:
+            model_ids.add(str(model_id))
+    
+    if not model_ids:
+        return model_to_created_by
+    
+    # Query MongoDB in batch to get metadata.createdBy for all models
+    try:
+        from utils.mongo_utils import get_mongo_client
+        from utils.config_manager import config_manager
+        from bson import ObjectId
+        
+        mongo_client = get_mongo_client()
+        db = mongo_client[config_manager.get_mongo_db()]
+        
+        # Build list of ObjectIds (filtering out invalid ones)
+        object_ids = []
+        id_to_str = {}
+        for model_id_str in model_ids:
+            try:
+                obj_id = ObjectId(model_id_str)
+                object_ids.append(obj_id)
+                id_to_str[str(obj_id)] = model_id_str
+            except (ValueError, TypeError):
+                continue
+        
+        if object_ids:
+            # Query all models at once
+            models = db.models.find(
+                {'_id': {'$in': object_ids}},
+                {'_id': 1, 'metadata.createdBy': 1}
+            )
+            
+            for model_doc in models:
+                model_id_str = id_to_str.get(str(model_doc['_id']), str(model_doc['_id']))
+                created_by = model_doc.get('metadata', {}).get('createdBy')
+                if created_by:
+                    model_to_created_by[model_id_str] = str(created_by)
+        
+        mongo_client.close()
+    except Exception as e:
+        logger.warning(f"Could not query MongoDB for model owners: {e}")
+    
+    return model_to_created_by
+
+
 def build_tag_to_owners_mapping(
     analyzer: ImageAnalyzer,
     mongodb_reports: Dict[str, List[Dict]]
@@ -150,7 +220,11 @@ def build_tag_to_owners_mapping(
     service = ImageUsageService()
     _, all_usage_info = service.extract_docker_tags_with_usage_info(mongodb_reports)
     
+    # Build model_id -> createdBy mapping once
+    model_created_by_map = build_model_created_by_mapping(mongodb_reports)
+    
     tag_to_owners = defaultdict(set)
+    unknown_tags_info = []  # Track why tags are unknown
     
     # For each image tag, find its owners
     for image_id, image_data in analyzer.images.items():
@@ -159,14 +233,42 @@ def build_tag_to_owners_mapping(
         # Get usage info for this tag
         usage_info = all_usage_info.get(tag, {})
         
-        # Extract owners from usage info
-        owners = extract_owners_from_usage_info(tag, usage_info, mongodb_reports)
+        # Check if tag is referenced in MongoDB at all
+        has_usage = bool(usage_info and any(
+            usage_info.get('runs') or 
+            usage_info.get('workspaces') or 
+            usage_info.get('models') or 
+            usage_info.get('projects') or 
+            usage_info.get('scheduler_jobs') or 
+            usage_info.get('organizations') or 
+            usage_info.get('app_versions')
+        ))
+        
+        # Extract owners from usage info (pass the model mapping)
+        owners = extract_owners_from_usage_info(tag, usage_info, mongodb_reports, model_created_by_map)
         
         if owners:
             tag_to_owners[tag].update(owners)
         else:
             # If no owner found, mark as "Unknown"
             tag_to_owners[tag].add(('unknown', 'Unknown'))
+            
+            # Track why it's unknown for logging
+            if not has_usage:
+                unknown_tags_info.append((tag, 'not_in_mongodb'))
+            else:
+                unknown_tags_info.append((tag, 'owner_info_missing'))
+    
+    # Log summary of unknown tags
+    if unknown_tags_info:
+        not_in_mongo = [t for t, reason in unknown_tags_info if reason == 'not_in_mongodb']
+        missing_owner = [t for t, reason in unknown_tags_info if reason == 'owner_info_missing']
+        
+        logger.info(f"\nFound {len(unknown_tags_info)} images with unknown owners:")
+        if not_in_mongo:
+            logger.info(f"  - {len(not_in_mongo)} images not referenced in MongoDB (orphaned/unused images)")
+        if missing_owner:
+            logger.info(f"  - {len(missing_owner)} images referenced in MongoDB but owner information unavailable")
     
     return dict(tag_to_owners)
 
@@ -310,6 +412,10 @@ def print_report_summary(report_data: Dict) -> None:
     logger.info("Note: 'Freed if Deleted' accounts for shared layers - only unique")
     logger.info("      layers are counted. Total size includes all layers (shared + unique).")
     logger.info("      Ownership is determined from runs, workspaces, models, and projects.")
+    logger.info("")
+    logger.info("      Images with 'Unknown' owner may be:")
+    logger.info("      - Not referenced in MongoDB (orphaned/unused images)")
+    logger.info("      - Referenced in MongoDB but owner information is unavailable")
     logger.info("=" * 80)
 
 

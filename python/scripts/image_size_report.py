@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Dict, List
 
 # Add parent directory to path for imports
-_parent_dir = Path(__file__).parent.parent.parent.absolute()
+_parent_dir = Path(__file__).parent.parent.absolute()
 if str(_parent_dir) not in sys.path:
     sys.path.insert(0, str(_parent_dir))
 
