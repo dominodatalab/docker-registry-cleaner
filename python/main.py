@@ -236,7 +236,7 @@ Examples:
   python main.py image_size_report
   
   # Force regeneration of image analysis before generating size report
-  python main.py image_size_report --generate-analysis
+  python main.py image_size_report --generate-reports
   
   # Generate user size report (auto-generates reports if missing)
   python main.py user_size_report
