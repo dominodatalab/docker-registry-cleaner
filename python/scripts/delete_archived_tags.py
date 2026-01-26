@@ -1146,28 +1146,15 @@ class ArchivedTagsFinder(BaseDeletionScript):
                 prefix_index[prefix].append((usage_tag, usage_data))
         
         detailed_tags = []
+        
         for tag in archived_tags:
             # Try exact match first
-            raw_usage = usage_info.get(
-                tag.tag,
-                {
-                    'runs': [],
-                    'workspaces': [],
-                    'models': [],
-                    'scheduler_jobs': [],
-                    'projects': [],
-                    'organizations': [],
-                    'app_versions': [],
-                },
-            )
+            raw_usage = usage_info.get(tag.tag)
             
             # If no exact match, try prefix matching for extended tag formats
             # This handles cases where registry has extended tags like <objectId>-<version>-<timestamp>_<uniqueId>
             # but MongoDB reports have simpler tags like <objectId>-<version>
-            if not raw_usage or (not raw_usage.get('runs') and not raw_usage.get('workspaces') and 
-                                 not raw_usage.get('models') and not raw_usage.get('scheduler_jobs') and
-                                 not raw_usage.get('projects') and not raw_usage.get('organizations') and
-                                 not raw_usage.get('app_versions')):
+            if not raw_usage:
                 # Extract ObjectID prefix from registry tag
                 tag_parts = tag.tag.split('-', 1)
                 if len(tag_parts) >= 1:
@@ -1177,24 +1164,29 @@ class ArchivedTagsFinder(BaseDeletionScript):
                     for usage_tag, usage_data in matching_usage_tags:
                         # Check if tags match (registry tag starts with usage tag or vice versa)
                         if tag.tag.startswith(usage_tag + '-') or usage_tag.startswith(tag.tag + '-'):
-                            # Merge usage data
-                            if not raw_usage:
-                                raw_usage = {
-                                    'runs': [],
-                                    'workspaces': [],
-                                    'models': [],
-                                    'scheduler_jobs': [],
-                                    'projects': [],
-                                    'organizations': [],
-                                    'app_versions': [],
-                                }
-                            raw_usage['runs'].extend(usage_data.get('runs', []))
-                            raw_usage['workspaces'].extend(usage_data.get('workspaces', []))
-                            raw_usage['models'].extend(usage_data.get('models', []))
-                            raw_usage['scheduler_jobs'].extend(usage_data.get('scheduler_jobs', []))
-                            raw_usage['projects'].extend(usage_data.get('projects', []))
-                            raw_usage['organizations'].extend(usage_data.get('organizations', []))
-                            raw_usage['app_versions'].extend(usage_data.get('app_versions', []))
+                            # Found a prefix match - use this usage data
+                            raw_usage = {
+                                'runs': list(usage_data.get('runs', [])),
+                                'workspaces': list(usage_data.get('workspaces', [])),
+                                'models': list(usage_data.get('models', [])),
+                                'scheduler_jobs': list(usage_data.get('scheduler_jobs', [])),
+                                'projects': list(usage_data.get('projects', [])),
+                                'organizations': list(usage_data.get('organizations', [])),
+                                'app_versions': list(usage_data.get('app_versions', [])),
+                            }
+                            break
+            
+            # Initialize empty usage if still no match
+            if not raw_usage:
+                raw_usage = {
+                    'runs': [],
+                    'workspaces': [],
+                    'models': [],
+                    'scheduler_jobs': [],
+                    'projects': [],
+                    'organizations': [],
+                    'app_versions': [],
+                }
 
             runs = raw_usage.get('runs', [])
             workspaces = raw_usage.get('workspaces', [])
@@ -1220,6 +1212,12 @@ class ArchivedTagsFinder(BaseDeletionScript):
 
             # Human-readable summary and simple status flag
             usage_summary = self._generate_usage_summary(usage_for_report)
+            
+            # Note: For archived environments, workspaces_count and models_count are typically 0
+            # because:
+            # 1. Environments with active workspaces are filtered out by get_in_use_environment_ids()
+            # 2. Archived environments are not used by models
+            # Historical runs may still exist, which would mark the tag as "in_use"
             is_in_use = (
                 usage_for_report['runs_count'] > 0
                 or usage_for_report['workspaces_count'] > 0
@@ -1535,6 +1533,11 @@ def main():
                 sys.exit(0)
             
             # Filter out archived environment/revision IDs that are still in use
+            # NOTE: This filters out environments that are CURRENTLY referenced by workspaces/sessions.
+            # After this filter, remaining archived environments should have:
+            # - workspaces_count = 0 (no active workspaces using them)
+            # - models_count = 0 (archived environments aren't used by models)
+            # - But may still have historical runs_count > 0 (past usage)
             env_ids = [oid for oid in archived_ids if id_to_type_map.get(oid) == 'environment']
             rev_ids = [oid for oid in archived_ids if id_to_type_map.get(oid) == 'revision']
             in_use_map = finder.get_in_use_environment_ids(env_ids, rev_ids)
