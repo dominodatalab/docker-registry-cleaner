@@ -68,8 +68,7 @@ from utils.deletion_base import BaseDeletionScript
 from utils.image_usage import ImageUsageService
 from utils.logging_utils import get_logger, setup_logging
 from utils.mongo_utils import get_mongo_client
-from utils.report_utils import sizeof_fmt
-from utils.report_utils import ensure_mongodb_reports, get_timestamp_suffix, save_json
+from utils.report_utils import ensure_mongodb_reports, get_timestamp_suffix, save_json, sizeof_fmt
 
 logger = get_logger(__name__)
 
