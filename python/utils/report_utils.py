@@ -139,9 +139,14 @@ def save_json(path: str, data: Any, timestamp: bool = False) -> str:
     """
     Write JSON data to a file with indentation.
     
-    Handles MongoDB ObjectId and datetime serialization by converting them to strings.
-    ObjectIds are normalized using normalize_object_id() for consistency.
-    Datetime objects are converted to ISO format strings.
+    Handles MongoDB BSON types and Python types that aren't JSON serializable:
+    - ObjectId: normalized to strings
+    - datetime/date: converted to ISO format strings
+    - set/frozenset: converted to lists
+    - bytes: decoded to UTF-8 strings (or base64 if decode fails)
+    - Decimal128: converted to string representation
+    - Binary: converted to base64 string
+    - UUID: converted to string
     
     Args:
         path: Path to save the JSON file
@@ -153,20 +158,57 @@ def save_json(path: str, data: Any, timestamp: bool = False) -> str:
     """
     from bson import ObjectId
     from datetime import datetime, date
+    from uuid import UUID
+    import base64
     from utils.object_id_utils import normalize_object_id
     
+    # Import MongoDB BSON types (may not be available in all pymongo versions)
+    try:
+        from bson import Decimal128, Binary
+    except ImportError:
+        # Fallback if these aren't available
+        Decimal128 = None
+        Binary = None
+    
     def normalize_object_ids_in_data(data):
-        """Recursively normalize ObjectIds and datetime objects in data structures.
+        """Recursively normalize non-JSON-serializable types in data structures.
         
         Converts:
         - ObjectId objects to normalized strings
         - datetime/date objects to ISO format strings
+        - set/frozenset to lists
+        - bytes to UTF-8 strings (or base64 if decode fails)
+        - Decimal128 to string
+        - Binary to base64 string
+        - UUID to string
         """
         if isinstance(data, ObjectId):
             return normalize_object_id(data)
         elif isinstance(data, (datetime, date)):
             # Convert datetime/date objects to ISO format strings
             return data.isoformat()
+        elif isinstance(data, (set, frozenset)):
+            # Convert sets to lists (sorted for deterministic output)
+            try:
+                return [normalize_object_ids_in_data(item) for item in sorted(data)]
+            except TypeError:
+                # If items aren't sortable (e.g., mixed types), just convert to list
+                return [normalize_object_ids_in_data(item) for item in data]
+        elif isinstance(data, bytes):
+            # Try to decode as UTF-8, fall back to base64 if it fails
+            try:
+                return data.decode('utf-8')
+            except UnicodeDecodeError:
+                return base64.b64encode(data).decode('ascii')
+        elif Decimal128 is not None and isinstance(data, Decimal128):
+            # Convert Decimal128 to string representation
+            return str(data)
+        elif Binary is not None and isinstance(data, Binary):
+            # Convert Binary to base64 string
+            return base64.b64encode(data).decode('ascii')
+        elif isinstance(data, UUID):
+            # Convert UUID to string
+            return str(data)
         elif isinstance(data, dict):
             return {k: normalize_object_ids_in_data(v) for k, v in data.items()}
         elif isinstance(data, list):
