@@ -860,6 +860,28 @@ class SkopeoClient:
         """Build a complete Skopeo command with authentication"""
         return ["skopeo", subcommand] + self._get_auth_args() + args
     
+    @staticmethod
+    def _redact_command_for_logging(cmd: List[str]) -> List[str]:
+        """Return a copy of the command with any credentials redacted.
+        
+        This prevents secrets such as registry passwords from being written
+        to logs when we include the command for debugging.
+        """
+        redacted = list(cmd)
+        
+        # Redact --creds user:password style arguments
+        for i, token in enumerate(redacted):
+            if token == "--creds" and i + 1 < len(redacted):
+                value = redacted[i + 1]
+                if isinstance(value, str) and ":" in value:
+                    user, _ = value.split(":", 1)
+                    redacted[i + 1] = f"{user}:****"
+            # Redact explicit --password arguments if ever used
+            if token == "--password" and i + 1 < len(redacted):
+                redacted[i + 1] = "****"
+        
+        return redacted
+    
     def run_skopeo_command(self, subcommand: str, args: List[str]) -> Optional[str]:
         """Run a Skopeo command with standardized configuration"""
         # Ensure we're logged in before any operation
@@ -890,6 +912,7 @@ class SkopeoClient:
     def _run_skopeo_local(self, subcommand: str, args: List[str]) -> Optional[str]:
         """Run Skopeo command locally using subprocess with retry logic"""
         cmd = self._build_skopeo_command(subcommand, args)
+        log_cmd = " ".join(self._redact_command_for_logging(cmd))
         timeout = self.config_manager.get_retry_timeout()
         
         @retry_with_backoff(
@@ -910,7 +933,7 @@ class SkopeoClient:
                 )
                 return result.stdout
             except subprocess.TimeoutExpired as e:
-                logging.error(f"Skopeo command timed out after {timeout}s: {' '.join(cmd)}")
+                logging.error(f"Skopeo command timed out after {timeout}s: {log_cmd}")
                 from utils.error_utils import create_registry_connection_error
                 raise create_registry_connection_error(self.registry_url, e)
             except subprocess.CalledProcessError as e:
@@ -918,7 +941,7 @@ class SkopeoClient:
                 if "429" in error_str or "rate limit" in error_str or "too many requests" in error_str:
                     from utils.error_utils import create_rate_limit_error
                     raise create_rate_limit_error(f"skopeo {subcommand}", retry_after=1.0)
-                logging.error(f"Skopeo command failed: {' '.join(cmd)}")
+                logging.error(f"Skopeo command failed: {log_cmd}")
                 logging.error(f"Error: {e.stderr}")
                 from utils.error_utils import create_registry_connection_error
                 raise create_registry_connection_error(self.registry_url, e)
@@ -941,6 +964,7 @@ class SkopeoClient:
         from kubernetes.client.rest import ApiException
         
         cmd = self._build_skopeo_command(subcommand, args)
+        log_cmd = " ".join(self._redact_command_for_logging(cmd))
         
         @retry_with_backoff(
             max_retries=self.config_manager.get_max_retries(),
@@ -966,7 +990,7 @@ class SkopeoClient:
                     return response
                 else:
                     # Empty response might be transient, raise to trigger retry
-                    raise RuntimeError(f"Empty response from skopeo command: {' '.join(cmd)}")
+                    raise RuntimeError(f"Empty response from skopeo command: {log_cmd}")
                     
             except ApiException as e:
                 if e.status == 404:

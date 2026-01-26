@@ -15,6 +15,7 @@ Usage examples:
 
 import argparse
 import json
+import re
 import sys
 from collections import defaultdict
 from datetime import datetime
@@ -213,12 +214,20 @@ def build_tag_to_model_version_created_by_mapping(analyzer: ImageAnalyzer) -> Di
     Model versions have their owner in metadata.createdBy, and the Docker tag is stored
     in metadata.builds.slug.image.tag.
     
+    Model tags can have formats like:
+    - Simple: `<modelId>-<version>`
+    - Extended: `<modelId>-<version>-<timestamp>_<uniqueId>`
+    
+    We try exact match first, then prefix matching for extended formats.
+    
     Args:
         analyzer: ImageAnalyzer instance with analyzed images
     
     Returns:
-        Dict mapping tag -> (model_version_id as string, createdBy ObjectId as string)
+        Dict mapping tag -> (model_version_id as string, createdBy ObjectId as string, createdBy_name)
     """
+    from utils.tag_matching import model_tags_match, extract_model_tag_prefix
+    
     tag_to_version_created_by = {}
     
     # Collect all model tags from the analyzer
@@ -235,33 +244,67 @@ def build_tag_to_model_version_created_by_mapping(analyzer: ImageAnalyzer) -> Di
     try:
         from utils.mongo_utils import get_mongo_client
         from utils.config_manager import config_manager
+        from bson import ObjectId
         
         mongo_client = get_mongo_client()
         db = mongo_client[config_manager.get_mongo_db()]
         
-        # Query model_versions for tags that match
-        # Tags in model_versions are stored in metadata.builds.slug.image.tag
-        model_versions = db.model_versions.find(
+        # First, try exact match
+        model_versions_exact = db.model_versions.find(
             {'metadata.builds.slug.image.tag': {'$in': list(model_tags)}},
-            {'_id': 1, 'metadata.builds.slug.image.tag': 1, 'metadata.createdBy': 1}
+            {'_id': 1, 'metadata.builds.slug.image.tag': 1, 'metadata.createdBy': 1, 'modelId.value': 1}
         )
         
-        # Collect createdBy IDs to look up names
-        created_by_ids = set()
+        # Track which tags we've matched
+        matched_tags = set()
         tag_to_version_id = {}
         tag_to_created_by_id = {}
+        created_by_ids = set()
         
-        for version_doc in model_versions:
-            tag = version_doc.get('metadata', {}).get('builds', {}).get('slug', {}).get('image', {}).get('tag')
+        # Process exact matches
+        for version_doc in model_versions_exact:
+            stored_tag = version_doc.get('metadata', {}).get('builds', {}).get('slug', {}).get('image', {}).get('tag')
             version_id = version_doc.get('_id')
             created_by = version_doc.get('metadata', {}).get('createdBy')
             
-            if tag and version_id and created_by:
+            if stored_tag and stored_tag in model_tags and version_id and created_by:
+                matched_tags.add(stored_tag)
                 version_id_str = normalize_object_id(version_id)
                 created_by_id = created_by
                 created_by_ids.add(created_by)
-                tag_to_version_id[tag] = version_id_str
-                tag_to_created_by_id[tag] = created_by_id
+                tag_to_version_id[stored_tag] = version_id_str
+                tag_to_created_by_id[stored_tag] = created_by_id
+        
+        # For unmatched tags, try prefix matching using utility function
+        unmatched_tags = model_tags - matched_tags
+        
+        if unmatched_tags:
+            logger.debug(f"Trying prefix matching for {len(unmatched_tags)} unmatched model tags")
+            
+            # Query all model_versions and match by prefix
+            all_model_versions = db.model_versions.find(
+                {'metadata.builds.slug.image.tag': {'$exists': True, '$ne': None}},
+                {'_id': 1, 'metadata.builds.slug.image.tag': 1, 'metadata.createdBy': 1}
+            )
+            
+            for version_doc in all_model_versions:
+                stored_tag = version_doc.get('metadata', {}).get('builds', {}).get('slug', {}).get('image', {}).get('tag')
+                version_id = version_doc.get('_id')
+                created_by = version_doc.get('metadata', {}).get('createdBy')
+                
+                if not stored_tag or not version_id or not created_by:
+                    continue
+                
+                # Use utility function to match tags
+                for registry_tag in unmatched_tags:
+                    if registry_tag not in matched_tags and model_tags_match(registry_tag, stored_tag):
+                        matched_tags.add(registry_tag)
+                        version_id_str = normalize_object_id(version_id)
+                        created_by_id = created_by
+                        created_by_ids.add(created_by)
+                        tag_to_version_id[registry_tag] = version_id_str
+                        tag_to_created_by_id[registry_tag] = created_by_id
+                        logger.debug(f"Matched registry tag '{registry_tag}' to stored tag '{stored_tag}'")
         
         # Look up user names for all createdBy IDs
         created_by_id_to_name = {}
@@ -282,9 +325,14 @@ def build_tag_to_model_version_created_by_mapping(analyzer: ImageAnalyzer) -> Di
                 created_by_name = created_by_id_to_name.get(normalized_created_by, 'Unknown')
                 tag_to_version_created_by[tag] = (version_id_str, normalized_created_by, created_by_name)
         
+        if unmatched_tags - matched_tags:
+            logger.info(f"Could not match {len(unmatched_tags - matched_tags)} model tags to MongoDB model_versions")
+        
         mongo_client.close()
     except Exception as e:
         logger.warning(f"Could not query MongoDB for model version owners: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
     
     return tag_to_version_created_by
 
@@ -363,6 +411,64 @@ def build_tag_to_author_mapping(analyzer: ImageAnalyzer) -> Dict[str, Tuple[str,
         logger.warning(f"Could not query MongoDB for environment revision authors: {e}")
     
     return tag_to_author
+
+
+def build_user_login_id_mapping(user_ids: Set[str]) -> Dict[str, str]:
+    """Build a mapping from user_id to loginId by querying MongoDB users collection.
+    
+    Args:
+        user_ids: Set of user IDs (ObjectIds as strings) to look up
+    
+    Returns:
+        Dict mapping user_id -> loginId.id (or empty string if not found)
+    """
+    user_id_to_login = {}
+    
+    if not user_ids:
+        return user_id_to_login
+    
+    try:
+        from utils.mongo_utils import get_mongo_client
+        from utils.config_manager import config_manager
+        from bson import ObjectId
+        
+        mongo_client = get_mongo_client()
+        db = mongo_client[config_manager.get_mongo_db()]
+        
+        # Build list of ObjectIds (filtering out invalid ones)
+        object_ids = []
+        id_to_str = {}
+        for user_id_str in user_ids:
+            # Skip non-ObjectId formats (like 'unknown', 'workspace:...', etc.)
+            if user_id_str.startswith('unknown') or ':' in user_id_str:
+                continue
+            try:
+                obj_id = ObjectId(user_id_str)
+                object_ids.append(obj_id)
+                id_to_str[str(obj_id)] = user_id_str
+            except (ValueError, TypeError):
+                continue
+        
+        if object_ids:
+            # Query all users at once
+            users = db.users.find(
+                {'_id': {'$in': object_ids}},
+                {'_id': 1, 'loginId.id': 1}
+            )
+            
+            for user_doc in users:
+                user_id_str = id_to_str.get(str(user_doc['_id']), str(user_doc['_id']))
+                login_id = user_doc.get('loginId', {}).get('id', '')
+                if login_id:
+                    user_id_to_login[user_id_str] = str(login_id)
+                else:
+                    user_id_to_login[user_id_str] = ''
+        
+        mongo_client.close()
+    except Exception as e:
+        logger.warning(f"Could not query MongoDB for user login IDs: {e}")
+    
+    return user_id_to_login
 
 
 def build_tag_to_owners_mapping(
@@ -464,11 +570,16 @@ def generate_user_size_report(
     user_stats = defaultdict(lambda: {
         'user_id': '',
         'user_name': '',
+        'login_id': '',
         'image_count': 0,
         'total_size_bytes': 0,
         'total_size_gb': 0.0,
         'freed_space_bytes': 0,
         'freed_space_gb': 0.0,
+        'freed_space_environment_bytes': 0,
+        'freed_space_environment_gb': 0.0,
+        'freed_space_model_bytes': 0,
+        'freed_space_model_gb': 0.0,
         'images': []
     })
     
@@ -505,6 +616,12 @@ def generate_user_size_report(
             user_stats[user_key]['total_size_bytes'] += total_size_bytes
             user_stats[user_key]['freed_space_bytes'] += freed_space_bytes
             
+            # Track freed space by image type
+            if image_type == 'environment':
+                user_stats[user_key]['freed_space_environment_bytes'] += freed_space_bytes
+            elif image_type == 'model':
+                user_stats[user_key]['freed_space_model_bytes'] += freed_space_bytes
+            
             user_stats[user_key]['images'].append({
                 'image_id': image_id,
                 'image_type': image_type,
@@ -515,11 +632,18 @@ def generate_user_size_report(
                 'freed_space_gb': round(freed_space_bytes / (1024**3), 2)
             })
     
-    # Convert to list and calculate GB values
+    # Collect all user IDs to look up login IDs
+    all_user_ids = set(user_stats.keys())
+    user_id_to_login = build_user_login_id_mapping(all_user_ids)
+    
+    # Convert to list and calculate GB values, add login IDs
     users_list = []
     for user_key, stats in user_stats.items():
         stats['total_size_gb'] = round(stats['total_size_bytes'] / (1024**3), 2)
         stats['freed_space_gb'] = round(stats['freed_space_bytes'] / (1024**3), 2)
+        stats['freed_space_environment_gb'] = round(stats['freed_space_environment_bytes'] / (1024**3), 2)
+        stats['freed_space_model_gb'] = round(stats['freed_space_model_bytes'] / (1024**3), 2)
+        stats['login_id'] = user_id_to_login.get(user_key, '')
         users_list.append(stats)
     
     # Sort by total size (descending)
@@ -562,17 +686,20 @@ def print_report_summary(report_data: Dict) -> None:
     
     # Print top 20 users
     logger.info("\nTop 20 Users by Total Image Size:")
-    logger.info("-" * 80)
-    logger.info(f"{'Rank':<6} {'User ID':<30} {'User Name':<30} {'Images':<10} {'Total Size':<15} {'Freed if Deleted':<20}")
-    logger.info("-" * 80)
+    logger.info("-" * 165)
+    logger.info(f"{'Rank':<6} {'User ID':<30} {'User Name':<30} {'Login ID':<20} {'Images':<10} {'Total Size':<15} {'Freed if Deleted':<20} {'Environments':<15} {'Models':<15}")
+    logger.info("-" * 165)
     
     for idx, user in enumerate(users[:20], 1):
         user_id_display = user['user_id'][:27] + "..." if len(user['user_id']) > 30 else user['user_id']
         user_name_display = user['user_name'][:27] + "..." if len(user['user_name']) > 30 else user['user_name']
+        login_id_display = user.get('login_id', '')[:17] + "..." if len(user.get('login_id', '')) > 20 else user.get('login_id', '')
         logger.info(
-            f"{idx:<6} {user_id_display:<30} {user_name_display:<30} "
+            f"{idx:<6} {user_id_display:<30} {user_name_display:<30} {login_id_display:<20} "
             f"{user['image_count']:<10} {sizeof_fmt(user['total_size_bytes']):<15} "
-            f"{sizeof_fmt(user['freed_space_bytes']):<20}"
+            f"{sizeof_fmt(user['freed_space_bytes']):<20} "
+            f"{sizeof_fmt(user.get('freed_space_environment_bytes', 0)):<15} "
+            f"{sizeof_fmt(user.get('freed_space_model_bytes', 0)):<15}"
         )
     
     if len(users) > 20:
