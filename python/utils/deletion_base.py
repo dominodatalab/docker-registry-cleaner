@@ -17,6 +17,7 @@ from utils.checkpoint import CheckpointManager
 from utils.config_manager import config_manager, SkopeoClient
 from utils.logging_utils import get_logger
 from utils.health_checks import HealthChecker
+from utils.report_utils import sizeof_fmt
 
 
 class BaseDeletionScript(ABC):
@@ -161,6 +162,7 @@ class BaseDeletionScript(ABC):
         if 'skipped' in summary:
             self.logger.info(f"   Skipped (in use): {summary['skipped']}")
         if 'space_freed_gb' in summary:
-            self.logger.info(f"   {'Would save' if dry_run else 'Saved'}: {summary['space_freed_gb']:.2f} GB")
+            space_freed_bytes = summary.get('space_freed_bytes', summary.get('space_freed_gb', 0) * (1024**3))
+            self.logger.info(f"   {'Would save' if dry_run else 'Saved'}: {sizeof_fmt(space_freed_bytes)}")
         if 'results_file' in summary:
             self.logger.info(f"   Results saved to: {summary['results_file']}")

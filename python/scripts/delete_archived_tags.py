@@ -68,6 +68,7 @@ from utils.deletion_base import BaseDeletionScript
 from utils.image_usage import ImageUsageService
 from utils.logging_utils import get_logger, setup_logging
 from utils.mongo_utils import get_mongo_client
+from utils.report_utils import sizeof_fmt
 from utils.report_utils import ensure_mongodb_reports, get_timestamp_suffix, save_json
 
 logger = get_logger(__name__)
@@ -616,7 +617,7 @@ class ArchivedTagsFinder(BaseDeletionScript):
             # zero references after deletion (i.e., not used by any remaining images)
             total_freed = analyzer.freed_space_if_deleted(image_ids)
             
-            self.logger.info(f"Total space that would be freed: {total_freed / (1024**3):.2f} GB")
+            self.logger.info(f"Total space that would be freed: {sizeof_fmt(total_freed)}")
             
             return total_freed
             
@@ -1613,7 +1614,8 @@ def main():
                 logger.info(f"  - Archived model IDs: {summary['archived_model_ids']}")
                 logger.info(f"  - Archived version IDs: {summary['archived_version_ids']}")
             logger.info(f"Total matching tags: {summary['total_matching_tags']}")
-            logger.info(f"Space that would be freed: {summary['freed_space_gb']:.2f} GB")
+            freed_space_bytes = summary.get('freed_space_bytes', summary.get('freed_space_gb', 0) * (1024**3))
+            logger.info(f"Space that would be freed: {sizeof_fmt(freed_space_bytes)}")
             logger.info(f"Tags by image type:")
             for img_type, count in summary['tags_by_image_type'].items():
                 logger.info(f"  {img_type}: {count} tags")

@@ -66,7 +66,7 @@ from utils.deletion_base import BaseDeletionScript
 from utils.image_usage import ImageUsageService
 from utils.logging_utils import get_logger, setup_logging
 from utils.object_id_utils import read_typed_object_ids_from_file
-from utils.report_utils import ensure_image_analysis_reports, ensure_mongodb_reports, save_json
+from utils.report_utils import ensure_image_analysis_reports, ensure_mongodb_reports, save_json, sizeof_fmt
 
 
 @dataclass
@@ -756,7 +756,7 @@ class IntelligentImageDeleter(BaseDeletionScript):
             # zero references after deletion (i.e., not used by any remaining images)
             total_freed = analyzer.freed_space_if_deleted(image_ids)
             
-            self.logger.info(f"Total space that would be freed: {total_freed / (1024**3):.2f} GB")
+            self.logger.info(f"Total space that would be freed: {sizeof_fmt(total_freed)}")
             
             return total_freed, individual_sizes
             
@@ -842,7 +842,10 @@ class IntelligentImageDeleter(BaseDeletionScript):
         self.logger.info(f"   Total images analyzed: {report['summary']['total_images_analyzed']}")
         self.logger.info(f"   Images in use: {report['summary']['used_images']}")
         self.logger.info(f"   Images unused: {report['summary']['unused_images']}")
-        self.logger.info(f"   Potential space saved: {report['summary']['total_size_saved_gb']:.2f} GB")
+        total_saved_bytes = report['summary'].get('total_size_saved_bytes')
+        if total_saved_bytes is None:
+            total_saved_bytes = report['summary'].get('total_size_saved_gb', 0) * (1024**3)
+        self.logger.info(f"   Potential space saved: {sizeof_fmt(total_saved_bytes)}")
 
     def save_deletion_results(self, analysis: WorkloadAnalysis, deleted_tags: List[str], 
                               successful_deletions: int, failed_deletions: int, 
@@ -1079,14 +1082,14 @@ class IntelligentImageDeleter(BaseDeletionScript):
             
             if dry_run:
                 if repository:
-                    self.logger.info(f"  Would delete: {repository}:{tag} ({size / (1024**3):.2f} GB)")
+                    self.logger.info(f"  Would delete: {repository}:{tag} ({sizeof_fmt(size)})")
                 else:
-                    self.logger.info(f"  Would delete: environment:{tag} or model:{tag} ({size / (1024**3):.2f} GB)")
+                    self.logger.info(f"  Would delete: environment:{tag} or model:{tag} ({sizeof_fmt(size)})")
                 successful_deletions += 1
                 total_size_deleted += size
             else:
                 if repository:
-                    self.logger.info(f"  Deleting: {repository}:{tag} ({size / (1024**3):.2f} GB)")
+                    self.logger.info(f"  Deleting: {repository}:{tag} ({sizeof_fmt(size)})")
                     # Use standardized Skopeo client for deletion
                     if self.skopeo_client.delete_image(repository, tag):
                         self.logger.info(f"    ✅ Deleted successfully")
@@ -1166,7 +1169,7 @@ class IntelligentImageDeleter(BaseDeletionScript):
         # Use total_size_saved from analysis for accurate freed space (accounts for shared layers)
         # This is calculated correctly using ImageAnalyzer
         summary_size = analysis.total_size_saved if analysis.total_size_saved > 0 else total_size_deleted
-        self.logger.info(f"   {'Would save' if dry_run else 'Saved'}: {summary_size / (1024**3):.2f} GB")
+        self.logger.info(f"   {'Would save' if dry_run else 'Saved'}: {sizeof_fmt(summary_size)}")
         
         # Save results to JSON file
         results_file = self.save_deletion_results(

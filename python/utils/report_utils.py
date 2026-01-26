@@ -19,6 +19,27 @@ logger = get_logger(__name__)
 
 
 # ============================================================================
+# Formatting Utilities
+# ============================================================================
+
+def sizeof_fmt(num: float, suffix: str = "B") -> str:
+	"""Format bytes into human-readable size.
+	
+	Args:
+	    num: Number of bytes
+	    suffix: Suffix to append (default: "B")
+	
+	Returns:
+	    Formatted string like "1.5GiB", "500MiB", etc.
+	"""
+	for unit in ("", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi"):
+		if abs(num) < 1024.0:
+			return f"{num:3.1f}{unit}{suffix}"
+		num /= 1024.0
+	return f"{num:.1f}Yi{suffix}"
+
+
+# ============================================================================
 # Timestamp Utilities
 # ============================================================================
 

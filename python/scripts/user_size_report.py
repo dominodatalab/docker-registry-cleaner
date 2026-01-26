@@ -29,55 +29,15 @@ if str(_parent_dir) not in sys.path:
 
 from utils.config_manager import config_manager
 from utils.image_data_analysis import ImageAnalyzer
+from utils.image_metadata import extract_model_tag_from_version_doc, lookup_user_names_and_logins
 from utils.image_usage import ImageUsageService
 from utils.logging_utils import get_logger, setup_logging
-from utils.report_utils import save_json, ensure_all_reports
+from utils.object_id_utils import normalize_object_id
+from utils.report_utils import save_json, ensure_all_reports, sizeof_fmt
 
 logger = get_logger(__name__)
 
 
-def normalize_object_id(obj_id) -> str:
-    """Normalize an ObjectId to a string, handling both string and dict formats.
-    
-    Args:
-        obj_id: ObjectId in any format (string, ObjectId, dict with $oid, etc.)
-    
-    Returns:
-        Normalized ObjectId as string, or empty string if invalid
-    """
-    if not obj_id:
-        return ''
-    
-    # Handle dict format: {'$oid': '...'}
-    if isinstance(obj_id, dict):
-        if '$oid' in obj_id:
-            return str(obj_id['$oid'])
-        # If it's a dict but not $oid format, try to get string representation
-        return str(obj_id)
-    
-    # Handle string format
-    if isinstance(obj_id, str):
-        return obj_id
-    
-    # Handle BSON ObjectId
-    try:
-        from bson import ObjectId
-        if isinstance(obj_id, ObjectId):
-            return str(obj_id)
-    except ImportError:
-        pass
-    
-    # Fallback: convert to string
-    return str(obj_id)
-
-
-def sizeof_fmt(num: float, suffix: str = "B") -> str:
-    """Format bytes into human-readable size"""
-    for unit in ("", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi"):
-        if abs(num) < 1024.0:
-            return f"{num:3.1f}{unit}{suffix}"
-        num /= 1024.0
-    return f"{num:.1f}Yi{suffix}"
 
 
 def extract_owners_from_usage_info(
@@ -263,22 +223,9 @@ def build_tag_to_model_version_created_by_mapping(analyzer: ImageAnalyzer) -> Di
         
         # Process exact matches
         for version_doc in model_versions_exact:
-            # metadata.builds is a list of dictionaries
-            metadata = version_doc.get('metadata', {})
-            builds = metadata.get('builds', [])
-            
-            # Extract tag from first build's slug.image.tag
-            stored_tag = None
-            if isinstance(builds, list) and len(builds) > 0:
-                first_build = builds[0]
-                if isinstance(first_build, dict):
-                    slug = first_build.get('slug', {})
-                    if isinstance(slug, dict):
-                        image = slug.get('image', {})
-                        if isinstance(image, dict):
-                            stored_tag = image.get('tag')
-            
+            stored_tag = extract_model_tag_from_version_doc(version_doc)
             version_id = version_doc.get('_id')
+            metadata = version_doc.get('metadata', {})
             created_by = metadata.get('createdBy')
             
             if stored_tag and stored_tag in model_tags and version_id and created_by:
@@ -302,22 +249,9 @@ def build_tag_to_model_version_created_by_mapping(analyzer: ImageAnalyzer) -> Di
             )
             
             for version_doc in all_model_versions:
-                # metadata.builds is a list of dictionaries
-                metadata = version_doc.get('metadata', {})
-                builds = metadata.get('builds', [])
-                
-                # Extract tag from first build's slug.image.tag
-                stored_tag = None
-                if isinstance(builds, list) and len(builds) > 0:
-                    first_build = builds[0]
-                    if isinstance(first_build, dict):
-                        slug = first_build.get('slug', {})
-                        if isinstance(slug, dict):
-                            image = slug.get('image', {})
-                            if isinstance(image, dict):
-                                stored_tag = image.get('tag')
-                
+                stored_tag = extract_model_tag_from_version_doc(version_doc)
                 version_id = version_doc.get('_id')
+                metadata = version_doc.get('metadata', {})
                 created_by = metadata.get('createdBy')
                 
                 if not stored_tag or not version_id or not created_by:
@@ -335,15 +269,7 @@ def build_tag_to_model_version_created_by_mapping(analyzer: ImageAnalyzer) -> Di
                         logger.debug(f"Matched registry tag '{registry_tag}' to stored tag '{stored_tag}'")
         
         # Look up user names for all createdBy IDs
-        created_by_id_to_name = {}
-        if created_by_ids:
-            users = db.users.find(
-                {'_id': {'$in': list(created_by_ids)}},
-                {'_id': 1, 'fullName': 1}
-            )
-            for user_doc in users:
-                user_id_str = normalize_object_id(user_doc['_id'])
-                created_by_id_to_name[user_id_str] = user_doc.get('fullName', 'Unknown')
+        created_by_id_to_name, _ = lookup_user_names_and_logins(created_by_ids)
         
         # Build final mapping
         for tag, version_id_str in tag_to_version_id.items():
@@ -417,16 +343,7 @@ def build_tag_to_author_mapping(analyzer: ImageAnalyzer) -> Dict[str, Tuple[str,
                 tag_to_author_id[tag] = author_id_str
         
         # Look up user names for all author IDs
-        author_id_to_name = {}
-        if author_ids:
-            users = db.users.find(
-                {'_id': {'$in': list(author_ids)}},
-                {'_id': 1, 'fullName': 1}
-            )
-            for user_doc in users:
-                # Normalize the user ID to string
-                user_id_str = normalize_object_id(user_doc['_id'])
-                author_id_to_name[user_id_str] = user_doc.get('fullName', 'Unknown')
+        author_id_to_name, _ = lookup_user_names_and_logins(author_ids)
         
         # Build final mapping with names (normalize author_id_str to ensure consistency)
         for tag, author_id_str in tag_to_author_id.items():
@@ -450,52 +367,15 @@ def build_user_login_id_mapping(user_ids: Set[str]) -> Dict[str, str]:
     Returns:
         Dict mapping user_id -> loginId.id (or empty string if not found)
     """
-    user_id_to_login = {}
+    # Filter out non-ObjectId formats
+    filtered_ids = set()
+    for user_id_str in user_ids:
+        # Skip non-ObjectId formats (like 'unknown', 'workspace:...', etc.)
+        if not user_id_str.startswith('unknown') and ':' not in user_id_str:
+            filtered_ids.add(user_id_str)
     
-    if not user_ids:
-        return user_id_to_login
-    
-    try:
-        from utils.mongo_utils import get_mongo_client
-        from utils.config_manager import config_manager
-        from bson import ObjectId
-        
-        mongo_client = get_mongo_client()
-        db = mongo_client[config_manager.get_mongo_db()]
-        
-        # Build list of ObjectIds (filtering out invalid ones)
-        object_ids = []
-        id_to_str = {}
-        for user_id_str in user_ids:
-            # Skip non-ObjectId formats (like 'unknown', 'workspace:...', etc.)
-            if user_id_str.startswith('unknown') or ':' in user_id_str:
-                continue
-            try:
-                obj_id = ObjectId(user_id_str)
-                object_ids.append(obj_id)
-                id_to_str[str(obj_id)] = user_id_str
-            except (ValueError, TypeError):
-                continue
-        
-        if object_ids:
-            # Query all users at once
-            users = db.users.find(
-                {'_id': {'$in': object_ids}},
-                {'_id': 1, 'loginId.id': 1}
-            )
-            
-            for user_doc in users:
-                user_id_str = id_to_str.get(str(user_doc['_id']), str(user_doc['_id']))
-                login_id = user_doc.get('loginId', {}).get('id', '')
-                if login_id:
-                    user_id_to_login[user_id_str] = str(login_id)
-                else:
-                    user_id_to_login[user_id_str] = ''
-        
-        mongo_client.close()
-    except Exception as e:
-        logger.warning(f"Could not query MongoDB for user login IDs: {e}")
-    
+    # Use shared utility function
+    _, user_id_to_login = lookup_user_names_and_logins(filtered_ids)
     return user_id_to_login
 
 

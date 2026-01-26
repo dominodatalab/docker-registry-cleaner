@@ -28,19 +28,58 @@ if str(_parent_dir) not in sys.path:
 
 from utils.config_manager import config_manager
 from utils.image_data_analysis import ImageAnalyzer
+from utils.image_metadata import build_model_tag_to_metadata_mapping, build_environment_tag_to_metadata_mapping
 from utils.logging_utils import get_logger, setup_logging
-from utils.report_utils import save_json, ensure_image_analysis_reports
+from utils.object_id_utils import normalize_object_id
+from utils.report_utils import save_json, ensure_image_analysis_reports, sizeof_fmt
 
 logger = get_logger(__name__)
 
 
-def sizeof_fmt(num: float, suffix: str = "B") -> str:
-    """Format bytes into human-readable size"""
-    for unit in ("", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi"):
-        if abs(num) < 1024.0:
-            return f"{num:3.1f}{unit}{suffix}"
-        num /= 1024.0
-    return f"{num:.1f}Yi{suffix}"
+def build_image_metadata_mapping(analyzer: ImageAnalyzer) -> Dict[str, Dict]:
+    """Build a mapping from image tags to their metadata (name and owner info).
+    
+    For model versions: gets model name from models collection and owner from metadata.createdBy
+    For environment revisions: gets environment name from environments_v2 and owner from metadata.authorId
+    
+    Args:
+        analyzer: ImageAnalyzer instance with analyzed images
+    
+    Returns:
+        Dict mapping tag -> {'image_name': str, 'user_name': str, 'owner_login_id': str}
+    """
+    tag_to_metadata = {}
+    
+    # Separate model and environment tags
+    model_tags = set()
+    environment_tags = set()
+    
+    for image_id, image_data in analyzer.images.items():
+        tag = image_data['tag']
+        image_type = image_id.split(':')[0] if ':' in image_id else 'unknown'
+        if image_type == 'model':
+            model_tags.add(tag)
+        elif image_type == 'environment':
+            environment_tags.add(tag)
+    
+    # Use shared utility functions
+    if model_tags:
+        model_metadata = build_model_tag_to_metadata_mapping(
+            model_tags,
+            include_model_name=True,
+            include_owner_info=True
+        )
+        tag_to_metadata.update(model_metadata)
+    
+    if environment_tags:
+        env_metadata = build_environment_tag_to_metadata_mapping(
+            environment_tags,
+            include_env_name=True,
+            include_owner_info=True
+        )
+        tag_to_metadata.update(env_metadata)
+    
+    return tag_to_metadata
 
 
 def generate_image_size_report(
@@ -72,6 +111,10 @@ def generate_image_size_report(
         'images': []
     }
     
+    # Build metadata mapping (image names and owners)
+    logger.info("Looking up image names and owners from MongoDB...")
+    tag_to_metadata = build_image_metadata_mapping(analyzer)
+    
     # Collect all images
     images_list = []
     total_size = 0
@@ -84,6 +127,14 @@ def generate_image_size_report(
         if image_type not in image_types:
             continue
         
+        tag = image_data['tag']
+        
+        # Get metadata for this tag
+        metadata = tag_to_metadata.get(tag, {})
+        image_name = metadata.get('image_name', 'Unknown')
+        user_name = metadata.get('user_name', 'Unknown')
+        owner_login_id = metadata.get('owner_login_id', '')
+        
         # Calculate total size (sum of all layers)
         total_size_bytes = analyzer.get_image_total_size(image_id)
         
@@ -93,9 +144,12 @@ def generate_image_size_report(
         images_list.append({
             'image_id': image_id,
             'image_type': image_type,
-            'tag': image_data['tag'],
+            'tag': tag,
             'repository': image_data['repository'],
             'digest': image_data.get('digest', ''),
+            'image_name': image_name,
+            'user_name': user_name,
+            'owner_login_id': owner_login_id,
             'total_size_bytes': total_size_bytes,
             'total_size_gb': round(total_size_bytes / (1024**3), 2),
             'freed_space_bytes': freed_space_bytes,
@@ -144,14 +198,17 @@ def print_report_summary(report_data: Dict) -> None:
     
     # Print top 20 largest images
     logger.info("\nTop 20 Largest Images (by total size):")
-    logger.info("-" * 80)
-    logger.info(f"{'Rank':<6} {'Image Type':<15} {'Tag':<40} {'Total Size':<15} {'Freed if Deleted':<20}")
-    logger.info("-" * 80)
+    logger.info("-" * 160)
+    logger.info(f"{'Rank':<6} {'Image Type':<15} {'Image Name':<30} {'User Name':<30} {'Login ID':<20} {'Tag':<30} {'Total Size':<15} {'Freed if Deleted':<20}")
+    logger.info("-" * 160)
     
     for idx, img in enumerate(images[:20], 1):
-        tag_display = img['tag'][:37] + "..." if len(img['tag']) > 40 else img['tag']
+        tag_display = img['tag'][:27] + "..." if len(img['tag']) > 30 else img['tag']
+        image_name_display = img.get('image_name', 'Unknown')[:27] + "..." if len(img.get('image_name', 'Unknown')) > 30 else img.get('image_name', 'Unknown')
+        user_name_display = img.get('user_name', 'Unknown')[:27] + "..." if len(img.get('user_name', 'Unknown')) > 30 else img.get('user_name', 'Unknown')
+        login_id_display = img.get('owner_login_id', '')[:17] + "..." if len(img.get('owner_login_id', '')) > 20 else img.get('owner_login_id', '')
         logger.info(
-            f"{idx:<6} {img['image_type']:<15} {tag_display:<40} "
+            f"{idx:<6} {img['image_type']:<15} {image_name_display:<30} {user_name_display:<30} {login_id_display:<20} {tag_display:<30} "
             f"{sizeof_fmt(img['total_size_bytes']):<15} {sizeof_fmt(img['freed_space_bytes']):<20}"
         )
     

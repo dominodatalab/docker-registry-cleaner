@@ -36,18 +36,9 @@ if str(_parent_dir) not in sys.path:
 from utils.config_manager import config_manager
 from utils.image_data_analysis import ImageAnalyzer
 from utils.logging_utils import get_logger, setup_logging
-from utils.report_utils import ensure_all_reports
+from utils.report_utils import ensure_all_reports, sizeof_fmt
 
 logger = get_logger(__name__)
-
-
-def sizeof_fmt(num: float, suffix: str = "B") -> str:
-    """Format bytes into human-readable size"""
-    for unit in ("", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi"):
-        if abs(num) < 1024.0:
-            return f"{num:3.1f}{unit}{suffix}"
-        num /= 1024.0
-    return f"{num:.1f}Yi{suffix}"
 
 
 def generate_required_reports() -> None:
