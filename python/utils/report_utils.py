@@ -139,7 +139,9 @@ def save_json(path: str, data: Any, timestamp: bool = False) -> str:
     """
     Write JSON data to a file with indentation.
     
-    Handles MongoDB ObjectId serialization by converting them to strings.
+    Handles MongoDB ObjectId and datetime serialization by converting them to strings.
+    ObjectIds are normalized using normalize_object_id() for consistency.
+    Datetime objects are converted to ISO format strings.
     
     Args:
         path: Path to save the JSON file
@@ -150,12 +152,21 @@ def save_json(path: str, data: Any, timestamp: bool = False) -> str:
         Path to the saved file
     """
     from bson import ObjectId
+    from datetime import datetime, date
     from utils.object_id_utils import normalize_object_id
     
     def normalize_object_ids_in_data(data):
-        """Recursively normalize ObjectIds in data structures"""
+        """Recursively normalize ObjectIds and datetime objects in data structures.
+        
+        Converts:
+        - ObjectId objects to normalized strings
+        - datetime/date objects to ISO format strings
+        """
         if isinstance(data, ObjectId):
             return normalize_object_id(data)
+        elif isinstance(data, (datetime, date)):
+            # Convert datetime/date objects to ISO format strings
+            return data.isoformat()
         elif isinstance(data, dict):
             return {k: normalize_object_ids_in_data(v) for k, v in data.items()}
         elif isinstance(data, list):
