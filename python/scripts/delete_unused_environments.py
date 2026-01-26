@@ -62,7 +62,7 @@ from utils.image_usage import ImageUsageService
 from utils.image_data_analysis import ImageAnalyzer
 from utils.logging_utils import get_logger, setup_logging
 from utils.mongo_utils import get_mongo_client
-from utils.report_utils import ensure_mongodb_reports, get_timestamp_suffix, save_json
+from utils.report_utils import ensure_mongodb_reports, get_timestamp_suffix, save_json, sizeof_fmt
 
 logger = get_logger(__name__)
 
@@ -631,7 +631,7 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
             # This properly accounts for shared layers
             total_freed = analyzer.freed_space_if_deleted(image_ids)
             
-            self.logger.info(f"Total space that would be freed: {total_freed / (1024**3):.2f} GB")
+            self.logger.info(f"Total space that would be freed: {sizeof_fmt(total_freed)}")
             
             return total_freed
             
@@ -1515,7 +1515,8 @@ def main():
             logger.info("=" * 60)
             logger.info(f"Total unused environment IDs: {summary['total_unused_environment_ids']}")
             logger.info(f"Total matching tags: {summary['total_matching_tags']}")
-            logger.info(f"Space that would be freed: {summary['freed_space_gb']:.2f} GB")
+            freed_space_bytes = summary.get('freed_space_bytes', summary.get('freed_space_gb', 0) * (1024**3))
+            logger.info(f"Space that would be freed: {sizeof_fmt(freed_space_bytes)}")
             logger.info(f"Environment IDs with tags: {summary['object_ids_with_tags']}")
             logger.info(f"Environment IDs without tags: {summary['object_ids_without_tags']}")
             

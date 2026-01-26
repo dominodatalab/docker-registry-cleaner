@@ -19,6 +19,27 @@ logger = get_logger(__name__)
 
 
 # ============================================================================
+# Formatting Utilities
+# ============================================================================
+
+def sizeof_fmt(num: float, suffix: str = "B") -> str:
+	"""Format bytes into human-readable size.
+	
+	Args:
+	    num: Number of bytes
+	    suffix: Suffix to append (default: "B")
+	
+	Returns:
+	    Formatted string like "1.5GiB", "500MiB", etc.
+	"""
+	for unit in ("", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi"):
+		if abs(num) < 1024.0:
+			return f"{num:3.1f}{unit}{suffix}"
+		num /= 1024.0
+	return f"{num:.1f}Yi{suffix}"
+
+
+# ============================================================================
 # Timestamp Utilities
 # ============================================================================
 
@@ -92,6 +113,7 @@ def save_table_and_json(base_path: str, table_str: str, json_obj: Dict[str, Any]
     Returns:
         Path to the saved JSON file
     """
+    # Use save_json to handle ObjectId serialization
     base = Path(base_path)
     
     # Add timestamp if requested
@@ -106,10 +128,8 @@ def save_table_and_json(base_path: str, table_str: str, json_obj: Dict[str, Any]
     with open(f"{base}.txt", "w") as f:
         f.write(table_str)
     
-    # Write JSON
-    json_path = f"{base}.json"
-    with open(json_path, "w") as f:
-        json.dump(json_obj, f, indent=2)
+    # Write JSON using save_json to handle ObjectId serialization
+    json_path = save_json(f"{base}.json", json_obj, timestamp=False)
     
     logger.info(f"Saved reports to {base}.txt and {base}.json")
     return json_path
@@ -119,6 +139,8 @@ def save_json(path: str, data: Any, timestamp: bool = False) -> str:
     """
     Write JSON data to a file with indentation.
     
+    Handles MongoDB ObjectId serialization by converting them to strings.
+    
     Args:
         path: Path to save the JSON file
         data: Data to save
@@ -127,6 +149,22 @@ def save_json(path: str, data: Any, timestamp: bool = False) -> str:
     Returns:
         Path to the saved file
     """
+    from bson import ObjectId
+    from utils.object_id_utils import normalize_object_id
+    
+    def normalize_object_ids_in_data(data):
+        """Recursively normalize ObjectIds in data structures"""
+        if isinstance(data, ObjectId):
+            return normalize_object_id(data)
+        elif isinstance(data, dict):
+            return {k: normalize_object_ids_in_data(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [normalize_object_ids_in_data(item) for item in data]
+        elif isinstance(data, tuple):
+            return tuple(normalize_object_ids_in_data(item) for item in data)
+        else:
+            return data
+    
     p = Path(path)
     
     # Add timestamp if requested
@@ -134,8 +172,12 @@ def save_json(path: str, data: Any, timestamp: bool = False) -> str:
         p = Path(add_timestamp_to_path(str(p)))
     
     p.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Normalize ObjectIds in the data before serialization
+    normalized_data = normalize_object_ids_in_data(data)
+    
     with open(p, 'w') as f:
-        json.dump(data, f, indent=2)
+        json.dump(normalized_data, f, indent=2)
     logger.info(f"Saved JSON to {p}")
     return str(p)
 

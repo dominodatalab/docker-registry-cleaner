@@ -22,6 +22,7 @@ Usage examples:
 """
 
 import argparse
+import re
 import sys
 
 from pathlib import Path
@@ -65,14 +66,35 @@ def connect_and_execute(apply: bool, target_mode: str, value: str, collection_na
 	    value: The tag or ObjectID value to search for
 	    collection_name: MongoDB collection to clean up (default: environment_revisions)
 	"""
+	from utils.tag_matching import model_tags_match, extract_model_tag_prefix
+	
 	db_name = config_manager.get_mongo_db()
 	client = get_mongo_client()
 	db = client[db_name]
 	collection = db[collection_name]
-	if target_mode == "objectId":
-		query = {"metadata.dockerImageName.tag": {"$regex": f"^{value}-"}}
+	
+	# Determine which field to query based on collection
+	if collection_name == "model_versions":
+		tag_field = "metadata.builds.slug.image.tag"
 	else:
-		query = {"metadata.dockerImageName.tag": value}
+		tag_field = "metadata.dockerImageName.tag"
+	
+	if target_mode == "objectId":
+		# For ObjectID mode, use regex prefix match
+		query = {tag_field: {"$regex": f"^{value}-"}}
+	elif collection_name == "model_versions":
+		# For model_versions, handle extended tag formats with prefix matching
+		# Try exact match first, then prefix match
+		prefix = extract_model_tag_prefix(value)
+		query = {
+			"$or": [
+				{tag_field: value},  # Exact match
+				{tag_field: {"$regex": f"^{re.escape(prefix)}(-|$)"}}  # Prefix match
+			]
+		}
+	else:
+		# For environment_revisions, use exact match
+		query = {tag_field: value}
 	
 	if apply:
 		print(f"Deleting documents for {target_mode}='{value}' in {db_name}.{collection_name}")

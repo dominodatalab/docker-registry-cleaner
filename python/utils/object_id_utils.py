@@ -137,3 +137,37 @@ def validate_object_id(value: str, *, field_name: str = "ObjectID") -> ObjectId:
 	except ValueError:
 		raise ValueError(f"{field_name} '{value}' is not a valid hexadecimal ObjectId")
 	return ObjectId(value)
+
+
+def normalize_object_id(obj_id) -> str:
+	"""Normalize an ObjectId to a string, handling both string and dict formats.
+	
+	Args:
+	    obj_id: ObjectId in any format (string, ObjectId, dict with $oid, etc.)
+	
+	Returns:
+	    Normalized ObjectId as string, or empty string if invalid
+	"""
+	if not obj_id:
+		return ''
+	
+	# Handle dict format: {'$oid': '...'}
+	if isinstance(obj_id, dict):
+		if '$oid' in obj_id:
+			return str(obj_id['$oid'])
+		# If it's a dict but not $oid format, try to get string representation
+		return str(obj_id)
+	
+	# Handle string format
+	if isinstance(obj_id, str):
+		return obj_id
+	
+	# Handle BSON ObjectId
+	try:
+		if isinstance(obj_id, ObjectId):
+			return str(obj_id)
+	except (NameError, TypeError):
+		pass
+	
+	# Fallback: convert to string
+	return str(obj_id)

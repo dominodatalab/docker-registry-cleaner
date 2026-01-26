@@ -246,19 +246,37 @@ class UnusedReferencesFinder:
             unused_references = []
             used_references = []
             
+            # Import tag matching utilities for model tags
+            from utils.tag_matching import model_tags_match
+            
             for ref in all_references:
                 # Check if the image exists in registry (flexible matching)
-                image_exists = (
-                    ref.full_image in existing_images or
-                    ref.tag in existing_images or
-                    f"{ref.repository}:{ref.tag}" in existing_images
-                )
+                # For model tags, use prefix matching to handle extended formats
+                image_exists = False
+                
+                if ref.collection == "model_versions":
+                    # For model tags, check if any existing image tag matches (with prefix matching)
+                    for existing_image in existing_images:
+                        # Extract tag from existing_image (format: "image_type:tag" or just "tag")
+                        existing_tag = existing_image.split(':')[-1] if ':' in existing_image else existing_image
+                        
+                        # Check if tags match (handles extended formats)
+                        if model_tags_match(existing_tag, ref.tag) or model_tags_match(ref.tag, existing_tag):
+                            image_exists = True
+                            break
+                else:
+                    # For other collections, use exact matching
+                    image_exists = (
+                        ref.full_image in existing_images or
+                        ref.tag in existing_images or
+                        f"{ref.repository}:{ref.tag}" in existing_images
+                    )
                 
                 if image_exists:
                     used_references.append(ref)
                 else:
                     # Debug logging for false negatives
-                    self.logger.debug(f"Image not found - full_image: {ref.full_image}, tag: {ref.tag}, repository: {ref.repository}")
+                    self.logger.debug(f"Image not found - full_image: {ref.full_image}, tag: {ref.tag}, repository: {ref.repository}, collection: {ref.collection}")
                     unused_references.append(ref)
             
             self.logger.info(f"Found {len(unused_references)} unused references and {len(used_references)} used references")
