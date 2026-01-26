@@ -263,9 +263,23 @@ def build_tag_to_model_version_created_by_mapping(analyzer: ImageAnalyzer) -> Di
         
         # Process exact matches
         for version_doc in model_versions_exact:
-            stored_tag = version_doc.get('metadata', {}).get('builds', {}).get('slug', {}).get('image', {}).get('tag')
+            # metadata.builds is a list of dictionaries
+            metadata = version_doc.get('metadata', {})
+            builds = metadata.get('builds', [])
+            
+            # Extract tag from first build's slug.image.tag
+            stored_tag = None
+            if isinstance(builds, list) and len(builds) > 0:
+                first_build = builds[0]
+                if isinstance(first_build, dict):
+                    slug = first_build.get('slug', {})
+                    if isinstance(slug, dict):
+                        image = slug.get('image', {})
+                        if isinstance(image, dict):
+                            stored_tag = image.get('tag')
+            
             version_id = version_doc.get('_id')
-            created_by = version_doc.get('metadata', {}).get('createdBy')
+            created_by = metadata.get('createdBy')
             
             if stored_tag and stored_tag in model_tags and version_id and created_by:
                 matched_tags.add(stored_tag)
@@ -288,9 +302,23 @@ def build_tag_to_model_version_created_by_mapping(analyzer: ImageAnalyzer) -> Di
             )
             
             for version_doc in all_model_versions:
-                stored_tag = version_doc.get('metadata', {}).get('builds', {}).get('slug', {}).get('image', {}).get('tag')
+                # metadata.builds is a list of dictionaries
+                metadata = version_doc.get('metadata', {})
+                builds = metadata.get('builds', [])
+                
+                # Extract tag from first build's slug.image.tag
+                stored_tag = None
+                if isinstance(builds, list) and len(builds) > 0:
+                    first_build = builds[0]
+                    if isinstance(first_build, dict):
+                        slug = first_build.get('slug', {})
+                        if isinstance(slug, dict):
+                            image = slug.get('image', {})
+                            if isinstance(image, dict):
+                                stored_tag = image.get('tag')
+                
                 version_id = version_doc.get('_id')
-                created_by = version_doc.get('metadata', {}).get('createdBy')
+                created_by = metadata.get('createdBy')
                 
                 if not stored_tag or not version_id or not created_by:
                     continue
