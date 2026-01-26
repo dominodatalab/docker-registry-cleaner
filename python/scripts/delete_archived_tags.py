@@ -1122,11 +1122,32 @@ class ArchivedTagsFinder(BaseDeletionScript):
         # Enrich with usage information (runs, workspaces, models, projects, etc.)
         service = ImageUsageService()
         mongodb_reports = service.load_mongodb_usage_reports()
+        
+        # Log report statistics for debugging
+        self.logger.info(f"Loaded MongoDB usage reports:")
+        for key, value in mongodb_reports.items():
+            count = len(value) if isinstance(value, list) else 0
+            self.logger.info(f"  {key}: {count} records")
+        
         _, usage_info = service.extract_docker_tags_with_usage_info(mongodb_reports)
+        self.logger.info(f"Extracted usage info for {len(usage_info)} unique tags")
+        
+        # Build a prefix index for faster tag matching
+        # Maps tag prefix (ObjectID part) to list of (full_tag, usage_data) tuples
+        prefix_index = {}
+        for usage_tag, usage_data in usage_info.items():
+            # Extract ObjectID prefix (everything before the first '-' after ObjectID)
+            # For tags like "507f1f77bcf86cd799439011-v2" or "507f1f77bcf86cd799439011-v2-1234567890_abc123"
+            parts = usage_tag.split('-', 1)
+            if len(parts) >= 1:
+                prefix = parts[0]  # ObjectID part
+                if prefix not in prefix_index:
+                    prefix_index[prefix] = []
+                prefix_index[prefix].append((usage_tag, usage_data))
         
         detailed_tags = []
         for tag in archived_tags:
-            # Raw usage from consolidated reports (full lists)
+            # Try exact match first
             raw_usage = usage_info.get(
                 tag.tag,
                 {
@@ -1139,6 +1160,41 @@ class ArchivedTagsFinder(BaseDeletionScript):
                     'app_versions': [],
                 },
             )
+            
+            # If no exact match, try prefix matching for extended tag formats
+            # This handles cases where registry has extended tags like <objectId>-<version>-<timestamp>_<uniqueId>
+            # but MongoDB reports have simpler tags like <objectId>-<version>
+            if not raw_usage or (not raw_usage.get('runs') and not raw_usage.get('workspaces') and 
+                                 not raw_usage.get('models') and not raw_usage.get('scheduler_jobs') and
+                                 not raw_usage.get('projects') and not raw_usage.get('organizations') and
+                                 not raw_usage.get('app_versions')):
+                # Extract ObjectID prefix from registry tag
+                tag_parts = tag.tag.split('-', 1)
+                if len(tag_parts) >= 1:
+                    tag_prefix = tag_parts[0]
+                    # Look up all usage tags with the same ObjectID prefix
+                    matching_usage_tags = prefix_index.get(tag_prefix, [])
+                    for usage_tag, usage_data in matching_usage_tags:
+                        # Check if tags match (registry tag starts with usage tag or vice versa)
+                        if tag.tag.startswith(usage_tag + '-') or usage_tag.startswith(tag.tag + '-'):
+                            # Merge usage data
+                            if not raw_usage:
+                                raw_usage = {
+                                    'runs': [],
+                                    'workspaces': [],
+                                    'models': [],
+                                    'scheduler_jobs': [],
+                                    'projects': [],
+                                    'organizations': [],
+                                    'app_versions': [],
+                                }
+                            raw_usage['runs'].extend(usage_data.get('runs', []))
+                            raw_usage['workspaces'].extend(usage_data.get('workspaces', []))
+                            raw_usage['models'].extend(usage_data.get('models', []))
+                            raw_usage['scheduler_jobs'].extend(usage_data.get('scheduler_jobs', []))
+                            raw_usage['projects'].extend(usage_data.get('projects', []))
+                            raw_usage['organizations'].extend(usage_data.get('organizations', []))
+                            raw_usage['app_versions'].extend(usage_data.get('app_versions', []))
 
             runs = raw_usage.get('runs', [])
             workspaces = raw_usage.get('workspaces', [])
