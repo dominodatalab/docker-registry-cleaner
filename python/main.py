@@ -19,34 +19,36 @@ from utils.health_checks import HealthChecker
 
 def load_script_paths() -> Dict[str, Optional[str]]:
     return {
-        "find_environment_usage": "scripts/find_environment_usage.py",
-        "mongo_cleanup": "scripts/mongo_cleanup.py",
-        "reports": "scripts/reports.py",
-        "image_size_report": "scripts/image_size_report.py",
-        "user_size_report": "scripts/user_size_report.py",
-        "delete_image": "scripts/delete_image.py",  
-        "delete_archived_tags": "scripts/delete_archived_tags.py",
         "archive_unused_environments": "scripts/archive_unused_environments.py",
+        "delete_archived_tags": "scripts/delete_archived_tags.py",
+        "delete_image": "scripts/delete_image.py",  
         "delete_unused_environments": "scripts/delete_unused_environments.py",
         "delete_unused_private_environments": "scripts/delete_unused_private_environments.py",
         "delete_all_unused_environments": None, # Special: runs multiple scripts
         "delete_unused_references": "scripts/delete_unused_references.py",
+        "find_environment_usage": "scripts/find_environment_usage.py",
+        "image_size_report": "scripts/image_size_report.py",
+        "mongo_cleanup": "scripts/mongo_cleanup.py",
+        "reports": "scripts/reports.py",
+        "reset_user_preferences": "scripts/reset_user_preferences.py",
+        "user_size_report": "scripts/user_size_report.py",
     }
 
 def get_script_descriptions() -> Dict[str, str]:
     return {
-        "find_environment_usage": "Find where a specific environment ID is used (projects, jobs, workspaces, runs, workloads)",
-        "mongo_cleanup": "Simple tag/ObjectID-based Mongo cleanup (consider using delete_unused_references for advanced features)",
-        "reports": "Generate tag usage reports from analysis data (auto-generates metadata)",
-        "image_size_report": "Generate a report of the largest images sorted by total size, showing space that would be freed if deleted",
-        "user_size_report": "Generate a report of image sizes grouped by user/owner, showing who is using the most space",
-        "delete_image": "Delete specific Docker image or analyze/delete unused images",
-        "delete_archived_tags": "Find and optionally delete Docker tags associated with archived environments and/or models",
         "archive_unused_environments": "Mark unused environments as archived in MongoDB",
+        "delete_archived_tags": "Find and optionally delete Docker tags associated with archived environments and/or models",
+        "delete_image": "Delete specific Docker image or analyze/delete unused images",
         "delete_unused_environments": "Find and optionally delete environments not used in workspaces, models, or project defaults (auto-generates reports)",
         "delete_unused_private_environments": "Find and optionally delete private environments owned by deactivated Keycloak users",
         "delete_all_unused_environments": "Run comprehensive unused environment cleanup (unused environments + deactivated user private environments)",
         "delete_unused_references": "Find and optionally delete MongoDB references to non-existent Docker images",
+        "find_environment_usage": "Find where a specific environment ID is used (projects, jobs, workspaces, runs, workloads)",
+        "image_size_report": "Generate a report of the largest images sorted by total size, showing space that would be freed if deleted",
+        "mongo_cleanup": "Simple tag/ObjectID-based Mongo cleanup (consider using delete_unused_references for advanced features)",
+        "reports": "Generate tag usage reports from analysis data (auto-generates metadata)",
+        "reset_user_preferences": "Unset defaultEnvironmentId in userPreferences for a list of environment IDs",
+        "user_size_report": "Generate a report of image sizes grouped by user/owner, showing who is using the most space",
     }
 
 def run_script(script_path: str, args: List[str], dry_run: bool = True) -> None:
