@@ -520,6 +520,48 @@ class ArchivedTagsFinder(BaseDeletionScript):
                     if oid is not None:
                         in_use[str(oid)] = True
 
+            # userPreferences: defaultEnvironmentId
+            # If a user has a defaultEnvironmentId set, we treat that environment (and its revisions)
+            # as "in use" and skip it from deletion. Also log how many users reference each env.
+            if env_object_ids and "userPreferences" in db.list_collection_names():
+                user_prefs = db["userPreferences"]
+                pipeline = [
+                    {"$match": {"defaultEnvironmentId": {"$in": env_object_ids}}},
+                    {"$group": {"_id": "$defaultEnvironmentId", "user_count": {"$sum": 1}}},
+                ]
+                pref_results = list(user_prefs.aggregate(pipeline))
+                if pref_results:
+                    # Map env ObjectId -> user_count
+                    pref_env_ids = []
+                    for doc in pref_results:
+                        env_oid = doc.get("_id")
+                        user_count = doc.get("user_count", 0)
+                        if env_oid is not None:
+                            env_id_str = str(env_oid)
+                            in_use[env_id_str] = True
+                            pref_env_ids.append(env_oid)
+                            self.logger.info(
+                                f"Environment {env_id_str} is set as defaultEnvironmentId "
+                                f"for {user_count} user(s) in userPreferences; marking as in-use."
+                            )
+
+                    # Also mark all revisions for these environments as in use
+                    if pref_env_ids:
+                        revisions_collection = db["environment_revisions"]
+                        rev_cursor = revisions_collection.find(
+                            {"environmentId": {"$in": pref_env_ids}}, {"_id": 1}
+                        )
+                        rev_count = 0
+                        for rev_doc in rev_cursor:
+                            rev_id = rev_doc.get("_id")
+                            if rev_id is not None:
+                                in_use[str(rev_id)] = True
+                                rev_count += 1
+                        if rev_count:
+                            self.logger.info(
+                                f"Marked {rev_count} environment_revision IDs as in-use due to userPreferences defaults."
+                            )
+
             return in_use
         finally:
             mongo_client.close()
@@ -1105,6 +1147,12 @@ class ArchivedTagsFinder(BaseDeletionScript):
                 by_image_type[tag.image_type] += 1
         
         # Create summary statistics
+        # NOTE: For "object_ids_with/without_tags" we only count revisions and versions, not
+        # top-level environments/models, to avoid double-counting (env ↔ revisions, model ↔ versions).
+        rev_and_version_ids = set(ids_by_type['revision'] + ids_by_type['version'])
+        object_ids_with_tags = sum(1 for oid in rev_and_version_ids if oid in by_object_id)
+        object_ids_without_tags = len(rev_and_version_ids) - object_ids_with_tags
+
         summary = {
             'total_archived_object_ids': len(archived_ids),
             'archived_environment_ids': len(ids_by_type['environment']),
@@ -1114,22 +1162,71 @@ class ArchivedTagsFinder(BaseDeletionScript):
             'total_matching_tags': len(archived_tags),
             'freed_space_gb': round(freed_space_bytes / (1024 * 1024 * 1024), 2),
             'tags_by_image_type': by_image_type,
-            'object_ids_with_tags': len(by_object_id),
-            'object_ids_without_tags': len(archived_ids) - len(by_object_id)
+            'object_ids_with_tags': object_ids_with_tags,
+            'object_ids_without_tags': object_ids_without_tags
         }
         
         # Prepare detailed data
         # Enrich with usage information (runs, workspaces, models, projects, etc.)
         service = ImageUsageService()
         mongodb_reports = service.load_mongodb_usage_reports()
+        
+        # Log report statistics for debugging
+        self.logger.info(f"Loaded MongoDB usage reports:")
+        for key, value in mongodb_reports.items():
+            count = len(value) if isinstance(value, list) else 0
+            self.logger.info(f"  {key}: {count} records")
+        
         _, usage_info = service.extract_docker_tags_with_usage_info(mongodb_reports)
+        self.logger.info(f"Extracted usage info for {len(usage_info)} unique tags")
+        
+        # Build a prefix index for faster tag matching
+        # Maps tag prefix (ObjectID part) to list of (full_tag, usage_data) tuples
+        prefix_index = {}
+        for usage_tag, usage_data in usage_info.items():
+            # Extract ObjectID prefix (everything before the first '-' after ObjectID)
+            # For tags like "507f1f77bcf86cd799439011-v2" or "507f1f77bcf86cd799439011-v2-1234567890_abc123"
+            parts = usage_tag.split('-', 1)
+            if len(parts) >= 1:
+                prefix = parts[0]  # ObjectID part
+                if prefix not in prefix_index:
+                    prefix_index[prefix] = []
+                prefix_index[prefix].append((usage_tag, usage_data))
         
         detailed_tags = []
+        
         for tag in archived_tags:
-            # Raw usage from consolidated reports (full lists)
-            raw_usage = usage_info.get(
-                tag.tag,
-                {
+            # Try exact match first
+            raw_usage = usage_info.get(tag.tag)
+            
+            # If no exact match, try prefix matching for extended tag formats
+            # This handles cases where registry has extended tags like <objectId>-<version>-<timestamp>_<uniqueId>
+            # but MongoDB reports have simpler tags like <objectId>-<version>
+            if not raw_usage:
+                # Extract ObjectID prefix from registry tag
+                tag_parts = tag.tag.split('-', 1)
+                if len(tag_parts) >= 1:
+                    tag_prefix = tag_parts[0]
+                    # Look up all usage tags with the same ObjectID prefix
+                    matching_usage_tags = prefix_index.get(tag_prefix, [])
+                    for usage_tag, usage_data in matching_usage_tags:
+                        # Check if tags match (registry tag starts with usage tag or vice versa)
+                        if tag.tag.startswith(usage_tag + '-') or usage_tag.startswith(tag.tag + '-'):
+                            # Found a prefix match - use this usage data
+                            raw_usage = {
+                                'runs': list(usage_data.get('runs', [])),
+                                'workspaces': list(usage_data.get('workspaces', [])),
+                                'models': list(usage_data.get('models', [])),
+                                'scheduler_jobs': list(usage_data.get('scheduler_jobs', [])),
+                                'projects': list(usage_data.get('projects', [])),
+                                'organizations': list(usage_data.get('organizations', [])),
+                                'app_versions': list(usage_data.get('app_versions', [])),
+                            }
+                            break
+            
+            # Initialize empty usage if still no match
+            if not raw_usage:
+                raw_usage = {
                     'runs': [],
                     'workspaces': [],
                     'models': [],
@@ -1137,8 +1234,7 @@ class ArchivedTagsFinder(BaseDeletionScript):
                     'projects': [],
                     'organizations': [],
                     'app_versions': [],
-                },
-            )
+                }
 
             runs = raw_usage.get('runs', [])
             workspaces = raw_usage.get('workspaces', [])
@@ -1164,6 +1260,12 @@ class ArchivedTagsFinder(BaseDeletionScript):
 
             # Human-readable summary and simple status flag
             usage_summary = self._generate_usage_summary(usage_for_report)
+            
+            # Note: For archived environments, workspaces_count and models_count are typically 0
+            # because:
+            # 1. Environments with active workspaces are filtered out by get_in_use_environment_ids()
+            # 2. Archived environments are not used by models
+            # Historical runs may still exist, which would mark the tag as "in_use"
             is_in_use = (
                 usage_for_report['runs_count'] > 0
                 or usage_for_report['workspaces_count'] > 0
@@ -1479,6 +1581,11 @@ def main():
                 sys.exit(0)
             
             # Filter out archived environment/revision IDs that are still in use
+            # NOTE: This filters out environments that are CURRENTLY referenced by workspaces/sessions.
+            # After this filter, remaining archived environments should have:
+            # - workspaces_count = 0 (no active workspaces using them)
+            # - models_count = 0 (archived environments aren't used by models)
+            # - But may still have historical runs_count > 0 (past usage)
             env_ids = [oid for oid in archived_ids if id_to_type_map.get(oid) == 'environment']
             rev_ids = [oid for oid in archived_ids if id_to_type_map.get(oid) == 'revision']
             in_use_map = finder.get_in_use_environment_ids(env_ids, rev_ids)

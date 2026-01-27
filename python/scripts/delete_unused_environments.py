@@ -360,7 +360,8 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
         return used_ids
     
     def fetch_all_environments_and_defaults(self) -> tuple:
-        """Fetch all environment IDs from MongoDB, project defaults, org defaults, scheduled job environments, and app versions
+        """Fetch all environment IDs from MongoDB, project defaults, org defaults, scheduled job environments,
+        app versions, and user default environments (userPreferences.defaultEnvironmentId).
         
         For app versions, only includes environments from app_versions that reference unarchived model_products.
         """
@@ -481,7 +482,38 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
                     missing.append("app_versions")
                 self.logger.info(f"Collections not found: {', '.join(missing)}, skipping app version environment check")
             
-            return all_env_ids, all_revision_ids, default_env_ids, scheduler_env_ids, app_version_env_ids, org_default_env_ids
+            # Get user default environments from userPreferences (collection may not exist)
+            user_pref_env_ids = set()
+            if "userPreferences" in db.list_collection_names():
+                user_prefs = db["userPreferences"]
+                pipeline = [
+                    {"$match": {"defaultEnvironmentId": {"$ne": None}}},
+                    {"$group": {"_id": "$defaultEnvironmentId", "user_count": {"$sum": 1}}},
+                ]
+                pref_results = list(user_prefs.aggregate(pipeline))
+                for doc in pref_results:
+                    env_oid = doc.get("_id")
+                    user_count = doc.get("user_count", 0)
+                    if env_oid is not None:
+                        env_id_str = str(env_oid)
+                        user_pref_env_ids.add(env_id_str)
+                        self.logger.info(
+                            f"Environment {env_id_str} is set as defaultEnvironmentId for "
+                            f"{user_count} user(s) in userPreferences."
+                        )
+                self.logger.info(f"Found {len(user_pref_env_ids)} user default environments in userPreferences")
+            else:
+                self.logger.info("Collection 'userPreferences' not found, skipping user default environment check")
+            
+            return (
+                all_env_ids,
+                all_revision_ids,
+                default_env_ids,
+                scheduler_env_ids,
+                app_version_env_ids,
+                org_default_env_ids,
+                user_pref_env_ids,
+            )
             
         finally:
             mongo_client.close()
@@ -506,14 +538,27 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
         )
         
         # Get all environments and defaults from MongoDB
-        all_env_ids, all_revision_ids, default_env_ids, scheduler_env_ids, app_version_env_ids, org_default_env_ids = self.fetch_all_environments_and_defaults()
+        (
+            all_env_ids,
+            all_revision_ids,
+            default_env_ids,
+            scheduler_env_ids,
+            app_version_env_ids,
+            org_default_env_ids,
+            user_pref_env_ids,
+        ) = self.fetch_all_environments_and_defaults()
         
-        # Add project defaults, scheduled job environments, org defaults, and app version environments to used IDs
+        # Add project defaults, scheduled job environments, org defaults, app version environments,
+        # and user default environments to used IDs
         used_ids.update(default_env_ids)
         used_ids.update(scheduler_env_ids)
         used_ids.update(app_version_env_ids)
         used_ids.update(org_default_env_ids)
-        self.logger.info(f"Total used IDs (including project defaults, org defaults, scheduled jobs, and app versions): {len(used_ids)}")
+        used_ids.update(user_pref_env_ids)
+        self.logger.info(
+            "Total used IDs (including project defaults, org defaults, scheduled jobs, app versions, "
+            f"and user default environments): {len(used_ids)}"
+        )
         
         # Combine all environment and revision IDs
         all_ids = {}
