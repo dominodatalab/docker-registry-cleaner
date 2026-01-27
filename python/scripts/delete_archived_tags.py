@@ -1105,6 +1105,12 @@ class ArchivedTagsFinder(BaseDeletionScript):
                 by_image_type[tag.image_type] += 1
         
         # Create summary statistics
+        # NOTE: For "object_ids_with/without_tags" we only count revisions and versions, not
+        # top-level environments/models, to avoid double-counting (env ↔ revisions, model ↔ versions).
+        rev_and_version_ids = set(ids_by_type['revision'] + ids_by_type['version'])
+        object_ids_with_tags = sum(1 for oid in rev_and_version_ids if oid in by_object_id)
+        object_ids_without_tags = len(rev_and_version_ids) - object_ids_with_tags
+
         summary = {
             'total_archived_object_ids': len(archived_ids),
             'archived_environment_ids': len(ids_by_type['environment']),
@@ -1114,8 +1120,8 @@ class ArchivedTagsFinder(BaseDeletionScript):
             'total_matching_tags': len(archived_tags),
             'freed_space_gb': round(freed_space_bytes / (1024 * 1024 * 1024), 2),
             'tags_by_image_type': by_image_type,
-            'object_ids_with_tags': len(by_object_id),
-            'object_ids_without_tags': len(archived_ids) - len(by_object_id)
+            'object_ids_with_tags': object_ids_with_tags,
+            'object_ids_without_tags': object_ids_without_tags
         }
         
         # Prepare detailed data
