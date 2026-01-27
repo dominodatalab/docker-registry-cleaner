@@ -77,7 +77,7 @@ def find_environment_usage(env_id: str) -> None:
         # Load auxiliary JSON reports using service
         service = ImageUsageService()
         
-        # Find direct environment ID usage in MongoDB collections (projects, scheduler_jobs, etc.)
+        # Find direct environment ID usage in MongoDB collections (projects, scheduler_jobs, organizations, app_versions)
         direct_usage = service.find_direct_environment_id_usage(all_ids)
         
         # Aggregate direct usage results
@@ -86,11 +86,23 @@ def find_environment_usage(env_id: str) -> None:
         organizations: List[Dict] = []
         app_versions: List[Dict] = []
         
-        for env_id, usage_info in direct_usage.items():
-            projects.extend(usage_info['projects'])
-            scheduler_jobs.extend(usage_info['scheduler_jobs'])
-            organizations.extend(usage_info['organizations'])
-            app_versions.extend(usage_info['app_versions'])
+        for env_key, usage_info in direct_usage.items():
+            projects.extend(usage_info.get('projects', []))
+            scheduler_jobs.extend(usage_info.get('scheduler_jobs', []))
+            organizations.extend(usage_info.get('organizations', []))
+            app_versions.extend(usage_info.get('app_versions', []))
+        
+        # User preferences: defaultEnvironmentId → userId
+        # If any user has this environment set as defaultEnvironmentId, report it as usage.
+        user_prefs: List[Dict] = []
+        if "userPreferences" in db.list_collection_names():
+            prefs_cursor = db["userPreferences"].find(
+                {"defaultEnvironmentId": env_obj_id},
+                {"_id": 1, "userId": 1},
+            )
+            user_prefs = list(prefs_cursor)
+        else:
+            logging.info("Collection 'userPreferences' not found, skipping userPreferences check.")
         
         # Load Docker tag usage reports
         mongodb_reports = service.load_mongodb_usage_reports()
@@ -172,6 +184,22 @@ def find_environment_usage(env_id: str) -> None:
                 )
         else:
             logging.info("No organizations found using this environment as defaultV2EnvironmentId.")
+
+        logging.info("\n===== Users With This as defaultEnvironmentId =====")
+        if user_prefs:
+            logging.info(
+                f"Found {len(user_prefs)} userPreferences records with defaultEnvironmentId={env_id}"
+            )
+            for up in user_prefs:
+                logging.info(
+                    "userPreferences _id=%s userId=%s",
+                    up.get("_id"),
+                    up.get("userId"),
+                )
+        else:
+            logging.info(
+                "No userPreferences documents found with defaultEnvironmentId pointing to this environment."
+            )
 
         logging.info("\n===== App Versions Referencing Environment =====")
         if app_versions:

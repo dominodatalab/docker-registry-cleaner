@@ -520,6 +520,48 @@ class ArchivedTagsFinder(BaseDeletionScript):
                     if oid is not None:
                         in_use[str(oid)] = True
 
+            # userPreferences: defaultEnvironmentId
+            # If a user has a defaultEnvironmentId set, we treat that environment (and its revisions)
+            # as "in use" and skip it from deletion. Also log how many users reference each env.
+            if env_object_ids and "userPreferences" in db.list_collection_names():
+                user_prefs = db["userPreferences"]
+                pipeline = [
+                    {"$match": {"defaultEnvironmentId": {"$in": env_object_ids}}},
+                    {"$group": {"_id": "$defaultEnvironmentId", "user_count": {"$sum": 1}}},
+                ]
+                pref_results = list(user_prefs.aggregate(pipeline))
+                if pref_results:
+                    # Map env ObjectId -> user_count
+                    pref_env_ids = []
+                    for doc in pref_results:
+                        env_oid = doc.get("_id")
+                        user_count = doc.get("user_count", 0)
+                        if env_oid is not None:
+                            env_id_str = str(env_oid)
+                            in_use[env_id_str] = True
+                            pref_env_ids.append(env_oid)
+                            self.logger.info(
+                                f"Environment {env_id_str} is set as defaultEnvironmentId "
+                                f"for {user_count} user(s) in userPreferences; marking as in-use."
+                            )
+
+                    # Also mark all revisions for these environments as in use
+                    if pref_env_ids:
+                        revisions_collection = db["environment_revisions"]
+                        rev_cursor = revisions_collection.find(
+                            {"environmentId": {"$in": pref_env_ids}}, {"_id": 1}
+                        )
+                        rev_count = 0
+                        for rev_doc in rev_cursor:
+                            rev_id = rev_doc.get("_id")
+                            if rev_id is not None:
+                                in_use[str(rev_id)] = True
+                                rev_count += 1
+                        if rev_count:
+                            self.logger.info(
+                                f"Marked {rev_count} environment_revision IDs as in-use due to userPreferences defaults."
+                            )
+
             return in_use
         finally:
             mongo_client.close()
