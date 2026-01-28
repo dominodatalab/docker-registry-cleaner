@@ -1442,6 +1442,12 @@ Examples:
         action='store_true',
         help='Also clean up MongoDB records after Docker image deletion (default: off)'
     )
+
+    parser.add_argument(
+        '--run-registry-gc',
+        action='store_true',
+        help='Run Docker registry garbage collection in the registry pod after deleting tags (internal registries only)'
+    )
     
     parser.add_argument(
         '--resume',
@@ -1695,6 +1701,21 @@ def main():
             logger.info(f"Total MongoDB records cleaned: {total_cleaned}")
             
             logger.info(f"\n✅ Archived {processing_str} tags deletion completed successfully!")
+            
+            # Optionally run registry garbage collection for internal registries
+            if args.apply and args.run_registry_gc:
+                from utils.registry_maintenance import run_registry_garbage_collection
+                logger.info(
+                    "Running Docker registry garbage collection after archived tag deletion..."
+                )
+                gc_ok = run_registry_garbage_collection(
+                    registry_statefulset=args.registry_statefulset
+                )
+                if not gc_ok:
+                    logger.warning(
+                        "Docker registry garbage collection did not complete successfully; "
+                        "see logs for details."
+                    )
             
         else:
             # Find mode - calculate freed space and generate report

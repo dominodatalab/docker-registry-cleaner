@@ -58,10 +58,77 @@ This will verify:
 - ✅ Configuration validity
 - ✅ Docker registry connectivity
 - ✅ MongoDB connectivity
-- ✅ Kubernetes API access (if using pod mode)
+- ✅ Kubernetes API access
 - ✅ S3 access (if configured)
 
 Health checks are also automatically run by deletion scripts that inherit from `BaseDeletionScript` before performing operations.
+
+## 📚 Playbooks
+
+This section gives end-to-end workflows you can follow, instead of stitching together individual commands.
+
+### 1. Safely reclaim space from archived environments
+
+1. **Run health checks**
+   ```bash
+   python python/main.py --health-check
+   ```
+2. **(Optional) Generate size/ownership reports**
+   ```bash
+   python python/main.py image_size_report --generate-reports
+   python python/main.py user_size_report --generate-reports
+   ```
+3. **Dry‑run archived environment deletion and review report**
+   ```bash
+   python python/main.py delete_archived_tags --environment --output archived-env-tags.json
+   ```
+4. **Delete archived environment tags with S3 backup**
+   ```bash
+   python python/main.py delete_archived_tags --environment \
+     --apply --backup --s3-bucket my-backup-bucket
+   ```
+
+### 2. Periodic cleanup of unused environments
+
+1. **Analyze unused environments (dry‑run)**
+   ```bash
+   python python/main.py delete_unused_environments --unused-since-days 30
+   ```
+2. **Archive rather than delete (Mongo‑only)**
+   ```bash
+   python python/main.py archive_unused_environments --unused-since-days 30 --apply
+   ```
+3. **Comprehensive deletion with backup**
+   ```bash
+   python python/main.py delete_all_unused_environments \
+     --apply --backup --s3-bucket my-backup-bucket
+   ```
+
+### 3. Investigate where an environment is used
+
+1. **Run the usage finder**
+   ```bash
+   python python/main.py find_environment_usage --environment-id <environmentObjectId>
+   ```
+2. **Review all references** in:
+   - Runs
+   - Workspaces
+   - Models / model versions
+   - Projects / scheduler jobs / organizations / app versions
+   - User preferences (`defaultEnvironmentId`)
+
+### 4. Cleanup only MongoDB references to missing images
+
+1. **Dry‑run unused reference detection**
+   ```bash
+   python python/main.py delete_unused_references
+   ```
+2. **Apply Mongo‑only cleanup**
+   ```bash
+   python python/main.py delete_unused_references --apply
+   ```
+
+For more specialized scenarios (e.g. targeted deletion by ObjectID, backup+restore flows), see the sections below.
 
 ## 🎛️ Common Options
 
@@ -194,6 +261,11 @@ python python/main.py delete_all_unused_environments --apply --backup --s3-bucke
 This command runs:
 1. Delete unused environments (not used in workspaces, models, or project defaults)
 2. Delete deactivated user private environments
+3. (Optional) Run Docker registry garbage collection to reclaim space in the registry:
+
+```bash
+python python/main.py run_registry_gc
+```
 
 #### Delete Unused MongoDB References
 
@@ -383,9 +455,6 @@ export KEYCLOAK_PASSWORD="keycloak_password"
 # S3 Backup
 export S3_BUCKET="my-backup-bucket"
 export S3_REGION="us-west-2"
-
-# Skopeo
-export SKOPEO_USE_POD="false"  # Set to "true" for K8s pod mode
 ```
 
 ### View Current Configuration

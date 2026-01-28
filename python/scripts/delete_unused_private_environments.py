@@ -991,6 +991,12 @@ Environment Variables Required:
     )
     
     parser.add_argument(
+        '--run-registry-gc',
+        action='store_true',
+        help='Run Docker registry garbage collection in the registry pod after deleting tags (internal registries only)'
+    )
+    
+    parser.add_argument(
         '--resume',
         action='store_true',
         help='Resume from previous checkpoint if operation was interrupted'
@@ -1200,6 +1206,21 @@ def main():
             logger.info(f"Total MongoDB records cleaned: {total_cleaned}")
             
             logger.info("\n✅ Deactivated user environment deletion completed successfully!")
+            
+            # Optionally run registry garbage collection for internal registries
+            if args.apply and args.run_registry_gc:
+                from utils.registry_maintenance import run_registry_garbage_collection
+                logger.info(
+                    "Running Docker registry garbage collection after deactivated user environment deletion..."
+                )
+                gc_ok = run_registry_garbage_collection(
+                    registry_statefulset=args.registry_statefulset
+                )
+                if not gc_ok:
+                    logger.warning(
+                        "Docker registry garbage collection did not complete successfully; "
+                        "see logs for details."
+                    )
             
         else:
             # Find mode - calculate freed space and generate report

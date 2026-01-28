@@ -1297,6 +1297,11 @@ def parse_arguments():
         help='Name of registry StatefulSet/Deployment to modify for deletion (default: docker-registry)'
     )
     parser.add_argument(
+        '--run-registry-gc',
+        action='store_true',
+        help='Run Docker registry garbage collection in the registry pod after deleting images (internal registries only)'
+    )
+    parser.add_argument(
         '--unused-since-days',
         dest='days',
         type=int,
@@ -1620,6 +1625,21 @@ def main():
         else:
             logger.info("\n✅ DELETION COMPLETED")
             logger.info("Images have been deleted from the registry.")
+
+            # Optionally run registry garbage collection for internal registries
+            if args.run_registry_gc:
+                from utils.registry_maintenance import run_registry_garbage_collection
+                logger.info(
+                    "Running Docker registry garbage collection after image deletion..."
+                )
+                gc_ok = run_registry_garbage_collection(
+                    registry_statefulset=args.registry_statefulset
+                )
+                if not gc_ok:
+                    logger.warning(
+                        "Docker registry garbage collection did not complete successfully; "
+                        "see logs for details."
+                    )
         
     except KeyboardInterrupt:
         logger = get_logger(__name__)
