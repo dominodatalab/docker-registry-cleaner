@@ -1272,7 +1272,11 @@ def parse_arguments():
     parser.add_argument("--output", default=config_manager.get_deletion_analysis_path(), help="Path for deletion analysis report")
     parser.add_argument("--skip-analysis", action="store_true", help="Skip workload analysis and use traditional environments file")
     parser.add_argument("--input", help="File containing ObjectIDs (one per line) to filter images, or pre-generated report file (supports prefixes: environment:, environmentRevision:, model:, modelVersion:, or bare IDs)")
-    parser.add_argument("--mongo-cleanup", action="store_true", help="Also clean up MongoDB records after deleting images (disabled by default)")
+    parser.add_argument(
+        "--mongo-cleanup",
+        action="store_true",
+        help="Also clean up MongoDB records after deleting images (advanced / high-risk; see README)",
+    )
     parser.add_argument(
         '--backup',
         action='store_true',

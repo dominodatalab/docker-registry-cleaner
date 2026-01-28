@@ -987,7 +987,7 @@ Environment Variables Required:
     parser.add_argument(
         '--mongo-cleanup',
         action='store_true',
-        help='Also clean up MongoDB records after Docker image deletion (default: off)'
+        help='Also clean up MongoDB records after Docker image deletion (advanced / high-risk; see README)'
     )
     
     parser.add_argument(

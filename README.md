@@ -45,6 +45,10 @@ python python/main.py delete_archived_tags --environment --apply --backup --s3-b
 python python/main.py delete_all_unused_environments --apply --backup --s3-bucket my-bucket
 ```
 
+> **Important:** This tool can **optionally** delete MongoDB records that reference images (environments, revisions, models, versions, and related links).  
+> While the project now performs much more thorough Mongo usage analysis than earlier versions, **MongoDB deletions remain inherently risky** because environments and models are linked to many other assets in Domino (projects, runs, workspaces, scheduler jobs, app versions, user preferences, etc.).  
+> In general, prefer **Docker‑only cleanup first** and enable Mongo cleanup (`--mongo-cleanup` flags or `delete_unused_references`) only when you fully understand the impact.
+
 ## 🏥 Health Checks
 
 Before running deletion operations, it's recommended to verify system connectivity:
@@ -269,7 +273,8 @@ python python/main.py run_registry_gc
 
 #### Delete Unused MongoDB References
 
-Cleans up MongoDB records referencing non-existent Docker images:
+**Advanced / high‑risk operation.**  
+Cleans up MongoDB records referencing non-existent Docker images. Even though this command targets records for images that no longer exist in the registry, **it still modifies primary Domino metadata collections**, so it should only be used by administrators who are comfortable with the schema and have recent backups.
 
 ```bash
 # Find unused references (dry-run)
