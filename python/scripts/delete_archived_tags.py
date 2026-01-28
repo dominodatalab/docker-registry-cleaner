@@ -1532,6 +1532,12 @@ Examples:
         action='store_true',
         help='Run Docker registry garbage collection in the registry pod after deleting tags (internal registries only)'
     )
+
+    parser.add_argument(
+        '--run-registry-gc',
+        action='store_true',
+        help='Run Docker registry garbage collection in the registry pod after deleting tags (internal registries only)'
+    )
     
     parser.add_argument(
         '--resume',

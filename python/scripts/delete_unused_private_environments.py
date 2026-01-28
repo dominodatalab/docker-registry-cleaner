@@ -996,6 +996,12 @@ Environment Variables Required:
     )
     
     parser.add_argument(
+        '--run-registry-gc',
+        action='store_true',
+        help='Run Docker registry garbage collection in the registry pod after deleting tags (internal registries only)'
+    )
+    
+    parser.add_argument(
         '--resume',
         action='store_true',
         help='Resume from previous checkpoint if operation was interrupted'
