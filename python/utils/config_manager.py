@@ -66,13 +66,16 @@ def _get_kubernetes_clients() -> Tuple[Any, Any]:
 class ConfigManager:
     """Manages configuration for the Docker registry cleaner project"""
     
-    def __init__(self, config_file: str = "../config.yaml", validate: bool = True):
+    def __init__(self, config_file: str = None, validate: bool = True):
         """Initialize ConfigManager
         
         Args:
-            config_file: Path to configuration YAML file
+            config_file: Path to configuration YAML file (defaults to ../config.yaml or CONFIG_FILE env var)
             validate: If True, validate configuration on initialization
         """
+        # Allow override via environment variable for containerized deployments
+        if config_file is None:
+            config_file = os.environ.get('CONFIG_FILE', '../config.yaml')
         self.config_file = config_file
         self.config = self._load_config()
         

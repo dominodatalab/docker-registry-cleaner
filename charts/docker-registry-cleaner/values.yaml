@@ -1,6 +1,6 @@
 image:
   repository: quay.io/domino/docker-registry-cleaner
-  tag: v0.1
+  tag: v0.2
   pullPolicy: Always
 
 imagePullSecrets:
@@ -13,6 +13,11 @@ serviceAccount:
   fullnameOverride: ""
 
 dominoPlatformNamespace: domino-platform
+
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClass: ""  # Use default storage class if empty
 
 config:
   # Inline config.yaml content mounted into the container
@@ -27,7 +32,7 @@ config:
   analysis:
     max_workers: 4
     timeout: 300
-    output_dir: "../reports"
+    output_dir: "/data/reports"
   retry:
     max_retries: 3
     initial_delay: 1.0
