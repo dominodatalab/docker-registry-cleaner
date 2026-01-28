@@ -45,29 +45,68 @@ class HealthChecker:
             from utils.config_manager import SkopeoClient
             
             registry_url = config_manager.get_registry_url()
-            repository = config_manager.get_repository()
+            base_repository = config_manager.get_repository()
             
-            self.logger.info(f"Checking registry connectivity: {registry_url}/{repository}")
+            # Determine which repositories to probe.
+            # If the configured repository already includes a type segment (e.g. "dominodatalab/environment"),
+            # just use it as-is. Otherwise, try common sub-repositories that we actually use.
+            if "/" in base_repository:
+                candidate_repos = [base_repository]
+            else:
+                candidate_repos = [
+                    f"{base_repository}/environment",
+                    f"{base_repository}/model",
+                ]
             
-            # Try to create a SkopeoClient and list tags
+            self.logger.info(
+                f"Checking registry connectivity at {registry_url} using repositories: "
+                + ", ".join(candidate_repos)
+            )
+            
+            # Try to create a SkopeoClient
             skopeo_client = SkopeoClient(
                 config_manager,
                 use_pod=config_manager.get_skopeo_use_pod(),
                 enable_docker_deletion=False
             )
+
+            last_error: Optional[Exception] = None
+            # Try each candidate repository until one succeeds
+            for repo in candidate_repos:
+                try:
+                    tags = skopeo_client.list_tags(repo)
+                    return HealthCheckResult(
+                        name="registry_connectivity",
+                        status=True,
+                        message=f"Successfully connected to registry {registry_url}",
+                        details={
+                            "registry_url": registry_url,
+                            "repository": repo,
+                            "tags_count": len(tags) if tags else 0,
+                        },
+                    )
+                except Exception as e_repo:
+                    # Record the error and try the next candidate
+                    last_error = e_repo
+                    self.logger.debug(
+                        f"Failed to list tags for candidate repository '{repo}': {e_repo}"
+                    )
             
-            # Try to list tags (this will fail if registry is unreachable)
-            tags = skopeo_client.list_tags(repository)
+            # If all candidates failed, raise the last error to be handled below
+            if last_error is not None:
+                raise last_error
             
+            # Fallback (should not normally reach here)
             return HealthCheckResult(
                 name="registry_connectivity",
-                status=True,
-                message=f"Successfully connected to registry {registry_url}",
+                status=False,
+                message=f"Failed to connect to registry {registry_url} using any candidate repository",
                 details={
                     "registry_url": registry_url,
-                    "repository": repository,
-                    "tags_count": len(tags) if tags else 0
-                }
+                    "repository": ",".join(candidate_repos),
+                    "error": "Unknown error",
+                    "suggestions": [],
+                },
             )
         except Exception as e:
             # Use actionable error for better user guidance
@@ -83,7 +122,7 @@ class HealthChecker:
                 message=error_message,
                 details={
                     "registry_url": registry_url,
-                    "repository": repository,
+                    "repository": ",".join(candidate_repos) if 'candidate_repos' in locals() else None,
                     "error": str(e),
                     "suggestions": actionable_error.suggestions if 'actionable_error' in locals() else []
                 }
