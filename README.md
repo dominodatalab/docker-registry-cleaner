@@ -494,10 +494,9 @@ Programmatic usage:
 from python.config_manager import config_manager, SkopeoClient
 
 skopeo_client = SkopeoClient(
-    config_manager, 
-    use_pod=False,
+    config_manager,
     enable_docker_deletion=True,
-    registry_statefulset="my-custom-registry"
+    registry_statefulset="my-custom-registry",
 )
 ```
 

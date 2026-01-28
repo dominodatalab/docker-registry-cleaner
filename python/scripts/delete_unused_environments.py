@@ -723,7 +723,7 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
             # Initialize ConfigManager and SkopeoClient for backup
             cfg_mgr = ConfigManager()
             from utils.config_manager import SkopeoClient
-            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
+            backup_skopeo_client = SkopeoClient(cfg_mgr)
             
             # Call process_backup from backup_restore
             try:
@@ -1480,7 +1480,7 @@ def main():
             from scripts.backup_restore import process_backup
             from utils.config_manager import ConfigManager, SkopeoClient
             cfg_mgr = ConfigManager()
-            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
+            backup_skopeo_client = SkopeoClient(cfg_mgr)
 
             try:
                 process_backup(

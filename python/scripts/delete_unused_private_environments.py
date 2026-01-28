@@ -440,7 +440,7 @@ class DeactivatedUserEnvFinder(BaseDeletionScript):
                 full_repo = f"{self.registry_url}/{self.repository}"
                 
                 cfg_mgr = ConfigManager()
-                backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
+                backup_skopeo_client = SkopeoClient(cfg_mgr)
                 
                 try:
                     process_backup(
@@ -1136,7 +1136,7 @@ def main():
             full_repo = f"{registry_url}/{repository}"
 
             cfg_mgr = ConfigManager()
-            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
+            backup_skopeo_client = SkopeoClient(cfg_mgr)
 
             try:
                 process_backup(

@@ -64,11 +64,7 @@ class HealthChecker:
             )
             
             # Try to create a SkopeoClient
-            skopeo_client = SkopeoClient(
-                config_manager,
-                use_pod=config_manager.get_skopeo_use_pod(),
-                enable_docker_deletion=False
-            )
+            skopeo_client = SkopeoClient(config_manager, enable_docker_deletion=False)
 
             last_error: Optional[Exception] = None
             # Try each candidate repository until one succeeds
@@ -190,15 +186,6 @@ class HealthChecker:
             HealthCheckResult indicating Kubernetes access status
         """
         try:
-            # Only check if skopeo_use_pod is enabled
-            if not config_manager.get_skopeo_use_pod():
-                return HealthCheckResult(
-                    name="kubernetes_access",
-                    status=True,
-                    message="Kubernetes access not required (skopeo_use_pod is False)",
-                    details={"skopeo_use_pod": False}
-                )
-            
             from kubernetes import client as k8s_client
             from kubernetes.config import load_incluster_config, load_kube_config
             from kubernetes.client.rest import ApiException
@@ -221,8 +208,7 @@ class HealthChecker:
                 status=True,
                 message=f"Successfully connected to Kubernetes API",
                 details={
-                    "namespace": namespace,
-                    "skopeo_use_pod": True
+                    "namespace": namespace
                 }
             )
         except ImportError:
@@ -230,7 +216,7 @@ class HealthChecker:
                 name="kubernetes_access",
                 status=False,
                 message="Kubernetes client not available (kubernetes package not installed)",
-                details={"skopeo_use_pod": config_manager.get_skopeo_use_pod()}
+                details={}
             )
         except Exception as e:
             # Use actionable error for better user guidance
@@ -246,7 +232,6 @@ class HealthChecker:
                 message=error_message,
                 details={
                     "namespace": namespace,
-                    "skopeo_use_pod": config_manager.get_skopeo_use_pod(),
                     "error": str(e),
                     "suggestions": actionable_error.suggestions if 'actionable_error' in locals() else []
                 }
@@ -529,10 +514,6 @@ class HealthChecker:
             results.append(self.check_registry_deletion_rbac())
             results.append(self.check_s3_access())
         else:
-            # Still check Kubernetes if it's required
-            if config_manager.get_skopeo_use_pod():
-                results.append(self.check_kubernetes_access())
-            
             # Still check S3 if it's configured
             if config_manager.get_s3_bucket():
                 results.append(self.check_s3_access())

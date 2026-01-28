@@ -43,9 +43,8 @@ class BaseDeletionScript(ABC):
         # Initialize Skopeo client
         self.skopeo_client = SkopeoClient(
             config_manager,
-            use_pod=config_manager.get_skopeo_use_pod(),
             enable_docker_deletion=enable_docker_deletion,
-            registry_statefulset=registry_statefulset
+            registry_statefulset=registry_statefulset,
         )
         
         # Initialize health checker

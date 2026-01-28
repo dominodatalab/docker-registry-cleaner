@@ -54,7 +54,6 @@ config:
     bucket: ""
     region: "us-west-2"
   skopeo:
-    use_pod: false
     rate_limit:
       enabled: true  # Enable rate limiting for registry operations
       requests_per_second: 10.0  # Maximum requests per second (adjust based on registry capacity)

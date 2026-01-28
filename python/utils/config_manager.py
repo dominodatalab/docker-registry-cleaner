@@ -116,7 +116,6 @@ class ConfigManager:
                 'region': 'us-west-2'
             },
             'skopeo': {
-                'use_pod': False,
                 'rate_limit': {
                     'enabled': True,
                     'requests_per_second': 10.0,  # Max requests per second
@@ -354,20 +353,6 @@ class ConfigManager:
     def get_s3_region(self) -> str:
         """Get S3 region from environment or config"""
         return os.environ.get('S3_REGION') or self.config.get('s3', {}).get('region', 'us-west-2')
-    
-    # Skopeo configuration
-    def get_skopeo_use_pod(self) -> bool:
-        """Get Skopeo pod mode setting from environment or config
-        
-        Returns:
-            True if Skopeo should run in pod mode, False for local subprocess mode
-        """
-        env_value = os.environ.get('SKOPEO_USE_POD', '').lower()
-        if env_value in ('true', '1', 'yes'):
-            return True
-        elif env_value in ('false', '0', 'no'):
-            return False
-        return self.config.get('skopeo', {}).get('use_pod', False)
     
     def get_skopeo_rate_limit_enabled(self) -> bool:
         """Get whether rate limiting is enabled for Skopeo operations"""
@@ -684,10 +669,6 @@ class ConfigManager:
         print(f"  S3 Bucket: {s3_bucket or 'Not configured'}")
         print(f"  S3 Region: {s3_region}")
         
-        # Skopeo Configuration
-        skopeo_use_pod = self.get_skopeo_use_pod()
-        print(f"  Skopeo Mode: {'Pod' if skopeo_use_pod else 'Local'}")
-        
         password = self.get_registry_password()
         if password:
             print(f"  Registry Password: {'*' * len(password)}")
@@ -698,13 +679,12 @@ class ConfigManager:
 class SkopeoClient:
     """Standardized Skopeo client for registry operations"""
     
-    def __init__(self, config_manager: ConfigManager, use_pod: bool = False, namespace: str = None,
+    def __init__(self, config_manager: ConfigManager, namespace: str = None,
                  enable_docker_deletion: bool = False, registry_statefulset: str = None):
         """Initialize SkopeoClient.
         
         Args:
             config_manager: ConfigManager instance for accessing configuration
-            use_pod: If True, run Skopeo commands in a Kubernetes pod
             namespace: Kubernetes namespace (defaults to platform namespace from config)
             enable_docker_deletion: If True, enable registry deletion by treating registry as in-cluster
             registry_statefulset: Name of the registry StatefulSet to modify for deletion.
@@ -712,7 +692,6 @@ class SkopeoClient:
                                   Only used when enable_docker_deletion is True.
         """
         self.config_manager = config_manager
-        self.use_pod = use_pod
         self.namespace = namespace or config_manager.get_domino_platform_namespace()
         self.registry_url = config_manager.get_registry_url()
         self.repository = config_manager.get_repository()
@@ -732,14 +711,6 @@ class SkopeoClient:
         
         if self.rate_limit_enabled:
             self._init_rate_limiter()
-        
-        if use_pod:
-            # Initialize Kubernetes client for pod operations
-            try:
-                self.core_v1_client, _ = _get_kubernetes_clients()
-            except Exception as e:
-                from utils.error_utils import create_kubernetes_error
-                raise create_kubernetes_error("Initialize Kubernetes client", e)
         
         # Ensure we're logged in before any operations
         self._ensure_logged_in()
@@ -809,43 +780,17 @@ class SkopeoClient:
     def _login_to_registry(self):
         """Login to the registry using skopeo login"""
         try:
-            if self.use_pod:
-                # Login in pod
-                cmd = [
-                    "skopeo", "login", 
-                    "--username", "domino-registry",
-                    "--password", self.password,
-                    "--tls-verify=false",
-                    self.registry_url
-                ]
-                
-                response = self.core_v1_client.connect_get_namespaced_pod_exec(
-                    name="skopeo",
-                    namespace=self.namespace,
-                    command=cmd,
-                    container="skopeo",
-                    stderr=True,
-                    stdout=True,
-                    stdin=False,
-                    tty=False
-                )
-                
-                if "Login Succeeded" not in response:
-                    raise RuntimeError(f"Login failed: {response}")
-                    
-            else:
-                # Login locally
-                cmd = [
-                    "skopeo", "login", 
-                    "--username", "domino-registry",
-                    "--password", self.password,
-                    "--tls-verify=false",
-                    self.registry_url
-                ]
-                
-                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-                if "Login Succeeded" not in result.stdout:
-                    raise RuntimeError(f"Login failed: {result.stdout}")
+            cmd = [
+                "skopeo", "login", 
+                "--username", "domino-registry",
+                "--password", self.password,
+                "--tls-verify=false",
+                self.registry_url
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            if "Login Succeeded" not in result.stdout:
+                raise RuntimeError(f"Login failed: {result.stdout}")
                     
         except Exception as e:
             logging.error(f"Registry login failed: {e}")
@@ -893,27 +838,6 @@ class SkopeoClient:
         # Apply rate limiting
         self._acquire_rate_limit_token()
         
-        try:
-            if self.use_pod:
-                return self._run_skopeo_in_pod(subcommand, args)
-            else:
-                return self._run_skopeo_local(subcommand, args)
-        except subprocess.CalledProcessError as e:
-            # Check for rate limiting errors
-            error_str = str(e).lower()
-            if "429" in error_str or "rate limit" in error_str or "too many requests" in error_str:
-                from utils.error_utils import create_rate_limit_error
-                raise create_rate_limit_error(f"skopeo {subcommand}", retry_after=1.0)
-            raise
-        except Exception as e:
-            error_str = str(e).lower()
-            if "429" in error_str or "rate limit" in error_str or "too many requests" in error_str:
-                from utils.error_utils import create_rate_limit_error
-                raise create_rate_limit_error(f"skopeo {subcommand}", retry_after=1.0)
-            raise
-    
-    def _run_skopeo_local(self, subcommand: str, args: List[str]) -> Optional[str]:
-        """Run Skopeo command locally using subprocess with retry logic"""
         cmd = self._build_skopeo_command(subcommand, args)
         log_cmd = " ".join(self._redact_command_for_logging(cmd))
         timeout = self.config_manager.get_retry_timeout()
@@ -923,7 +847,7 @@ class SkopeoClient:
             initial_delay=self.config_manager.get_retry_initial_delay(),
             max_delay=self.config_manager.get_retry_max_delay(),
             exponential_base=self.config_manager.get_retry_exponential_base(),
-            jitter=self.config_manager.get_retry_jitter()
+            jitter=self.config_manager.get_retry_jitter(),
         )
         def _execute():
             try:
@@ -932,7 +856,7 @@ class SkopeoClient:
                     capture_output=True,
                     text=True,
                     check=True,
-                    timeout=timeout
+                    timeout=timeout,
                 )
                 return result.stdout
             except subprocess.TimeoutExpired as e:
@@ -960,72 +884,6 @@ class SkopeoClient:
             is_retryable, error_type = is_retryable_error(e)
             if not is_retryable:
                 logging.error(f"Non-retryable error in Skopeo command: {e}")
-            return None
-    
-    def _run_skopeo_in_pod(self, subcommand: str, args: List[str]) -> Optional[str]:
-        """Run Skopeo command in Kubernetes pod with retry logic"""
-        from kubernetes.client.rest import ApiException
-        
-        cmd = self._build_skopeo_command(subcommand, args)
-        log_cmd = " ".join(self._redact_command_for_logging(cmd))
-        
-        @retry_with_backoff(
-            max_retries=self.config_manager.get_max_retries(),
-            initial_delay=self.config_manager.get_retry_initial_delay(),
-            max_delay=self.config_manager.get_retry_max_delay(),
-            exponential_base=self.config_manager.get_retry_exponential_base(),
-            jitter=self.config_manager.get_retry_jitter()
-        )
-        def _execute():
-            try:
-                response = self.core_v1_client.connect_get_namespaced_pod_exec(
-                    name="skopeo",
-                    namespace=self.namespace,
-                    command=cmd,
-                    container="skopeo",
-                    stderr=True,
-                    stdout=True,
-                    stdin=False,
-                    tty=False
-                )
-                
-                if response:
-                    return response
-                else:
-                    # Empty response might be transient, raise to trigger retry
-                    raise RuntimeError(f"Empty response from skopeo command: {log_cmd}")
-                    
-            except ApiException as e:
-                if e.status == 404:
-                    # Pod not found - might be transient if pod is starting up
-                    # But usually this is permanent, so we'll check
-                    logging.error(f"Skopeo pod not found in namespace {self.namespace}")
-                    from utils.error_utils import create_kubernetes_error
-                    raise create_kubernetes_error(f"Find skopeo pod in namespace {self.namespace}", e)
-                elif e.status == 429:
-                    # Rate limiting from Kubernetes API
-                    from utils.error_utils import create_rate_limit_error
-                    raise create_rate_limit_error(f"skopeo {subcommand} (pod mode)", retry_after=1.0)
-                else:
-                    logging.error(f"API error executing skopeo command: {e}")
-                    from utils.error_utils import create_kubernetes_error
-                    raise create_kubernetes_error(f"Execute skopeo command in pod", e)
-            except Exception as e:
-                error_str = str(e).lower()
-                if "429" in error_str or "rate limit" in error_str or "too many requests" in error_str:
-                    from utils.error_utils import create_rate_limit_error
-                    raise create_rate_limit_error(f"skopeo {subcommand} (pod mode)", retry_after=1.0)
-                logging.error(f"Unexpected error executing skopeo command: {e}")
-                from utils.error_utils import create_registry_connection_error
-                raise create_registry_connection_error(self.registry_url, e)
-        
-        try:
-            return _execute()
-        except Exception as e:
-            # Check if error is retryable - if not, return None immediately
-            is_retryable, error_type = is_retryable_error(e)
-            if not is_retryable:
-                logging.error(f"Non-retryable error in Skopeo pod command: {e}")
             return None
     
     @cached_tag_list(ttl_seconds=1800)  # Cache for 30 minutes
