@@ -12,7 +12,7 @@ import logging
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
-from utils.config_manager import config_manager
+from utils.config_manager import config_manager, _get_kubernetes_clients
 from utils.mongo_utils import get_mongo_client
 from utils.logging_utils import get_logger
 from utils.error_utils import create_registry_connection_error, create_mongodb_connection_error, create_kubernetes_error, create_s3_error
@@ -213,6 +213,134 @@ class HealthChecker:
                 }
             )
     
+    def check_registry_deletion_rbac(self) -> HealthCheckResult:
+        """Check if we can patch the docker-registry StatefulSet (required to enable deletion).
+        
+        Uses a dry-run patch so it does not modify the actual StatefulSet. This validates that the
+        current Kubernetes identity (e.g. pod ServiceAccount when running in-cluster) has
+        permission to PATCH the registry StatefulSet, which is required before enabling
+        REGISTRY_STORAGE_DELETE_ENABLED.
+        """
+        statefulset_name = "docker-registry"
+        namespace = config_manager.get_domino_platform_namespace()
+        
+        try:
+            from kubernetes.client.rest import ApiException
+            
+            # Initialize Kubernetes clients via shared helper
+            try:
+                _, apps_v1 = _get_kubernetes_clients()
+            except Exception as e:
+                return HealthCheckResult(
+                    name="registry_deletion_rbac",
+                    status=False,
+                    message=f"Failed to load Kubernetes config for RBAC check: {str(e)}",
+                    details={
+                        "namespace": namespace,
+                        "statefulset": statefulset_name,
+                        "error": str(e),
+                    },
+                )
+            
+            # Minimal patch body; dryRun=All ensures no persistent change
+            body = {
+                "metadata": {
+                    "annotations": {
+                        "docker-registry-cleaner/rbac-test": "true"
+                    }
+                }
+            }
+            
+            apps_v1.patch_namespaced_stateful_set(
+                name=statefulset_name,
+                namespace=namespace,
+                body=body,
+                dry_run="All",
+            )
+            
+            return HealthCheckResult(
+                name="registry_deletion_rbac",
+                status=True,
+                message=(
+                    f"ServiceAccount can PATCH StatefulSet '{statefulset_name}' "
+                    f"in namespace '{namespace}' (dry-run succeeded)"
+                ),
+                details={
+                    "namespace": namespace,
+                    "statefulset": statefulset_name,
+                },
+            )
+        
+        except ImportError:
+            return HealthCheckResult(
+                name="registry_deletion_rbac",
+                status=False,
+                message="Kubernetes client not available (kubernetes package not installed)",
+                details={
+                    "namespace": namespace,
+                    "statefulset": statefulset_name,
+                },
+            )
+        except ApiException as e:
+            # 403 is the most interesting case (missing RBAC)
+            status = getattr(e, "status", None)
+            if status == 403:
+                msg = (
+                    f"ServiceAccount does NOT have permission to PATCH StatefulSet "
+                    f"'{statefulset_name}' in namespace '{namespace}' (HTTP 403 Forbidden)"
+                )
+            else:
+                msg = (
+                    f"Failed to PATCH StatefulSet '{statefulset_name}' in namespace "
+                    f"'{namespace}' for RBAC check: {str(e)}"
+                )
+            
+            try:
+                actionable_error = create_kubernetes_error(
+                    f"Patch StatefulSet {statefulset_name} in namespace {namespace}",
+                    e,
+                )
+                msg = actionable_error.message
+                suggestions = actionable_error.suggestions
+            except Exception:
+                suggestions = []
+            
+            return HealthCheckResult(
+                name="registry_deletion_rbac",
+                status=False,
+                message=msg,
+                details={
+                    "namespace": namespace,
+                    "statefulset": statefulset_name,
+                    "error": str(e),
+                    "status": status,
+                    "suggestions": suggestions,
+                },
+            )
+        except Exception as e:
+            try:
+                actionable_error = create_kubernetes_error(
+                    f"Patch StatefulSet {statefulset_name} in namespace {namespace}",
+                    e,
+                )
+                msg = actionable_error.message
+                suggestions = actionable_error.suggestions
+            except Exception:
+                msg = f"Unexpected error during registry deletion RBAC check: {str(e)}"
+                suggestions = []
+            
+            return HealthCheckResult(
+                name="registry_deletion_rbac",
+                status=False,
+                message=msg,
+                details={
+                    "namespace": namespace,
+                    "statefulset": statefulset_name,
+                    "error": str(e),
+                    "suggestions": suggestions,
+                },
+            )
+    
     def check_s3_access(self) -> HealthCheckResult:
         """Check if S3 is accessible (if configured)
         
@@ -359,6 +487,7 @@ class HealthChecker:
         # Check optional services
         if not skip_optional:
             results.append(self.check_kubernetes_access())
+            results.append(self.check_registry_deletion_rbac())
             results.append(self.check_s3_access())
         else:
             # Still check Kubernetes if it's required
