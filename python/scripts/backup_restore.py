@@ -497,7 +497,7 @@ def main():
 
     # Initialize ConfigManager and SkopeoClient
     cfg_mgr = ConfigManager()
-    skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
+    skopeo_client = SkopeoClient(cfg_mgr)
 
     # Always use config_manager values for registry and repository
     registry_url = cfg_mgr.get_registry_url()

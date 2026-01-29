@@ -23,12 +23,14 @@ spec:
       serviceAccountName: docker-registry-cleaner
       containers:
         - name: docker-registry-cleaner
-          image: quay.io/domino/docker-registry-cleaner:v0.1
+          image: quay.io/domino/docker-registry-cleaner:v0.2
           imagePullPolicy: Always
           command: ["/bin/sh", "-c", "--"]
           args: ["while true; do sleep 30; done"]
           resources: {}
           env:
+            - name: CONFIG_FILE
+              value: "/config.yaml"
             - name: REGISTRY_URL
               value: "946429944765.dkr.ecr.eu-west-1.amazonaws.com"
             - name: KEYCLOAK_PASSWORD
@@ -45,6 +47,8 @@ spec:
             - name: docker-registry-cleaner-config
               mountPath: /config.yaml
               subPath: config.yaml
+            - name: reports-storage
+              mountPath: /data/reports
       imagePullSecrets:
         - name: domino-quay-repos
       restartPolicy: Always
@@ -52,5 +56,14 @@ spec:
         - name: docker-registry-cleaner-config
           configMap:
             name: docker-registry-cleaner-config
+  volumeClaimTemplates:
+    - metadata:
+        name: reports-storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
   updateStrategy:
     type: RollingUpdate

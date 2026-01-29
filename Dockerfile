@@ -7,4 +7,6 @@ COPY python python
 
 RUN pip install -r requirements.txt
 
+WORKDIR /python
+
 ENTRYPOINT ["/bin/sh", "-c", "sleep 3600"]
