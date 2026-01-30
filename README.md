@@ -307,6 +307,12 @@ python python/main.py delete_archived_tags --environment --apply --resume --oper
 - `delete_unused_environments`
 - `delete_unused_private_environments`
 
+### Understanding the numbers (delete_archived_tags)
+
+- **Tag references vs unique images:** The dry-run report can show a large number of "matching tags" (e.g. 1232). The same Docker image `(image_type, tag)` can match multiple archived MongoDB IDs (e.g. an environment and its revision). Deletion is done per **unique** `(image_type, tag)`; the confirmation and checkpoint use that unique count. So "1232 tag references" might mean e.g. "600 unique Docker images" — only 600 images are actually deleted.
+- **Checkpoint file:** The checkpoint stores `completed_items`, `failed_items`, and `skipped_items` as **unique image identifiers** (`image_type:tag`). `total_items` in the file is the number of unique images in that run. A "102-line" checkpoint usually means 102 entries across those lists (e.g. 50 completed, 30 failed, 22 skipped), not 102 lines of text.
+- **Why dry-run after --apply shows different numbers:** Re-running dry-run re-queries MongoDB and re-scans the registry. Numbers can differ because: (1) **Scope** — first run with `--environment --model` (1232 refs), second with `--environment` only (183 tags); (2) **Actual deletions** — if many unique images were deleted, the registry now has fewer tags; (3) **MongoDB changes** — records unarchived or removed so the archived set is smaller. Use the same flags (`--environment` / `--model`) when comparing runs, or use `--input <report.json>` to delete from a saved report without re-running analysis.
+
 ## 📅 Timestamped Reports
 
 All auto-generated reports now include timestamps in their filenames, allowing you to compare results across multiple runs:

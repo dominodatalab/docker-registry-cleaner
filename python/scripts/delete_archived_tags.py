@@ -1747,12 +1747,17 @@ def main():
                 logger.info("No archived tags to delete")
                 sys.exit(0)
             
-            # Confirmation prompt (unless --force)
-            if not finder.confirm_deletion(len(archived_tags), f"archived {processing_str} tags", force=args.force):
+            # Deletion works on unique (image_type, tag); same tag can appear multiple times if it matched multiple archived IDs
+            unique_image_count = len(set((t.image_type, t.tag) for t in archived_tags))
+            if unique_image_count < len(archived_tags):
+                logger.info(f"Found {len(archived_tags)} tag references → {unique_image_count} unique Docker images to delete")
+            
+            # Confirmation prompt (unless --force) — confirm on unique image count (what will actually be deleted)
+            if not finder.confirm_deletion(unique_image_count, f"unique archived {processing_str} Docker images", force=args.force):
                 logger.info("Operation cancelled by user")
                 sys.exit(0)
             
-            logger.info(f"\n🗑️  Deleting {len(archived_tags)} archived {processing_str} tags...")
+            logger.info(f"\n🗑️  Deleting {unique_image_count} unique archived {processing_str} Docker images...")
             # Generate operation ID if not provided
             operation_id = args.operation_id or get_timestamp_suffix()
             
