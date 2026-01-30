@@ -704,9 +704,13 @@ class ArchivedTagsFinder(BaseDeletionScript):
                 if not success:
                     self.logger.warning(f"Failed to analyze {image_type} images")
             
-            # Build list of image_ids from archived tags
+            # Build list of image_ids from archived tags (deduplicate: same tag can appear
+            # multiple times when it matches multiple archived IDs; deletion is per unique image)
             # ImageAnalyzer uses format "image_type:tag" as image_id
-            image_ids = [f"{tag.image_type}:{tag.tag}" for tag in archived_tags]
+            image_ids_with_dupes = [f"{tag.image_type}:{tag.tag}" for tag in archived_tags]
+            unique_image_ids = list(dict.fromkeys(image_ids_with_dupes))
+            if len(unique_image_ids) < len(image_ids_with_dupes):
+                self.logger.info(f"Using {len(unique_image_ids)} unique images ({len(image_ids_with_dupes)} tag references) for freed space calculation")
             
             # Calculate individual size for each tag (layers unique to that image)
             self.logger.info("Calculating individual image sizes...")
@@ -715,10 +719,10 @@ class ArchivedTagsFinder(BaseDeletionScript):
                 # Calculate what would be freed if only this image was deleted
                 tag.size_bytes = analyzer.freed_space_if_deleted([image_id])
             
-            # Calculate freed space using ImageAnalyzer's method
-            # This properly accounts for shared layers - only counts layers that would have
-            # zero references after deletion (i.e., not used by any remaining images)
-            total_freed = analyzer.freed_space_if_deleted(image_ids)
+            # Calculate freed space using ImageAnalyzer's method (pass unique image_ids so
+            # we don't undercount: duplicate ids would make delete_count > current_ref and
+            # layers would never be counted as freed)
+            total_freed = analyzer.freed_space_if_deleted(unique_image_ids)
             
             self.logger.info(f"Total space that would be freed: {sizeof_fmt(total_freed)}")
             
