@@ -426,7 +426,7 @@ All deletion scripts follow the same pattern and support common options:
 
 - **`python/scripts/reports.py`** - Generate tag usage reports (automatically generates required metadata and image analysis if needed)
 - **`python/scripts/image_size_report.py`** - Generate per-image size report (total size and space freed if deleted, accounting for shared layers)
-- **`python/scripts/user_size_report.py`** - Generate per-user size report (aggregate image sizes and potential freed space by owner)
+- **`python/scripts/user_size_report.py`** - Generate per-user size report (aggregate image sizes and potential freed space; user = revision author for environments, version creator for models; Login ID = loginId.id from users)
 - **`python/scripts/find_environment_usage.py`** - Find where a specific environment ID is used
 
 #### Other Scripts
