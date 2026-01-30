@@ -1147,11 +1147,12 @@ class ArchivedTagsFinder(BaseDeletionScript):
                 by_image_type[tag.image_type] += 1
         
         # Create summary statistics
-        # NOTE: For "object_ids_with/without_tags" we only count revisions and versions, not
-        # top-level environments/models, to avoid double-counting (env ↔ revisions, model ↔ versions).
-        rev_and_version_ids = set(ids_by_type['revision'] + ids_by_type['version'])
-        object_ids_with_tags = sum(1 for oid in rev_and_version_ids if oid in by_object_id)
-        object_ids_without_tags = len(rev_and_version_ids) - object_ids_with_tags
+        # "ObjectIDs with tags" = distinct archived IDs that have at least one matching Docker tag.
+        # "ObjectIDs without tags" = archived IDs that have no matching tag (orphaned in Mongo).
+        # We use all archived_ids (not just revision/version) so the count aligns with total_matching_tags:
+        # tags can be keyed by environment/model ID or revision/version ID depending on registry naming.
+        object_ids_with_tags = len(by_object_id)
+        object_ids_without_tags = len(archived_ids) - object_ids_with_tags
 
         summary = {
             'total_archived_object_ids': len(archived_ids),
