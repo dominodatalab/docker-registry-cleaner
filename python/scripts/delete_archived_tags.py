@@ -687,7 +687,7 @@ class ArchivedTagsFinder(BaseDeletionScript):
             return 0
         
         try:
-            self.logger.info(f"Analyzing ALL Docker images to calculate accurate freed space (using {self.max_workers} workers)...")
+            self.logger.info("Analyzing ALL Docker images to calculate accurate freed space...")
             self.logger.info("Analyzing both environment and model images so shared layers are counted correctly.")
             
             # Create ImageAnalyzer
@@ -700,7 +700,7 @@ class ArchivedTagsFinder(BaseDeletionScript):
             all_registry_image_types = ['environment', 'model']
             for image_type in all_registry_image_types:
                 self.logger.info(f"Analyzing ALL {image_type} images...")
-                success = analyzer.analyze_image(image_type, object_ids=None, max_workers=self.max_workers)
+                success = analyzer.analyze_image(image_type, object_ids=None)
                 if not success:
                     self.logger.warning(f"Failed to analyze {image_type} images")
             
