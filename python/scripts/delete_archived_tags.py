@@ -237,8 +237,12 @@ class ArchivedTagsFinder(BaseDeletionScript):
                 
                 if archived_environment_ids:
                     environment_object_ids = [ObjectId(env_id) for env_id in archived_environment_ids]
+                    # Exclude revisions where metadata.isBuilt=false (failed builds); they have dockerImageName but no matching Docker tag
                     revision_cursor = environment_revisions_collection.find(
-                        {"environmentId": {"$in": environment_object_ids}}, 
+                        {
+                            "environmentId": {"$in": environment_object_ids},
+                            "metadata.isBuilt": {"$ne": False}
+                        },
                         {"_id": 1, "clonedEnvironmentRevisionId": 1, "environmentId": 1}
                     )
                     
@@ -674,29 +678,27 @@ class ArchivedTagsFinder(BaseDeletionScript):
         This method uses ImageAnalyzer to properly account for shared layers.
         Only layers that would have no remaining references after deletion are counted.
         
-        IMPORTANT: This analyzes ALL images in the registry (not just archived ones)
-        to get accurate reference counts. This ensures we don't overestimate freed space
-        by accounting for shared layers between archived and non-archived images.
-        
-        Args:
-            archived_tags: List of archived tags to analyze
-            
-        Returns:
-            Total bytes that would be freed
+        IMPORTANT: We must analyze ALL image types in the registry (environment and model),
+        not just the types we're processing. Otherwise ref_count only counts references
+        from one type, so layers shared with the other type are incorrectly counted as
+        "freed" and we massively overestimate (e.g. 1.9 TB predicted vs 200 GB actual).
         """
         if not archived_tags:
             return 0
         
         try:
             self.logger.info(f"Analyzing ALL Docker images to calculate accurate freed space (using {self.max_workers} workers)...")
-            self.logger.info("This analyzes all images (not just archived) to count shared layer references correctly.")
+            self.logger.info("Analyzing both environment and model images so shared layers are counted correctly.")
             
             # Create ImageAnalyzer
             analyzer = ImageAnalyzer(self.registry_url, self.repository)
             
-            # CRITICAL FIX: Analyze ALL images (not just archived ones) to get accurate reference counts
-            # This ensures that shared layers between archived and non-archived images are properly accounted for
-            for image_type in self.image_types:
+            # CRITICAL: Analyze ALL image types in the registry (environment AND model), not just
+            # self.image_types. If we only analyze the type we're deleting (e.g. --environment),
+            # layer ref_count only counts references from that type. Layers shared with model
+            # images would then be wrongly counted as "freed", overestimating by a large margin.
+            all_registry_image_types = ['environment', 'model']
+            for image_type in all_registry_image_types:
                 self.logger.info(f"Analyzing ALL {image_type} images...")
                 success = analyzer.analyze_image(image_type, object_ids=None, max_workers=self.max_workers)
                 if not success:

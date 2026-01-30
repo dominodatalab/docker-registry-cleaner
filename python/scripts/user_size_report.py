@@ -2,8 +2,16 @@
 """
 Docker Image Size Report by User
 
-This script generates a report showing which users own the most Docker images
-by total size, helping identify who is consuming the most registry space.
+This script generates a report showing which users are associated with the most
+Docker images by total size, helping identify who is consuming the most registry space.
+
+The "owner" / user shown for each image is:
+  - **Environment images**: the author of the environment revision (metadata.authorId
+    in environment_revisions), i.e. the person who created that revision.
+  - **Model images**: the creator of the model version (metadata.createdBy in
+    model_versions), i.e. the person who created that version.
+
+The Login ID column is the loginId.id of that user from the users collection.
 
 Usage examples:
   # Generate report (auto-generates image analysis and MongoDB reports if missing)
