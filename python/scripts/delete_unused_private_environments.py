@@ -366,8 +366,7 @@ class DeactivatedUserEnvFinder(BaseDeletionScript):
             return 0
         
         try:
-            max_workers = config_manager.get_max_workers()
-            self.logger.info(f"Analyzing ALL Docker images to calculate accurate freed space (using {max_workers} workers)...")
+            self.logger.info("Analyzing ALL Docker images to calculate accurate freed space...")
             self.logger.info("This analyzes all images (not just deactivated user images) to count shared layer references correctly.")
             
             # Create ImageAnalyzer
@@ -377,7 +376,7 @@ class DeactivatedUserEnvFinder(BaseDeletionScript):
             # This ensures that shared layers between deactivated user images and other images are properly accounted for
             for image_type in self.image_types:
                 self.logger.info(f"Analyzing ALL {image_type} images...")
-                success = analyzer.analyze_image(image_type, object_ids=None, max_workers=max_workers)
+                success = analyzer.analyze_image(image_type, object_ids=None)
                 if not success:
                     self.logger.warning(f"Failed to analyze {image_type} images")
             

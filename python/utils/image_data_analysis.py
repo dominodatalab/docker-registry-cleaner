@@ -91,17 +91,19 @@ class ImageAnalyzer:
             self.logger.error(f"Error inspecting {image_type}:{tag}: {e}")
             return None
     
-    def analyze_image(self, image_type: str, object_ids: Optional[List[str]] = None, max_workers: int = 4) -> bool:
+    def analyze_image(self, image_type: str, object_ids: Optional[List[str]] = None, max_workers: Optional[int] = None) -> bool:
         """Analyze a single image type (e.g., 'environment', 'model') with parallel tag inspection
         
         Args:
             image_type: Type of image to analyze
             object_ids: Optional list of ObjectIDs to filter tags
-            max_workers: Number of parallel workers for tag inspection
+            max_workers: Number of parallel workers for tag inspection (default: from config, or 4)
         
         Returns:
             True if successful, False otherwise
         """
+        if max_workers is None:
+            max_workers = config_manager.get_max_workers()
         try:
             # Get tags using standardized client
             tags = self.skopeo_client.list_tags(f"{self.repository}/{image_type}")
@@ -431,7 +433,6 @@ Examples:
     # Use config_manager for registry and repository
     registry_url = config_manager.get_registry_url()
     repository = config_manager.get_repository()
-    max_workers = args.max_workers or config_manager.get_max_workers()
     
     # Parse ObjectIDs (typed) from file if provided
     object_ids_map = None
@@ -464,7 +465,6 @@ Examples:
     logger.info(f"Registry: {registry_url}")
     logger.info(f"Repository: {repository}")
     logger.info(f"Images: {', '.join(images)}")
-    logger.info(f"Max Workers: {max_workers}")
     if object_ids_map:
         logger.info(f"Filtering by ObjectIDs from file: {args.file}")
     logger.info("=" * 60)
@@ -481,7 +481,7 @@ Examples:
             per_image_oids = object_ids_map.get(image, [])
         
         logger.info(f"\nAnalyzing image type: {image}")
-        if analyzer.analyze_image(image, per_image_oids, max_workers=max_workers):
+        if analyzer.analyze_image(image, per_image_oids, max_workers=args.max_workers):
             success_count += 1
         logger.info("")
     

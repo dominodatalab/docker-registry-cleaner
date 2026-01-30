@@ -2,8 +2,16 @@
 """
 Docker Image Size Report by User
 
-This script generates a report showing which users own the most Docker images
-by total size, helping identify who is consuming the most registry space.
+This script generates a report showing which users are associated with the most
+Docker images by total size, helping identify who is consuming the most registry space.
+
+The "owner" / user shown for each image is:
+  - **Environment images**: the author of the environment revision (metadata.authorId
+    in environment_revisions), i.e. the person who created that revision.
+  - **Model images**: the creator of the model version (metadata.createdBy in
+    model_versions), i.e. the person who created that version.
+
+The Login ID column is the loginId.id of that user from the users collection.
 
 Usage examples:
   # Generate report (auto-generates image analysis and MongoDB reports if missing)
@@ -697,12 +705,10 @@ def main():
         # Get configuration
         registry_url = config_manager.get_registry_url()
         repository = config_manager.get_repository()
-        max_workers = args.max_workers or config_manager.get_max_workers()
         
         logger.info(f"Registry: {registry_url}")
         logger.info(f"Repository: {repository}")
         logger.info(f"Image Types: {', '.join(args.image_types)}")
-        logger.info(f"Max Workers: {max_workers}")
         logger.info("=" * 80)
         
         # Load MongoDB reports
@@ -718,7 +724,7 @@ def main():
         success_count = 0
         for image_type in args.image_types:
             logger.info(f"\nAnalyzing {image_type} images...")
-            if analyzer.analyze_image(image_type, object_ids=None, max_workers=max_workers):
+            if analyzer.analyze_image(image_type, object_ids=None, max_workers=args.max_workers):
                 success_count += 1
         
         if success_count == 0:
