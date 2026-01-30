@@ -705,12 +705,10 @@ def main():
         # Get configuration
         registry_url = config_manager.get_registry_url()
         repository = config_manager.get_repository()
-        max_workers = args.max_workers or config_manager.get_max_workers()
         
         logger.info(f"Registry: {registry_url}")
         logger.info(f"Repository: {repository}")
         logger.info(f"Image Types: {', '.join(args.image_types)}")
-        logger.info(f"Max Workers: {max_workers}")
         logger.info("=" * 80)
         
         # Load MongoDB reports
@@ -726,7 +724,7 @@ def main():
         success_count = 0
         for image_type in args.image_types:
             logger.info(f"\nAnalyzing {image_type} images...")
-            if analyzer.analyze_image(image_type, object_ids=None, max_workers=max_workers):
+            if analyzer.analyze_image(image_type, object_ids=None, max_workers=args.max_workers):
                 success_count += 1
         
         if success_count == 0:

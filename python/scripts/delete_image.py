@@ -705,8 +705,7 @@ class IntelligentImageDeleter(BaseDeletionScript):
             return 0, {}
         
         try:
-            max_workers = config_manager.get_max_workers()
-            self.logger.info(f"Calculating accurate freed space using ImageAnalyzer (analyzing ALL images)...")
+            self.logger.info("Calculating accurate freed space using ImageAnalyzer (analyzing ALL images)...")
             self.logger.info("This ensures shared layers between unused and used images are properly accounted for.")
             
             # Create ImageAnalyzer
@@ -717,7 +716,7 @@ class IntelligentImageDeleter(BaseDeletionScript):
             image_types = ['environment', 'model']
             for image_type in image_types:
                 self.logger.info(f"Analyzing ALL {image_type} images...")
-                success = analyzer.analyze_image(image_type, object_ids=None, max_workers=max_workers)
+                success = analyzer.analyze_image(image_type, object_ids=None)
                 if not success:
                     self.logger.warning(f"Failed to analyze {image_type} images")
             

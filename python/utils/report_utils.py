@@ -333,7 +333,7 @@ def ensure_image_analysis_reports(max_age_hours: int = 24) -> None:
         repository = config_manager.get_repository()
         analyzer = ImageAnalyzer(registry_url, repository)
         
-        # Analyze both environment and model images
+        # Analyze both environment and model images (max_workers from config via analyzer default)
         for image_type in ['environment', 'model']:
             logger.info(f"Analyzing {image_type} images...")
             success = analyzer.analyze_image(image_type)
