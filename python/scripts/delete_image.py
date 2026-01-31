@@ -1025,7 +1025,7 @@ class IntelligentImageDeleter(BaseDeletionScript):
             
             # Initialize ConfigManager and SkopeoClient for backup
             cfg_mgr = ConfigManager()
-            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
+            backup_skopeo_client = SkopeoClient(cfg_mgr)
             
             # Call process_backup from backup_restore
             try:
@@ -1271,7 +1271,11 @@ def parse_arguments():
     parser.add_argument("--output", default=config_manager.get_deletion_analysis_path(), help="Path for deletion analysis report")
     parser.add_argument("--skip-analysis", action="store_true", help="Skip workload analysis and use traditional environments file")
     parser.add_argument("--input", help="File containing ObjectIDs (one per line) to filter images, or pre-generated report file (supports prefixes: environment:, environmentRevision:, model:, modelVersion:, or bare IDs)")
-    parser.add_argument("--mongo-cleanup", action="store_true", help="Also clean up MongoDB records after deleting images (disabled by default)")
+    parser.add_argument(
+        "--mongo-cleanup",
+        action="store_true",
+        help="Also clean up MongoDB records after deleting images (advanced / high-risk; see README)",
+    )
     parser.add_argument(
         '--backup',
         action='store_true',
@@ -1294,6 +1298,11 @@ def parse_arguments():
         '--registry-statefulset',
         default='docker-registry',
         help='Name of registry StatefulSet/Deployment to modify for deletion (default: docker-registry)'
+    )
+    parser.add_argument(
+        '--run-registry-gc',
+        action='store_true',
+        help='Run Docker registry garbage collection in the registry pod after deleting images (internal registries only)'
     )
     parser.add_argument(
         '--unused-since-days',
@@ -1510,7 +1519,7 @@ def main():
 
             full_repo = f"{deleter.registry_url}/{deleter.repository}"
             cfg_mgr = ConfigManager()
-            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
+            backup_skopeo_client = SkopeoClient(cfg_mgr)
             try:
                 process_backup(
                     skopeo_client=backup_skopeo_client,
@@ -1619,6 +1628,21 @@ def main():
         else:
             logger.info("\n✅ DELETION COMPLETED")
             logger.info("Images have been deleted from the registry.")
+
+            # Optionally run registry garbage collection for internal registries
+            if args.run_registry_gc:
+                from utils.registry_maintenance import run_registry_garbage_collection
+                logger.info(
+                    "Running Docker registry garbage collection after image deletion..."
+                )
+                gc_ok = run_registry_garbage_collection(
+                    registry_statefulset=args.registry_statefulset
+                )
+                if not gc_ok:
+                    logger.warning(
+                        "Docker registry garbage collection did not complete successfully; "
+                        "see logs for details."
+                    )
         
     except KeyboardInterrupt:
         logger = get_logger(__name__)

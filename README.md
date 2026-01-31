@@ -45,6 +45,10 @@ python python/main.py delete_archived_tags --environment --apply --backup --s3-b
 python python/main.py delete_all_unused_environments --apply --backup --s3-bucket my-bucket
 ```
 
+> **Important:** This tool can **optionally** delete MongoDB records that reference images (environments, revisions, models, versions, and related links).  
+> While the project now performs much more thorough Mongo usage analysis than earlier versions, **MongoDB deletions remain inherently risky** because environments and models are linked to many other assets in Domino (projects, runs, workspaces, scheduler jobs, app versions, user preferences, etc.).  
+> In general, prefer **Docker‑only cleanup first** and enable Mongo cleanup (`--mongo-cleanup` flags or `delete_unused_references`) only when you fully understand the impact.
+
 ## 🏥 Health Checks
 
 Before running deletion operations, it's recommended to verify system connectivity:
@@ -58,10 +62,77 @@ This will verify:
 - ✅ Configuration validity
 - ✅ Docker registry connectivity
 - ✅ MongoDB connectivity
-- ✅ Kubernetes API access (if using pod mode)
+- ✅ Kubernetes API access
 - ✅ S3 access (if configured)
 
 Health checks are also automatically run by deletion scripts that inherit from `BaseDeletionScript` before performing operations.
+
+## 📚 Playbooks
+
+This section gives end-to-end workflows you can follow, instead of stitching together individual commands.
+
+### 1. Safely reclaim space from archived environments
+
+1. **Run health checks**
+   ```bash
+   python python/main.py --health-check
+   ```
+2. **(Optional) Generate size/ownership reports**
+   ```bash
+   python python/main.py image_size_report --generate-reports
+   python python/main.py user_size_report --generate-reports
+   ```
+3. **Dry‑run archived environment deletion and review report**
+   ```bash
+   python python/main.py delete_archived_tags --environment --output archived-env-tags.json
+   ```
+4. **Delete archived environment tags with S3 backup**
+   ```bash
+   python python/main.py delete_archived_tags --environment \
+     --apply --backup --s3-bucket my-backup-bucket
+   ```
+
+### 2. Periodic cleanup of unused environments
+
+1. **Analyze unused environments (dry‑run)**
+   ```bash
+   python python/main.py delete_unused_environments --unused-since-days 30
+   ```
+2. **Archive rather than delete (Mongo‑only)**
+   ```bash
+   python python/main.py archive_unused_environments --unused-since-days 30 --apply
+   ```
+3. **Comprehensive deletion with backup**
+   ```bash
+   python python/main.py delete_all_unused_environments \
+     --apply --backup --s3-bucket my-backup-bucket
+   ```
+
+### 3. Investigate where an environment is used
+
+1. **Run the usage finder**
+   ```bash
+   python python/main.py find_environment_usage --environment-id <environmentObjectId>
+   ```
+2. **Review all references** in:
+   - Runs
+   - Workspaces
+   - Models / model versions
+   - Projects / scheduler jobs / organizations / app versions
+   - User preferences (`defaultEnvironmentId`)
+
+### 4. Cleanup only MongoDB references to missing images
+
+1. **Dry‑run unused reference detection**
+   ```bash
+   python python/main.py delete_unused_references
+   ```
+2. **Apply Mongo‑only cleanup**
+   ```bash
+   python python/main.py delete_unused_references --apply
+   ```
+
+For more specialized scenarios (e.g. targeted deletion by ObjectID, backup+restore flows), see the sections below.
 
 ## 🎛️ Common Options
 
@@ -194,10 +265,16 @@ python python/main.py delete_all_unused_environments --apply --backup --s3-bucke
 This command runs:
 1. Delete unused environments (not used in workspaces, models, or project defaults)
 2. Delete deactivated user private environments
+3. (Optional) Run Docker registry garbage collection to reclaim space in the registry:
+
+```bash
+python python/main.py run_registry_gc
+```
 
 #### Delete Unused MongoDB References
 
-Cleans up MongoDB records referencing non-existent Docker images:
+**Advanced / high‑risk operation.**  
+Cleans up MongoDB records referencing non-existent Docker images. Even though this command targets records for images that no longer exist in the registry, **it still modifies primary Domino metadata collections**, so it should only be used by administrators who are comfortable with the schema and have recent backups.
 
 ```bash
 # Find unused references (dry-run)
@@ -389,9 +466,6 @@ export KEYCLOAK_PASSWORD="keycloak_password"
 # S3 Backup
 export S3_BUCKET="my-backup-bucket"
 export S3_REGION="us-west-2"
-
-# Skopeo
-export SKOPEO_USE_POD="false"  # Set to "true" for K8s pod mode
 ```
 
 ### View Current Configuration
@@ -500,10 +574,9 @@ Programmatic usage:
 from python.config_manager import config_manager, SkopeoClient
 
 skopeo_client = SkopeoClient(
-    config_manager, 
-    use_pod=False,
+    config_manager,
     enable_docker_deletion=True,
-    registry_statefulset="my-custom-registry"
+    registry_statefulset="my-custom-registry",
 )
 ```
 

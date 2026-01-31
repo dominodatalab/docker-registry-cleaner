@@ -57,7 +57,6 @@ data:
 
     # Skopeo Configuration
     skopeo:
-      use_pod: false  # Set to true to run Skopeo commands in Kubernetes pod instead of local subprocess
       rate_limit:
         enabled: true  # Enable rate limiting for registry operations
         requests_per_second: 10.0  # Maximum requests per second (adjust based on registry capacity)
