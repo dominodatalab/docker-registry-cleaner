@@ -1,0 +1,1 @@
+FROM cgr.dev/dominodatalab.com/skopeo:1.21.0
