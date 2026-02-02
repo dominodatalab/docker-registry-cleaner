@@ -299,23 +299,33 @@ def reset_user_preferences(env_ids: List[str], apply: bool = False) -> Dict[str,
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Reset defaultEnvironmentId in userPreferences for a set of environment IDs.",
+        description="Reset default environments in userPreferences and organizations.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Dry-run: show which userPreferences/organizations would be affected
+  # Dry-run with explicit environment IDs
   python python/main.py reset_default_environments --input environments
   
-  # Actually unset defaults for matching userPreferences and organizations
+  # Actually unset defaults for matching userPreferences and organizations (explicit IDs)
   python python/main.py reset_default_environments --input environments --apply
+
+  # Dry-run using all archived environments (isArchived: true) as candidates
+  python python/main.py reset_default_environments
+  
+  # Actually unset defaults for any archived environments referenced in userPreferences/organizations
+  python python/main.py reset_default_environments --apply
         """,
     )
 
     parser.add_argument(
         "--input",
-        required=True,
-        help="Path to file containing environment IDs (one per line). "
-             "Lines may be plain ObjectIDs or prefixed with 'environment:' / 'env:'.",
+        required=False,
+        help=(
+            "Optional path to file containing environment IDs (one per line). "
+            "Lines may be plain ObjectIDs or prefixed with 'environment:' / 'env:'. "
+            "If omitted, all archived environments (environments_v2.isArchived: true) "
+            "are considered."
+        ),
     )
     parser.add_argument(
         "--apply",
@@ -338,7 +348,40 @@ def main() -> None:
         logger.info("Dry-run mode: no changes will be made. Use --apply to perform updates.")
     logger.info("=" * 60)
 
-    env_ids = load_environment_ids_from_file(args.input)
+    # Determine environment IDs to operate on
+    if args.input:
+        env_ids = load_environment_ids_from_file(args.input)
+    else:
+        # No input file provided: use all archived environments (isArchived: true)
+        env_ids: List[str] = []
+        mongo_client = get_mongo_client()
+        try:
+            db = mongo_client[config_manager.get_mongo_db()]
+            collections = db.list_collection_names()
+            if "environments_v2" not in collections:
+                logger.warning(
+                    "No --input provided and collection 'environments_v2' not found. "
+                    "No environments to reset defaults for."
+                )
+            else:
+                envs = db["environments_v2"]
+                cursor = envs.find({"isArchived": True}, {"_id": 1})
+                for doc in cursor:
+                    _id = doc.get("_id")
+                    if _id is not None:
+                        env_ids.append(str(_id))
+                if env_ids:
+                    logger.info(
+                        f"No --input provided. Loaded {len(env_ids)} archived environment IDs "
+                        f"from environments_v2 (isArchived: true)."
+                    )
+                else:
+                    logger.info(
+                        "No --input provided and no archived environments (isArchived: true) found in environments_v2."
+                    )
+        finally:
+            mongo_client.close()
+
     summary = reset_user_preferences(env_ids, apply=args.apply)
 
     logger.info("\nSummary:")
