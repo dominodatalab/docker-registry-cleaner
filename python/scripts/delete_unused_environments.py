@@ -398,17 +398,20 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
             
             self.logger.info(f"Found {len(all_revision_ids)} environment revisions in MongoDB")
             
-            # Get project default environments
+            # Get project default environments (only non-archived projects count as "using" an environment)
             projects_collection = db["projects"]
-            project_cursor = projects_collection.find({}, {"overrideV2EnvironmentId": 1})
-            
+            project_cursor = projects_collection.find(
+                {"overrideV2EnvironmentId": {"$exists": True, "$ne": None}, "isArchived": {"$ne": True}},
+                {"overrideV2EnvironmentId": 1},
+            )
+
             default_env_ids = set()
             for doc in project_cursor:
                 env_id = doc.get("overrideV2EnvironmentId")
                 if env_id is not None:
                     default_env_ids.add(str(env_id))
-            
-            self.logger.info(f"Found {len(default_env_ids)} project default environments")
+
+            self.logger.info(f"Found {len(default_env_ids)} project default environments (non-archived projects only)")
             
             # Get scheduled job environments
             scheduler_jobs_collection = db["scheduler_jobs"]

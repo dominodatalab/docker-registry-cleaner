@@ -30,7 +30,7 @@ def load_script_paths() -> Dict[str, Optional[str]]:
         "image_size_report": "scripts/image_size_report.py",
         "mongo_cleanup": "scripts/mongo_cleanup.py",
         "reports": "scripts/reports.py",
-        "reset_user_preferences": "scripts/reset_user_preferences.py",
+        "reset_default_environments": "scripts/reset_default_environments.py",
         "user_size_report": "scripts/user_size_report.py",
     }
 
@@ -47,7 +47,7 @@ def get_script_descriptions() -> Dict[str, str]:
         "image_size_report": "Generate a report of the largest images sorted by total size, showing space that would be freed if deleted",
         "mongo_cleanup": "Simple tag/ObjectID-based Mongo cleanup (consider using delete_unused_references for advanced features)",
         "reports": "Generate tag usage reports from analysis data (auto-generates metadata)",
-        "reset_user_preferences": "Unset defaultEnvironmentId in userPreferences for a list of environment IDs",
+        "reset_default_environments": "Unset default environments for users and organizations (userPreferences.defaultEnvironmentId, organizations.defaultV2EnvironmentId)",
         "user_size_report": "Generate a report of image sizes grouped by user/owner, showing who is using the most space",
     }
 
