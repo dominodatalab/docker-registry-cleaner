@@ -26,6 +26,9 @@ spec:
         mongodb-replicaset-client: "true"
         keycloak-client: "true"
     spec:
+      # fsGroup makes the PVC at /data/reports writable by nonroot (65532)
+      securityContext:
+        fsGroup: {{ (.Values.podSecurityContext | default dict).fsGroup | default 65532 }}
       serviceAccountName: {{ $saName }}
       imagePullSecrets:
 {{- range .Values.imagePullSecrets }}
@@ -35,11 +38,15 @@ spec:
         - name: docker-registry-cleaner
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/bin/sh", "-c", "--"]
-          args: ["while true; do sleep 30; done"]
+          # Chainguard Python image has no /bin/sh; use Python to keep the pod alive
+          command: ["python", "-c", "import time; exec('while True: time.sleep(30)')"]
           env:
             - name: CONFIG_FILE
               value: "/config.yaml"
+            {{- if and .Values.env .Values.env.registryUrl }}
+            - name: REGISTRY_URL
+              value: {{ .Values.env.registryUrl | quote }}
+            {{- end }}
             - name: KEYCLOAK_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -59,18 +66,6 @@ spec:
             - name: reports-storage
               mountPath: /data/reports
             {{- end }}
-        {{- if .Values.skopeoSidecar.enabled }}
-        - name: skopeo-sidecar
-          image: "{{ .Values.skopeoSidecar.image.repository }}:{{ .Values.skopeoSidecar.image.tag }}"
-          imagePullPolicy: {{ .Values.skopeoSidecar.image.pullPolicy }}
-          ports:
-            - name: skopeo
-              containerPort: {{ .Values.skopeoSidecar.port }}
-          env:
-            - name: SKOPEO_SIDECAR_PORT
-              value: "{{ .Values.skopeoSidecar.port | toString }}"
-          resources: {}
-        {{- end }}
       volumes:
         - name: docker-registry-cleaner-config
           configMap:

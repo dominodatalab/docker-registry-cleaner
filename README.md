@@ -474,50 +474,6 @@ export S3_REGION="us-west-2"
 python python/main.py --config
 ```
 
-### Deployment: two-container (Skopeo sidecar)
-
-You can run the Python app in one container and Skopeo in a second container in the **same pod**. The main container calls Skopeo via HTTP on `localhost`, so you avoid installing Skopeo (and its dependencies) in the main image and can use a minimal Skopeo-only image.
-
-1. **Build both images**
-   - Main app: `docker build -f Dockerfile -t your-registry/docker-registry-cleaner:tag .`
-   - Skopeo sidecar: `docker build -f Dockerfile-skopeo -t your-registry/docker-registry-cleaner-skopeo:tag .`
-
-2. **Deploy with two containers**  
-   The StatefulSet (and Helm chart) support an optional `skopeo-sidecar` container. When present, set in config:
-   - `skopeo.use_sidecar: true`
-   - `skopeo.sidecar_host: "localhost"`
-   - `skopeo.sidecar_port: 8080`
-
-3. **Helm**  
-   In `values.yaml`, `skopeoSidecar.enabled: true` adds the sidecar container and the chart’s default config already sets `skopeo.use_sidecar: true`. To disable the sidecar (e.g. single image with Skopeo installed), set `skopeoSidecar.enabled: false` and `skopeo.use_sidecar: false` in config.
-
-### Image security and hardening
-
-To keep built images as secure as possible and reduce vulnerabilities:
-
-1. **Use Chainguard (cgr.dev) base images**  
-   The Dockerfiles use Chainguard-style bases (e.g. `cgr.dev/dominodatalab.com/python`, `cgr.dev/chainguard/skopeo`). These are minimal, Wolfi-based images with fewer CVEs, daily security updates, and SBOMs. Replace `chainguard` with your Chainguard org name if you use a private registry.
-
-2. **Pin base images by digest**  
-   In production, pin bases by digest so builds are reproducible and you avoid tag mutability:
-   ```dockerfile
-   FROM cgr.dev/dominodatalab.com/python:3.14.2@sha256:...
-   ```
-   Resolve the digest with `docker pull <image>:<tag> && docker inspect --format='{{index .RepoDigests 0}}' <image>:<tag>` (or use your registry UI).
-
-3. **Run as non-root**  
-   Both Dockerfiles set `USER nonroot:nonroot` (Chainguard default UID 65532). If your base does not define `nonroot`, remove the `USER` line or set your runtime user.
-
-4. **Scan images in CI**  
-   Run a vulnerability scanner on built images (e.g. [Trivy](https://github.com/aquasecurity/trivy), [Grype](https://github.com/anchore/grype)) and fail or gate on high/critical CVEs:
-   ```bash
-   trivy image --exit-code 1 --severity HIGH,CRITICAL your-registry/docker-registry-cleaner:tag
-   trivy image --exit-code 1 --severity HIGH,CRITICAL your-registry/docker-registry-cleaner-skopeo:tag
-   ```
-
-5. **Two-container deployment**  
-   Running the Python app and Skopeo in separate containers (same pod) keeps the main image free of Skopeo and its dependencies, reducing attack surface and CVE exposure in the primary app image.
-
 ## 🏗️ Architecture
 
 The Python codebase is organized into two main directories:

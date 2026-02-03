@@ -13,8 +13,6 @@ import os
 import re
 import subprocess
 import time
-import urllib.error
-import urllib.request
 import yaml
 from threading import Lock
 
@@ -123,10 +121,6 @@ class ConfigManager:
                     'requests_per_second': 10.0,  # Max requests per second
                     'burst_size': 20  # Allow burst of up to N requests
                 },
-                # When true, run skopeo in a sidecar container via HTTP instead of local subprocess
-                'use_sidecar': False,
-                'sidecar_host': 'localhost',
-                'sidecar_port': 8080,
             },
             'reports': {
                 'archived_tags': 'archived-tags.json',
@@ -212,7 +206,7 @@ class ConfigManager:
         return None
     
     def _authenticate_ecr(self, registry_url: str) -> None:
-        """Authenticate with ECR using AWS CLI"""
+        """Authenticate with ECR using boto3 (no shell required)."""
         try:
             # Extract region from registry URL
             # ECR URLs are typically: account.dkr.ecr.region.amazonaws.com
@@ -220,25 +214,37 @@ class ConfigManager:
             if len(parts) >= 4 and parts[-2] == 'amazonaws' and parts[-1] == 'com':
                 region = parts[-3]  # Extract region from URL
             else:
-                # Fallback: try to get region from AWS_DEFAULT_REGION env var
                 region = os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
             
             logging.info(f"Authenticating with ECR in region: {region}")
             
-            # Run ECR authentication command
+            # Get ECR login password via boto3 (no aws CLI or shell needed)
+            import boto3
+            client = boto3.client('ecr', region_name=region)
+            response = client.get_authorization_token()
+            token_b64 = response['authorizationData'][0]['authorizationToken']
+            token = base64.b64decode(token_b64).decode('utf-8')
+            _, password = token.split(':', 1)
+            
+            # Run skopeo login with password on stdin (no shell)
             subprocess.run(
                 [
-                    "sh",
-                    "-c",
-                    f"aws ecr get-login-password --region {region} | "
-                    f"skopeo login --username AWS --password-stdin {registry_url}",
+                    "skopeo", "login",
+                    "--username", "AWS",
+                    "--password-stdin",
+                    registry_url,
                 ],
+                input=password,
+                capture_output=True,
+                text=True,
                 check=True,
             )
             logging.info("ECR authentication successful")
             
         except subprocess.CalledProcessError as e:
             logging.error(f"ECR authentication failed: {e}")
+            if e.stderr:
+                logging.error(f"  stderr: {e.stderr}")
             raise
         except Exception as e:
             logging.error(f"Unexpected error during ECR authentication: {e}")
@@ -360,18 +366,6 @@ class ConfigManager:
     def get_skopeo_rate_limit_burst(self) -> int:
         """Get burst size for Skopeo rate limiting"""
         return int(self.config.get('skopeo', {}).get('rate_limit', {}).get('burst_size', 20))
-
-    def get_skopeo_use_sidecar(self) -> bool:
-        """Get whether to use a Skopeo sidecar container (HTTP) instead of local subprocess."""
-        return bool(self.config.get('skopeo', {}).get('use_sidecar'))
-
-    def get_skopeo_sidecar_host(self) -> str:
-        """Get Skopeo sidecar host (e.g. localhost when sidecar runs in same pod)."""
-        return str(self.config.get('skopeo', {}).get('sidecar_host', 'localhost'))
-
-    def get_skopeo_sidecar_port(self) -> int:
-        """Get Skopeo sidecar port."""
-        return int(self.config.get('skopeo', {}).get('sidecar_port', 8080))
 
     # Report configuration
     def _resolve_report_path(self, path: str) -> str:
@@ -702,7 +696,6 @@ class SkopeoClient:
         self.namespace = namespace or config_manager.get_domino_platform_namespace()
         self.registry_url = config_manager.get_registry_url()
         self.repository = config_manager.get_repository()
-        self.password = config_manager.get_registry_password()
         self._logged_in = False
         
         # Registry deletion override settings
@@ -716,16 +709,17 @@ class SkopeoClient:
         self._rate_limiter = None
         self._rate_limiter_lock = Lock()
 
-        # Sidecar: when true, run skopeo via HTTP in another container (e.g. same pod)
-        self.use_sidecar = config_manager.get_skopeo_use_sidecar()
-        self.sidecar_host = config_manager.get_skopeo_sidecar_host()
-        self.sidecar_port = config_manager.get_skopeo_sidecar_port()
-        self._sidecar_base_url = f"http://{self.sidecar_host}:{self.sidecar_port}"
-        
+        # Point skopeo at a writable auth file before any skopeo call
+        # (nonroot can't write /run/containers; must be set before get_registry_password() which may run ECR login)
+        auth_dir = config_manager.get_output_dir()
+        auth_file = os.path.join(auth_dir, ".registry-auth.json")
+        os.environ["REGISTRY_AUTH_FILE"] = auth_file
+
+        self.password = config_manager.get_registry_password()
+
         if self.rate_limit_enabled:
             self._init_rate_limiter()
-        
-        # Ensure we're logged in before any operations (skipped when use_sidecar; creds sent per request)
+
         self._ensure_logged_in()
     
     def _init_rate_limiter(self):
@@ -767,19 +761,13 @@ class SkopeoClient:
     
     def _ensure_logged_in(self):
         """Ensure skopeo is logged in to the registry before operations.
-        When use_sidecar is True, no login runs in this container; creds are sent per request to the sidecar.
-        
+
         Raises:
             RuntimeError: If authentication fails or is required but credentials are missing
         """
         if self._logged_in:
             return
-        
-        if self.use_sidecar:
-            self._logged_in = True
-            logging.info("Skopeo sidecar mode: credentials will be sent per request")
-            return
-        
+
         try:
             # For ECR, authentication is handled by get_registry_password()
             # For other registries, we'll try to login if we have credentials
@@ -827,48 +815,6 @@ class SkopeoClient:
         """Build a complete Skopeo command with authentication"""
         return ["skopeo", subcommand] + self._get_auth_args() + args
 
-    def _run_via_sidecar(self, subcommand: str, args: List[str], timeout: float) -> Optional[str]:
-        """Run a Skopeo command by sending a request to the sidecar container.
-        Returns stdout on success, None on failure (consistent with run_skopeo_command).
-        """
-        body = {
-            "subcommand": subcommand,
-            "args": args,
-        }
-        if self.password:
-            body["creds"] = f"domino-registry:{self.password}"
-        data = json.dumps(body).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self._sidecar_base_url}/run",
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            try:
-                err_body = e.read().decode("utf-8")
-                result = json.loads(err_body)
-            except Exception:
-                logging.error(f"Skopeo sidecar HTTP error: {e.code} {e.reason}")
-                result = {"returncode": -1, "stdout": "", "stderr": err_body or str(e)}
-        except urllib.error.URLError as e:
-            logging.error(f"Skopeo sidecar unreachable: {e.reason}")
-            from utils.error_utils import create_registry_connection_error
-            raise create_registry_connection_error(self._sidecar_base_url, e)
-        except Exception as e:
-            logging.error(f"Skopeo sidecar request failed: {e}")
-            return None
-        returncode = result.get("returncode", -1)
-        stdout = result.get("stdout", "")
-        stderr = result.get("stderr", "")
-        if returncode != 0:
-            logging.error(f"Skopeo sidecar command failed (exit {returncode}): {stderr or stdout}")
-            return None
-        return stdout
-    
     @staticmethod
     def _redact_command_for_logging(cmd: List[str]) -> List[str]:
         """Return a copy of the command with any credentials redacted.
@@ -892,25 +838,11 @@ class SkopeoClient:
         return redacted
     
     def run_skopeo_command(self, subcommand: str, args: List[str]) -> Optional[str]:
-        """Run a Skopeo command with standardized configuration.
-        When use_sidecar is True, delegates to the sidecar container via HTTP; otherwise runs locally.
-        """
-        # Ensure we're logged in before any operation (no-op when use_sidecar)
+        """Run a Skopeo command with standardized configuration."""
         self._ensure_logged_in()
-        
-        # Apply rate limiting
         self._acquire_rate_limit_token()
-        
+
         timeout = self.config_manager.get_retry_timeout()
-        if self.use_sidecar:
-            try:
-                return self._run_via_sidecar(subcommand, args, timeout)
-            except Exception as e:
-                is_retryable, _ = is_retryable_error(e)
-                if not is_retryable:
-                    logging.error(f"Non-retryable error in Skopeo sidecar: {e}")
-                return None
-        
         cmd = self._build_skopeo_command(subcommand, args)
         log_cmd = " ".join(self._redact_command_for_logging(cmd))
         

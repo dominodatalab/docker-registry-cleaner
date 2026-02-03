@@ -1,16 +1,15 @@
 image:
   repository: quay.io/domino/docker-registry-cleaner
-  tag: v0.2
+  tag: v0.2.7
   pullPolicy: Always
 
-# When enabled, run Skopeo in a sidecar container; main container calls it via HTTP (skopeo.use_sidecar in config).
-skopeoSidecar:
-  enabled: true
-  image:
-    repository: quay.io/domino/docker-registry-cleaner-skopeo
-    tag: v0.2
-    pullPolicy: Always
-  port: 8080
+# fsGroup makes the PVC at /data/reports writable by nonroot (65532)
+podSecurityContext:
+  fsGroup: 65532
+
+# Optional env overrides (e.g. REGISTRY_URL for ECR)
+env:
+  registryUrl: ""  # Set to registry host (e.g. 946429944765.dkr.ecr.eu-west-1.amazonaws.com) to override config
 
 imagePullSecrets:
   - name: domino-quay-repos
@@ -67,10 +66,6 @@ config:
       enabled: true  # Enable rate limiting for registry operations
       requests_per_second: 10.0  # Maximum requests per second (adjust based on registry capacity)
       burst_size: 20  # Allow burst of up to N requests (helps with parallel operations)
-    # Use sidecar container for Skopeo (set true when deploying with skopeo-sidecar container)
-    use_sidecar: true
-    sidecar_host: "localhost"
-    sidecar_port: 8080
   reports:
     archived_tags: "archived-tags.json"
     deletion_analysis: "deletion-analysis.json"

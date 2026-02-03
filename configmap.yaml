@@ -10,8 +10,8 @@ data:
 
     # Registry Configuration
     registry:
-      url: "docker-registry:5000"
-      repository: "dominodatalab"
+      url: "946429944765.dkr.ecr.eu-west-1.amazonaws.com"
+      repository: "itgdock113207"
 
     # Kubernetes Configuration
     kubernetes:
@@ -28,7 +28,7 @@ data:
     analysis:
       max_workers: 4
       timeout: 300
-      output_dir: "../reports"
+      output_dir: "/data/reports"
 
     # Retry Configuration
     retry:
