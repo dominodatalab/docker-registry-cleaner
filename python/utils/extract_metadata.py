@@ -1,8 +1,21 @@
+"""MongoDB aggregation pipelines for extracting environment usage metadata.
+
+This module provides aggregation pipelines for extracting Docker image usage
+information from various MongoDB collections in Domino:
+- models: Model deployments and their environment references
+- workspace: Workspaces and their environment configurations
+- runs: Execution runs with environment revision info
+- projects: Projects with default environment overrides
+- scheduler_jobs: Scheduled jobs with environment overrides
+- organizations: Organizations with default environments
+- app_versions: App versions with environment references
+"""
+
 import argparse
 import sys
 
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List
 
 # Add parent directory to path for imports
 _parent_dir = Path(__file__).parent.parent.absolute()
@@ -13,9 +26,20 @@ from utils.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
 
+# Type alias for MongoDB aggregation pipeline stages
+PipelineStage = Dict[str, Any]
+Pipeline = List[PipelineStage]
 
-def model_env_usage_pipeline() -> List[dict]:
-	# Converted from mongo_queries/model_env_usage.js
+
+def model_env_usage_pipeline() -> Pipeline:
+	"""Generate aggregation pipeline for model environment usage.
+
+	Extracts active model versions and their environment/revision information,
+	including base environment Docker tags.
+
+	Returns:
+		MongoDB aggregation pipeline stages
+	"""
 	return [
 		{"$match": {"isArchived": False}},
 		{"$project": {
@@ -92,10 +116,18 @@ def model_env_usage_pipeline() -> List[dict]:
 	]
 
 
-def workspace_env_usage_pipeline() -> List[dict]:
-	# Converted from mongo_queries/workspace_env_usage.js
-	# Exclude deleted workspaces - they won't be restarted, so images linked to them can be cleaned up
-	# Include all other workspace states (Running, Stopped, etc.) - preserve images for workspaces that could be restarted
+def workspace_env_usage_pipeline() -> Pipeline:
+	"""Generate aggregation pipeline for workspace environment usage.
+
+	Extracts non-deleted workspaces and their environment configurations,
+	including session environments, compute cluster environments, and
+	project default environments.
+
+	Note: Excludes deleted workspaces since they won't be restarted.
+
+	Returns:
+		MongoDB aggregation pipeline stages
+	"""
 	return [
 		{"$match": {"state": {"$ne": "Deleted"}}},
 		{"$lookup": {"from": "users", "localField": "ownerId", "foreignField": "_id", "as": "user_id"}},
@@ -191,8 +223,15 @@ def workspace_env_usage_pipeline() -> List[dict]:
 	]
 
 
-def runs_env_usage_pipeline() -> List[dict]:
-	# Aggregate recent runs that reference environment and environment revision; enrich with docker image info
+def runs_env_usage_pipeline() -> Pipeline:
+	"""Generate aggregation pipeline for run environment usage.
+
+	Extracts runs that reference environments and environment revisions,
+	grouping by environment+revision and computing the most recent usage time.
+
+	Returns:
+		MongoDB aggregation pipeline stages
+	"""
 	return [
 		{"$match": {"environmentId": {"$exists": True}, "environmentRevisionId": {"$exists": True}}},
 		{"$lookup": {"from": "environment_revisions", "localField": "environmentRevisionId", "foreignField": "_id", "as": "env_rev"}},
@@ -257,9 +296,15 @@ def runs_env_usage_pipeline() -> List[dict]:
 	]
 
 
-def projects_env_usage_pipeline() -> List[dict]:
-	# Aggregate projects that reference environment IDs via overrideV2EnvironmentId; enrich with docker image info
-	# Exclude archived projects - they won't use the environment, so images linked to them can be cleaned up
+def projects_env_usage_pipeline() -> Pipeline:
+	"""Generate aggregation pipeline for project environment usage.
+
+	Extracts non-archived projects with overrideV2EnvironmentId set,
+	resolving to the active revision's Docker tag.
+
+	Returns:
+		MongoDB aggregation pipeline stages
+	"""
 	return [
 		{"$match": {
 			"overrideV2EnvironmentId": {"$exists": True, "$ne": None},
@@ -292,8 +337,15 @@ def projects_env_usage_pipeline() -> List[dict]:
 	]
 
 
-def scheduler_jobs_env_usage_pipeline() -> List[dict]:
-	# Aggregate scheduler jobs that reference environment IDs via jobDataPlain.overrideEnvironmentId; enrich with docker image info
+def scheduler_jobs_env_usage_pipeline() -> Pipeline:
+	"""Generate aggregation pipeline for scheduler job environment usage.
+
+	Extracts scheduler jobs with jobDataPlain.overrideEnvironmentId set,
+	resolving to the active revision's Docker tag.
+
+	Returns:
+		MongoDB aggregation pipeline stages
+	"""
 	return [
 		{"$match": {"jobDataPlain.overrideEnvironmentId": {"$exists": True, "$ne": None}}},
 		{"$project": {
@@ -323,8 +375,15 @@ def scheduler_jobs_env_usage_pipeline() -> List[dict]:
 	]
 
 
-def organizations_env_usage_pipeline() -> List[dict]:
-	# Aggregate organizations that reference environment IDs via defaultV2EnvironmentId; enrich with docker image info
+def organizations_env_usage_pipeline() -> Pipeline:
+	"""Generate aggregation pipeline for organization environment usage.
+
+	Extracts organizations with defaultV2EnvironmentId set,
+	resolving to the active revision's Docker tag.
+
+	Returns:
+		MongoDB aggregation pipeline stages
+	"""
 	return [
 		{"$match": {"defaultV2EnvironmentId": {"$exists": True, "$ne": None}}},
 		{"$project": {
@@ -351,8 +410,15 @@ def organizations_env_usage_pipeline() -> List[dict]:
 	]
 
 
-def app_versions_env_usage_pipeline() -> List[dict]:
-	# Aggregate app versions that reference environment IDs via environmentId; enrich with docker image info
+def app_versions_env_usage_pipeline() -> Pipeline:
+	"""Generate aggregation pipeline for app version environment usage.
+
+	Extracts app versions with environmentId set,
+	resolving to the active revision's Docker tag.
+
+	Returns:
+		MongoDB aggregation pipeline stages
+	"""
 	return [
 		{"$match": {"environmentId": {"$exists": True, "$ne": None}}},
 		{"$project": {
@@ -383,18 +449,29 @@ def app_versions_env_usage_pipeline() -> List[dict]:
 
 
 def run(target: str) -> None:
-	"""Run aggregations and save reports via ImageUsageService."""
+	"""Run aggregations and save reports via ImageUsageService.
+
+	Args:
+		target: Which aggregation(s) to run ('model', 'workspace', 'runs',
+			'projects', 'scheduler_jobs', 'organizations', 'app_versions', or 'all')
+	"""
 	from utils.image_usage import ImageUsageService  # Local import to avoid circular dependency
-	
+
 	service = ImageUsageService()
 	logger.info(f"Running image usage aggregations for target={target}...")
 	service.save_aggregations(target)
 
 
-def main():
+def main() -> None:
+	"""Main entry point for running metadata extraction from command line."""
 	setup_logging()
 	parser = argparse.ArgumentParser(description='Extract metadata from MongoDB using PyMongo')
-	parser.add_argument('--target', choices=['model', 'workspace', 'runs', 'projects', 'scheduler_jobs', 'organizations', 'app_versions', 'all'], default='all', help='Which aggregation(s) to run')
+	parser.add_argument(
+		'--target',
+		choices=['model', 'workspace', 'runs', 'projects', 'scheduler_jobs', 'organizations', 'app_versions', 'all'],
+		default='all',
+		help='Which aggregation(s) to run'
+	)
 	args = parser.parse_args()
 	run(args.target)
 

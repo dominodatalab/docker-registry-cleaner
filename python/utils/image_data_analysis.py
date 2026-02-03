@@ -13,11 +13,12 @@ Data Model:
 
 import argparse
 import concurrent.futures
+import logging
 import sys
 
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
 # Add parent directory to path for imports
 _parent_dir = Path(__file__).parent.parent.absolute()
@@ -32,39 +33,101 @@ from utils.report_utils import save_json
 logger = get_logger(__name__)
 
 
+# TypedDict definitions for structured data
+class LayerData(TypedDict):
+    """Layer information stored in the analyzer."""
+    size_bytes: int
+    ref_count: int
+
+
+class ImageData(TypedDict):
+    """Image metadata stored in the analyzer."""
+    repository: str
+    tag: str
+    digest: str
+
+
+class ImageLayerMapping(TypedDict):
+    """Mapping between an image and one of its layers."""
+    image_id: str
+    layer_id: str
+    order_index: int
+
+
+class InspectionResult(TypedDict, total=False):
+    """Result from inspecting a single tag."""
+    image_id: str
+    repository: str
+    tag: str
+    digest: str
+    layers_data: List[Dict[str, Any]]
+
+
+class LegacyLayerData(TypedDict):
+    """Legacy format layer data for backward compatibility."""
+    size: int
+    tags: List[str]
+    environments: List[str]
+
+
+class SummaryStats(TypedDict):
+    """Summary statistics about analyzed images and layers."""
+    total_images: int
+    total_layers: int
+    total_size_gb: float
+    single_use_layers: int
+    single_use_size_gb: float
+    shared_layers: int
+    shared_size_gb: float
+    avg_layers_per_image: float
+    avg_ref_count: float
+
+
 class ImageAnalyzer:
-    """Analyzes Docker images and their layers using native Python data structures"""
-    
-    def __init__(self, registry_url: str, repository: str):
-        self.registry_url = registry_url
-        self.repository = repository
-        self.skopeo_client = SkopeoClient(config_manager)
-        
+    """Analyzes Docker images and their layers using native Python data structures."""
+
+    def __init__(self, registry_url: str, repository: str) -> None:
+        self.registry_url: str = registry_url
+        self.repository: str = repository
+        self.skopeo_client: SkopeoClient = SkopeoClient(config_manager)
+
         # Initialize data structures
-        self.layers = {}  # layer_id -> {size_bytes, ref_count}
-        self.images = {}  # image_id -> {repository, tag, digest}
-        self.image_layers = []  # [{image_id, layer_id, order_index}, ...]
-        
-        self.logger = get_logger(__name__)
+        self.layers: Dict[str, LayerData] = {}  # layer_id -> {size_bytes, ref_count}
+        self.images: Dict[str, ImageData] = {}  # image_id -> {repository, tag, digest}
+        self.image_layers: List[ImageLayerMapping] = []  # [{image_id, layer_id, order_index}, ...]
+
+        self.logger: logging.Logger = get_logger(__name__)
     
     def filter_tags_by_object_ids(self, tags: List[str], object_ids: Optional[List[str]] = None) -> List[str]:
-        """Filter tags to only include those that start with one of the provided ObjectIDs"""
+        """Filter tags to only include those that start with one of the provided ObjectIDs.
+
+        Args:
+            tags: List of Docker image tags to filter
+            object_ids: Optional list of ObjectIDs to filter by
+
+        Returns:
+            Filtered list of tags that start with one of the provided ObjectIDs
+        """
         if not object_ids:
             return tags
-        
-        filtered_tags = []
+
+        filtered_tags: List[str] = []
         for tag in tags:
             # Check if the tag starts with any of the provided ObjectIDs
             for obj_id in object_ids:
                 if tag.startswith(obj_id):
                     filtered_tags.append(tag)
                     break
-        
+
         return filtered_tags
     
-    def _inspect_single_tag(self, image_type: str, tag: str) -> Optional[Dict]:
-        """Inspect a single tag and return image data
-        
+    def _inspect_single_tag(self, image_type: str, tag: str) -> Optional[InspectionResult]:
+        """Inspect a single tag and return image data.
+
+        Args:
+            image_type: Type of image (e.g., 'environment', 'model')
+            tag: Docker image tag to inspect
+
         Returns:
             Dict with image_id, repository, tag, digest, and layers_data, or None if inspection fails
         """
@@ -91,14 +154,19 @@ class ImageAnalyzer:
             self.logger.error(f"Error inspecting {image_type}:{tag}: {e}")
             return None
     
-    def analyze_image(self, image_type: str, object_ids: Optional[List[str]] = None, max_workers: Optional[int] = None) -> bool:
-        """Analyze a single image type (e.g., 'environment', 'model') with parallel tag inspection
-        
+    def analyze_image(
+        self,
+        image_type: str,
+        object_ids: Optional[List[str]] = None,
+        max_workers: Optional[int] = None
+    ) -> bool:
+        """Analyze a single image type (e.g., 'environment', 'model') with parallel tag inspection.
+
         Args:
             image_type: Type of image to analyze
             object_ids: Optional list of ObjectIDs to filter tags
             max_workers: Number of parallel workers for tag inspection (default: from config, or 4)
-        
+
         Returns:
             True if successful, False otherwise
         """
@@ -199,28 +267,28 @@ class ImageAnalyzer:
     
     def get_image_total_size(self, image_id: str) -> int:
         """Calculate total size of an image (sum of all its layers).
-        
+
         Args:
             image_id: Image ID to calculate size for
-        
+
         Returns:
             Total bytes for all layers in the image
         """
-        total_size = 0
+        total_size: int = 0
         for mapping in self.image_layers:
             if mapping['image_id'] == image_id:
                 layer_id = mapping['layer_id']
                 layer_data = self.layers.get(layer_id)
                 if layer_data:
                     total_size += layer_data['size_bytes']
-        return int(total_size)
-    
+        return total_size
+
     def freed_space_if_deleted(self, image_ids: List[str]) -> int:
         """Calculate space that would be freed by deleting one or more images.
-        
+
         Args:
             image_ids: List of image_ids to simulate deletion
-        
+
         Returns:
             Total bytes that would be freed
         """
@@ -248,17 +316,17 @@ class ImageAnalyzer:
         
         return int(total_freed)
     
-    def get_unused_images(self, used_tags: List[str]) -> List[Dict]:
+    def get_unused_images(self, used_tags: List[str]) -> List[Dict[str, Any]]:
         """Get images that are not in the used_tags list.
-        
+
         Args:
             used_tags: List of tags that are currently in use
-        
+
         Returns:
             List of unused image dicts with image_id added
         """
         used_tags_set = set(used_tags)
-        unused_images = []
+        unused_images: List[Dict[str, Any]] = []
         for image_id, image_data in self.images.items():
             if image_data['tag'] not in used_tags_set:
                 unused_images.append({
@@ -267,11 +335,11 @@ class ImageAnalyzer:
                 })
         return unused_images
     
-    def generate_summary_stats(self) -> Dict:
-        """Generate summary statistics about the analyzed images and layers"""
-        total_images = len(self.images)
-        total_layers = len(self.layers)
-        total_size = sum(layer['size_bytes'] for layer in self.layers.values())
+    def generate_summary_stats(self) -> SummaryStats:
+        """Generate summary statistics about the analyzed images and layers."""
+        total_images: int = len(self.images)
+        total_layers: int = len(self.layers)
+        total_size: int = sum(layer['size_bytes'] for layer in self.layers.values())
         
         # Layers used by only one image
         single_use_layers = [layer for layer in self.layers.values() if layer['ref_count'] == 1]
@@ -299,9 +367,16 @@ class ImageAnalyzer:
             'avg_ref_count': round(avg_ref_count, 2)
         }
     
-    def get_images_by_tag_prefix(self, prefix: str) -> List[Dict]:
-        """Get all images whose tags start with the given prefix (e.g., ObjectID)"""
-        matching_images = []
+    def get_images_by_tag_prefix(self, prefix: str) -> List[Dict[str, Any]]:
+        """Get all images whose tags start with the given prefix (e.g., ObjectID).
+
+        Args:
+            prefix: Tag prefix to match (e.g., ObjectID)
+
+        Returns:
+            List of matching image dicts with image_id added
+        """
+        matching_images: List[Dict[str, Any]] = []
         for image_id, image_data in self.images.items():
             if image_data['tag'].startswith(prefix):
                 matching_images.append({
@@ -310,12 +385,13 @@ class ImageAnalyzer:
                 })
         return matching_images
     
-    def export_to_legacy_format(self) -> Dict:
+    def export_to_legacy_format(self) -> Dict[str, LegacyLayerData]:
         """Export data in the legacy format for backward compatibility.
-        
-        Returns a dict mapping layer_id to {'size': int, 'tags': [str], 'environments': [str]}
+
+        Returns:
+            Dict mapping layer_id to {'size': int, 'tags': [str], 'environments': [str]}
         """
-        legacy_data = {}
+        legacy_data: Dict[str, LegacyLayerData] = {}
         
         for layer_id, layer_data in self.layers.items():
             # Get all image-layer mappings for this layer
@@ -345,8 +421,8 @@ class ImageAnalyzer:
         
         return legacy_data
     
-    def save_reports(self):
-        """Save analysis reports to files"""
+    def save_reports(self) -> None:
+        """Save analysis reports to files."""
         # Get output paths from config
         final_output_file = config_manager.get_image_analysis_path()
         tags_per_layer_output_file = config_manager.get_tags_per_layer_path()
@@ -407,7 +483,7 @@ class ImageAnalyzer:
         self.logger.info(f"Images report saved to: {saved_path}")
 
 
-def main():
+def main() -> None:
     setup_logging()
     
     # Parse command line arguments

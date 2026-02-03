@@ -57,7 +57,8 @@ spec:
                 secretKeyRef:
                   name: mongodb-replicaset-admin
                   key: password
-          resources: {}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - name: docker-registry-cleaner-config
               mountPath: /config.yaml

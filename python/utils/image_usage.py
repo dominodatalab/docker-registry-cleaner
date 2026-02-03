@@ -21,13 +21,107 @@ import json
 import logging
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, TypedDict, Union
 
 from utils.config_manager import config_manager
 from utils.mongo_utils import get_mongo_client, bson_to_jsonable
 from utils.report_utils import save_json
 
 logger = logging.getLogger(__name__)
+
+
+# TypedDict definitions for structured data
+class RunInfo(TypedDict, total=False):
+    """Information about a run that uses a Docker image."""
+    run_id: str
+    project_id: str
+    project_name: str
+    project_owner_id: str
+    project_owner_name: str
+    status: str
+    started: Optional[str]
+    completed: Optional[str]
+
+
+class WorkspaceInfo(TypedDict, total=False):
+    """Information about a workspace that uses a Docker image."""
+    workspace_id: str
+    workspace_name: str
+    project_name: str
+    usage_type: str
+    workspace_last_change: Optional[str]
+
+
+class ModelInfo(TypedDict, total=False):
+    """Information about a model that uses a Docker image."""
+    model_id: str
+    model_name: str
+    version_id: str
+
+
+class ProjectInfo(TypedDict, total=False):
+    """Information about a project using an environment as default."""
+    _id: str
+    name: str
+    ownerId: str
+
+
+class SchedulerJobInfo(TypedDict, total=False):
+    """Information about a scheduler job using an environment."""
+    _id: str
+    jobName: str
+    projectId: str
+
+
+class OrganizationInfo(TypedDict, total=False):
+    """Information about an organization using an environment as default."""
+    _id: str
+    name: str
+
+
+class AppVersionInfo(TypedDict, total=False):
+    """Information about an app version referencing an environment."""
+    _id: str
+    appId: str
+    versionNumber: int
+
+
+class UsageInfo(TypedDict):
+    """Usage information for a Docker image tag."""
+    runs: List[RunInfo]
+    workspaces: List[WorkspaceInfo]
+    models: List[ModelInfo]
+    scheduler_jobs: List[SchedulerJobInfo]
+    projects: List[ProjectInfo]
+    organizations: List[OrganizationInfo]
+    app_versions: List[AppVersionInfo]
+
+
+class MongoDBReports(TypedDict, total=False):
+    """MongoDB usage reports from aggregation pipelines."""
+    runs: List[Dict[str, Any]]
+    workspaces: List[Dict[str, Any]]
+    models: List[Dict[str, Any]]
+    projects: List[Dict[str, Any]]
+    scheduler_jobs: List[Dict[str, Any]]
+    organizations: List[Dict[str, Any]]
+    app_versions: List[Dict[str, Any]]
+
+
+class EnvironmentUsageInfo(TypedDict):
+    """Usage information for a specific environment ID."""
+    matching_tags: List[str]
+    workspaces: List[Dict[str, Any]]
+    runs: List[Dict[str, Any]]
+    models: List[Dict[str, Any]]
+
+
+class DirectEnvironmentUsageInfo(TypedDict):
+    """Direct environment ID usage (not via Docker tags)."""
+    projects: List[ProjectInfo]
+    scheduler_jobs: List[SchedulerJobInfo]
+    organizations: List[OrganizationInfo]
+    app_versions: List[AppVersionInfo]
 
 from utils.extract_metadata import (
     model_env_usage_pipeline,
@@ -43,15 +137,15 @@ from utils.extract_metadata import (
 class ImageUsageService:
     """Service for collecting, loading, and analyzing image usage information."""
 
-    def __init__(self):
-        self.mongo_db = config_manager.get_mongo_db()
-        self.logger = logger
+    def __init__(self) -> None:
+        self.mongo_db: str = config_manager.get_mongo_db()
+        self.logger: logging.Logger = logger
 
     # ------------------------------------------------------------------
     # Aggregation helpers (Mongo → raw records)
     # ------------------------------------------------------------------
 
-    def collect_model_usage(self) -> List[dict]:
+    def collect_model_usage(self) -> List[Dict[str, Any]]:
         client = get_mongo_client()
         try:
             db = client[self.mongo_db]
@@ -59,7 +153,7 @@ class ImageUsageService:
         finally:
             client.close()
 
-    def collect_workspace_usage(self) -> List[dict]:
+    def collect_workspace_usage(self) -> List[Dict[str, Any]]:
         client = get_mongo_client()
         try:
             db = client[self.mongo_db]
@@ -67,7 +161,7 @@ class ImageUsageService:
         finally:
             client.close()
 
-    def collect_runs_usage(self) -> List[dict]:
+    def collect_runs_usage(self) -> List[Dict[str, Any]]:
         client = get_mongo_client()
         try:
             db = client[self.mongo_db]
@@ -75,7 +169,7 @@ class ImageUsageService:
         finally:
             client.close()
 
-    def collect_projects_usage(self) -> List[dict]:
+    def collect_projects_usage(self) -> List[Dict[str, Any]]:
         client = get_mongo_client()
         try:
             db = client[self.mongo_db]
@@ -83,7 +177,7 @@ class ImageUsageService:
         finally:
             client.close()
 
-    def collect_scheduler_jobs_usage(self) -> List[dict]:
+    def collect_scheduler_jobs_usage(self) -> List[Dict[str, Any]]:
         client = get_mongo_client()
         try:
             db = client[self.mongo_db]
@@ -91,7 +185,7 @@ class ImageUsageService:
         finally:
             client.close()
 
-    def collect_organizations_usage(self) -> List[dict]:
+    def collect_organizations_usage(self) -> List[Dict[str, Any]]:
         client = get_mongo_client()
         try:
             db = client[self.mongo_db]
@@ -102,7 +196,7 @@ class ImageUsageService:
         finally:
             client.close()
 
-    def collect_app_versions_usage(self) -> List[dict]:
+    def collect_app_versions_usage(self) -> List[Dict[str, Any]]:
         client = get_mongo_client()
         try:
             db = client[self.mongo_db]
@@ -119,7 +213,7 @@ class ImageUsageService:
 
     def run_aggregations(
         self, target: str = "all"
-    ) -> Dict[str, List[dict]]:
+    ) -> Dict[str, List[Dict[str, Any]]]:
         """Run usage aggregations against MongoDB.
 
         Args:
@@ -128,7 +222,7 @@ class ImageUsageService:
         Returns:
             Dict with keys subset of {'models', 'workspaces', 'runs', 'projects', 'scheduler_jobs', 'organizations', 'app_versions'}.
         """
-        results: Dict[str, List[dict]] = {}
+        results: Dict[str, List[Dict[str, Any]]] = {}
 
         if target in ("model", "all"):
             results["models"] = self.collect_model_usage()
@@ -173,14 +267,14 @@ class ImageUsageService:
     # Loading from saved reports
     # ------------------------------------------------------------------
 
-    def load_usage_reports(self) -> Dict[str, List[dict]]:
+    def load_usage_reports(self) -> MongoDBReports:
         """Load MongoDB usage reports from saved consolidated JSON file.
-        
+
         Supports both timestamped and non-timestamped report files.
         If exact file doesn't exist, finds the most recent timestamped version.
-        
+
         Returns:
-            Dict with keys: 'runs', 'workspaces', 'models', 'projects', 
+            Dict with keys: 'runs', 'workspaces', 'models', 'projects',
             'scheduler_jobs', 'organizations', 'app_versions'
         """
         from utils.report_utils import get_latest_report, get_reports_dir
@@ -238,12 +332,12 @@ class ImageUsageService:
     # Tag extraction and usage analysis
     # ------------------------------------------------------------------
 
-    def load_mongodb_usage_reports(self) -> Dict[str, List[Dict]]:
+    def load_mongodb_usage_reports(self) -> MongoDBReports:
         """Load MongoDB usage reports (runs, workspaces, models, projects, scheduler_jobs, organizations, app_versions) that contain Docker image tag references.
-        
+
         First tries to load from saved consolidated report file. If that doesn't exist,
         runs fresh aggregations against MongoDB.
-        
+
         Returns:
             Dict with keys: 'runs', 'workspaces', 'models', 'projects', 'scheduler_jobs', 'organizations', 'app_versions' containing lists of records
         """
@@ -265,18 +359,18 @@ class ImageUsageService:
         
         return reports
 
-    def extract_docker_tags_with_usage_info(self, mongodb_reports: Dict[str, List[Dict]]) -> Tuple[Set[str], Dict[str, Dict]]:
-        """Extract Docker image tags from MongoDB reports with detailed usage information
-        
+    def extract_docker_tags_with_usage_info(self, mongodb_reports: MongoDBReports) -> Tuple[Set[str], Dict[str, UsageInfo]]:
+        """Extract Docker image tags from MongoDB reports with detailed usage information.
+
         Args:
             mongodb_reports: Dict with 'runs', 'workspaces', 'models', 'projects', 'scheduler_jobs', 'organizations', 'app_versions' keys containing lists of records
-        
+
         Returns:
             Tuple of (set of Docker image tags, dict mapping tag -> usage info)
             Usage info contains: {'runs': [...], 'workspaces': [...], 'models': [...], 'scheduler_jobs': [...], 'projects': [...], 'organizations': [...], 'app_versions': [...]}
         """
-        tags = set()
-        usage_info = {}  # Maps tag -> dict with usage details
+        tags: Set[str] = set()
+        usage_info: Dict[str, UsageInfo] = {}  # Maps tag -> dict with usage details
         
         # Extract tags from runs
         for record in mongodb_reports.get('runs', []):
@@ -396,13 +490,13 @@ class ImageUsageService:
         
         return tags, usage_info
 
-    def get_usage_for_tag(self, tag: str, mongodb_reports: Dict[str, List[Dict]] = None) -> Dict:
-        """Get usage information for a specific tag
-        
+    def get_usage_for_tag(self, tag: str, mongodb_reports: Optional[MongoDBReports] = None) -> UsageInfo:
+        """Get usage information for a specific tag.
+
         Args:
             tag: Docker image tag to check
             mongodb_reports: Optional MongoDB usage reports
-        
+
         Returns:
             Dict with usage information: {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []}
         """
@@ -412,12 +506,12 @@ class ImageUsageService:
         _, usage_info = self.extract_docker_tags_with_usage_info(mongodb_reports)
         return usage_info.get(tag, {'runs': [], 'workspaces': [], 'models': [], 'scheduler_jobs': [], 'projects': [], 'organizations': [], 'app_versions': []})
     
-    def generate_usage_summary(self, usage: Dict) -> str:
-        """Generate a human-readable summary of why an image is in use
-        
+    def generate_usage_summary(self, usage: UsageInfo) -> str:
+        """Generate a human-readable summary of why an image is in use.
+
         Args:
             usage: Usage dictionary with 'runs', 'workspaces', 'models', 'scheduler_jobs', 'projects', 'organizations', 'app_versions' info
-        
+
         Returns:
             Human-readable string describing usage
         """
@@ -460,13 +554,13 @@ class ImageUsageService:
         
         return ", ".join(reasons)
     
-    def _parse_timestamp(self, timestamp_str) -> Optional[datetime]:
-        """Parse a timestamp string to datetime object
-        
+    def _parse_timestamp(self, timestamp_str: Union[str, Dict[str, Any], int, float, None]) -> Optional[datetime]:
+        """Parse a timestamp string to datetime object.
+
         Args:
             timestamp_str: ISO format timestamp string (may end with 'Z') or
                 MongoDB extended JSON dict like {"$date": "..."}.
-        
+
         Returns:
             datetime object or None if parsing fails
         """
@@ -492,15 +586,15 @@ class ImageUsageService:
         except Exception:
             return None
     
-    def _get_most_recent_usage_date(self, usage_info: Dict) -> Optional[datetime]:
-        """Get the most recent usage date from usage information
-        
+    def _get_most_recent_usage_date(self, usage_info: UsageInfo) -> Optional[datetime]:
+        """Get the most recent usage date from usage information.
+
         Checks runs (last_used, completed, started), workspaces (workspace_last_change),
         and other sources to find the most recent timestamp.
-        
+
         Args:
             usage_info: Dict with 'runs', 'workspaces', 'models', etc. containing usage records
-        
+
         Returns:
             Most recent datetime or None if no timestamps found
         """
@@ -524,14 +618,19 @@ class ImageUsageService:
         
         return most_recent
     
-    def check_tags_in_use(self, tags: List[str], mongodb_reports: Dict[str, List[Dict]] = None, recent_days: Optional[int] = None) -> Tuple[Set[str], Dict[str, Dict]]:
-        """Check which tags from a list are in use
-        
+    def check_tags_in_use(
+        self,
+        tags: List[str],
+        mongodb_reports: Optional[MongoDBReports] = None,
+        recent_days: Optional[int] = None
+    ) -> Tuple[Set[str], Dict[str, UsageInfo]]:
+        """Check which tags from a list are in use.
+
         Args:
             tags: List of Docker image tags to check
             mongodb_reports: Optional MongoDB usage reports
             recent_days: Optional number of days - if provided, only consider tags as "in-use" if they were used within the last N days
-        
+
         Returns:
             Tuple of (set of tags that are in use, dict mapping tag -> usage info)
         """
@@ -580,15 +679,19 @@ class ImageUsageService:
         
         return in_use_tags, usage_info
     
-    def find_usage_for_environment_ids(self, environment_ids: Set[str], mongodb_reports: Dict[str, List[Dict]] = None) -> Dict[str, Dict]:
-        """Find usage information for a set of environment/revision IDs
-        
+    def find_usage_for_environment_ids(
+        self,
+        environment_ids: Set[str],
+        mongodb_reports: Optional[MongoDBReports] = None
+    ) -> Dict[str, EnvironmentUsageInfo]:
+        """Find usage information for a set of environment/revision IDs.
+
         This matches tags that contain these IDs (e.g., tags starting with the ObjectID).
-        
+
         Args:
             environment_ids: Set of environment or revision ObjectIDs to find usage for
             mongodb_reports: Optional MongoDB usage reports
-        
+
         Returns:
             Dict mapping each environment_id to its usage info:
             {
@@ -676,18 +779,18 @@ class ImageUsageService:
         
         return usage_by_id
     
-    def find_direct_environment_id_usage(self, environment_ids: Set[str]) -> Dict[str, Dict]:
-        """Find direct environment ID usage in MongoDB collections (not via Docker tags)
-        
+    def find_direct_environment_id_usage(self, environment_ids: Set[str]) -> Dict[str, DirectEnvironmentUsageInfo]:
+        """Find direct environment ID usage in MongoDB collections (not via Docker tags).
+
         This checks collections that reference environment IDs directly using pipeline results:
         - projects (overrideV2EnvironmentId)
         - scheduler_jobs (jobDataPlain.overrideEnvironmentId)
         - organizations (defaultV2EnvironmentId)
         - app_versions (environmentId)
-        
+
         Args:
             environment_ids: Set of environment ObjectIDs to check
-        
+
         Returns:
             Dict mapping each environment_id to its direct usage:
             {

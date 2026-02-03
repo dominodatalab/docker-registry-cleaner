@@ -1,0 +1,63 @@
+[project]
+name = "docker-registry-cleaner"
+version = "0.2.8"
+description = "Tools for analyzing and cleaning Docker registries"
+requires-python = ">=3.11"
+
+[tool.black]
+line-length = 120
+target-version = ["py311", "py312"]
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+    \.git
+    | \.venv
+    | build
+    | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 120
+skip_gitignore = true
+known_first_party = ["utils", "scripts"]
+sections = ["FUTURE", "STDLIB", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = false  # Start permissive, can tighten later
+check_untyped_defs = true
+ignore_missing_imports = true
+exclude = [
+    "tests/",
+    "build/",
+    "dist/",
+]
+
+[[tool.mypy.overrides]]
+module = "bson.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "kubernetes.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "keycloak.*"
+ignore_missing_imports = true
+
+# Note: pytest config is in pytest.ini
+
+[tool.coverage.run]
+source = ["python"]
+omit = ["tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
