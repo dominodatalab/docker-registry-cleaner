@@ -45,6 +45,9 @@ spec:
             - name: docker-registry-cleaner-config
               mountPath: /config.yaml
               subPath: config.yaml
+            - name: docker-credentials
+              mountPath: /root/.docker
+              readOnly: true
       imagePullSecrets:
         - name: domino-quay-repos
       restartPolicy: Always
@@ -52,5 +55,11 @@ spec:
         - name: docker-registry-cleaner-config
           configMap:
             name: docker-registry-cleaner-config
+        - name: docker-credentials
+          secret:
+            secretName: domino-registry
+            items:
+              - key: .dockerconfigjson
+                path: config.json
   updateStrategy:
     type: RollingUpdate

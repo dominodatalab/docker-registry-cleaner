@@ -10,8 +10,8 @@ data:
 
     # Registry Configuration
     registry:
-      url: "docker-registry:5000"
-      repository: "dominodatalab"
+      url: "test.quay.io"
+      repository: "domino"
 
     # Kubernetes Configuration
     kubernetes:
@@ -53,7 +53,7 @@ data:
     # S3 Backup Configuration
     s3:
       bucket: ""  # S3 bucket for image backups (optional, can be set via --s3-bucket flag)
-      region: "us-west-2"  # AWS region for S3 and ECR operations
+      region: "eu-west-1"  # AWS region for S3 and ECR operations
 
     # Skopeo Configuration
     skopeo:
