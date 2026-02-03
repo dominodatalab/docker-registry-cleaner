@@ -59,6 +59,18 @@ spec:
             - name: reports-storage
               mountPath: /data/reports
             {{- end }}
+        {{- if .Values.skopeoSidecar.enabled }}
+        - name: skopeo-sidecar
+          image: "{{ .Values.skopeoSidecar.image.repository }}:{{ .Values.skopeoSidecar.image.tag }}"
+          imagePullPolicy: {{ .Values.skopeoSidecar.image.pullPolicy }}
+          ports:
+            - name: skopeo
+              containerPort: {{ .Values.skopeoSidecar.port }}
+          env:
+            - name: SKOPEO_SIDECAR_PORT
+              value: "{{ .Values.skopeoSidecar.port | toString }}"
+          resources: {}
+        {{- end }}
       volumes:
         - name: docker-registry-cleaner-config
           configMap:

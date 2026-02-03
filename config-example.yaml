@@ -55,6 +55,11 @@ skopeo:
     enabled: true  # Enable rate limiting for registry operations
     requests_per_second: 10.0  # Maximum requests per second (adjust based on registry capacity)
     burst_size: 20  # Allow burst of up to N requests (helps with parallel operations)
+  # When true, run Skopeo in a sidecar container (same pod); main container calls it via HTTP.
+  # Use when deploying with two containers (Python app + Skopeo sidecar) to avoid installing Skopeo in the main image.
+  use_sidecar: false  # Set true when using the skopeo-sidecar container in StatefulSet
+  sidecar_host: "localhost"
+  sidecar_port: 8080
 
 # Default Report Paths
 reports:

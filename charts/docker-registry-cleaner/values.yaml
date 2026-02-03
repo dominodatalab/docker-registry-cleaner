@@ -3,6 +3,15 @@ image:
   tag: v0.2
   pullPolicy: Always
 
+# When enabled, run Skopeo in a sidecar container; main container calls it via HTTP (skopeo.use_sidecar in config).
+skopeoSidecar:
+  enabled: true
+  image:
+    repository: quay.io/domino/docker-registry-cleaner-skopeo
+    tag: v0.2
+    pullPolicy: Always
+  port: 8080
+
 imagePullSecrets:
   - name: domino-quay-repos
 
@@ -58,6 +67,10 @@ config:
       enabled: true  # Enable rate limiting for registry operations
       requests_per_second: 10.0  # Maximum requests per second (adjust based on registry capacity)
       burst_size: 20  # Allow burst of up to N requests (helps with parallel operations)
+    # Use sidecar container for Skopeo (set true when deploying with skopeo-sidecar container)
+    use_sidecar: true
+    sidecar_host: "localhost"
+    sidecar_port: 8080
   reports:
     archived_tags: "archived-tags.json"
     deletion_analysis: "deletion-analysis.json"
