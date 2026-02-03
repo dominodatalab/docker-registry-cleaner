@@ -26,6 +26,9 @@ rules:
   - apiGroups: ["apps"]
     resources: ["statefulsets"]
     verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec"]
+    verbs: ["get", "list", "create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -41,6 +44,40 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ include "docker-registry-cleaner.fullname" . }}-registry
+subjects:
+  - kind: ServiceAccount
+    name: {{ $saName }}
+    namespace: {{ .Release.Namespace }}
+---
+# ClusterRole for Kubernetes access health check (read_namespace) and in-cluster registry detection.
+# Namespaces are cluster-scoped; a namespaced Role cannot grant permission to read them.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "docker-registry-cleaner.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "docker-registry-cleaner.name" . }}
+    helm.sh/chart: {{ include "docker-registry-cleaner.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "docker-registry-cleaner.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "docker-registry-cleaner.name" . }}
+    helm.sh/chart: {{ include "docker-registry-cleaner.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "docker-registry-cleaner.fullname" . }}
 subjects:
   - kind: ServiceAccount
     name: {{ $saName }}

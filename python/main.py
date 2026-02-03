@@ -31,6 +31,7 @@ def load_script_paths() -> Dict[str, Optional[str]]:
         "mongo_cleanup": "scripts/mongo_cleanup.py",
         "reports": "scripts/reports.py",
         "reset_default_environments": "scripts/reset_default_environments.py",
+        "run_registry_gc": "scripts/run_registry_gc.py",
         "user_size_report": "scripts/user_size_report.py",
     }
 
@@ -48,6 +49,7 @@ def get_script_descriptions() -> Dict[str, str]:
         "mongo_cleanup": "Simple tag/ObjectID-based Mongo cleanup (consider using delete_unused_references for advanced features)",
         "reports": "Generate tag usage reports from analysis data (auto-generates metadata)",
         "reset_default_environments": "Unset default environments for users and organizations (userPreferences.defaultEnvironmentId, organizations.defaultV2EnvironmentId)",
+        "run_registry_gc": "Run Docker registry garbage collection inside the registry pod",
         "user_size_report": "Generate a report of image sizes grouped by user/owner, showing who is using the most space",
     }
 

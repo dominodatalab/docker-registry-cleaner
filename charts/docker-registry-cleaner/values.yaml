@@ -1,7 +1,15 @@
 image:
   repository: quay.io/domino/docker-registry-cleaner
-  tag: v0.1
+  tag: v0.2.8
   pullPolicy: Always
+
+# fsGroup makes the PVC at /data/reports writable by nonroot (65532)
+podSecurityContext:
+  fsGroup: 65532
+
+# Optional env overrides (e.g. REGISTRY_URL for ECR)
+env:
+  registryUrl: ""  # Set to registry host (e.g. 946429944765.dkr.ecr.eu-west-1.amazonaws.com) to override config
 
 imagePullSecrets:
   - name: domino-quay-repos
@@ -13,6 +21,11 @@ serviceAccount:
   fullnameOverride: ""
 
 dominoPlatformNamespace: domino-platform
+
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClass: ""  # Use default storage class if empty
 
 config:
   # Inline config.yaml content mounted into the container
@@ -27,7 +40,7 @@ config:
   analysis:
     max_workers: 4
     timeout: 300
-    output_dir: "../reports"
+    output_dir: "/data/reports"
   retry:
     max_retries: 3
     initial_delay: 1.0
@@ -49,7 +62,6 @@ config:
     bucket: ""
     region: "us-west-2"
   skopeo:
-    use_pod: false
     rate_limit:
       enabled: true  # Enable rate limiting for registry operations
       requests_per_second: 10.0  # Maximum requests per second (adjust based on registry capacity)

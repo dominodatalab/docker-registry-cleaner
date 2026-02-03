@@ -725,7 +725,7 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
             # Initialize ConfigManager and SkopeoClient for backup
             cfg_mgr = ConfigManager()
             from utils.config_manager import SkopeoClient
-            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
+            backup_skopeo_client = SkopeoClient(cfg_mgr)
             
             # Call process_backup from backup_restore
             try:
@@ -1332,7 +1332,13 @@ Examples:
     parser.add_argument(
         '--mongo-cleanup',
         action='store_true',
-        help='Also clean up MongoDB records after Docker image deletion (default: off)'
+        help='Also clean up MongoDB records after Docker image deletion (advanced / high-risk; see README)'
+    )
+
+    parser.add_argument(
+        '--run-registry-gc',
+        action='store_true',
+        help='Run Docker registry garbage collection in the registry pod after deleting tags (internal registries only)'
     )
     
     parser.add_argument(
@@ -1482,7 +1488,7 @@ def main():
             from scripts.backup_restore import process_backup
             from utils.config_manager import ConfigManager, SkopeoClient
             cfg_mgr = ConfigManager()
-            backup_skopeo_client = SkopeoClient(cfg_mgr, use_pod=cfg_mgr.get_skopeo_use_pod())
+            backup_skopeo_client = SkopeoClient(cfg_mgr)
 
             try:
                 process_backup(
@@ -1543,6 +1549,21 @@ def main():
             logger.info(f"Total environments_v2 cleaned: {total_env_cleaned}")
             
             logger.info("\n✅ Unused environment tags deletion completed successfully!")
+            
+            # Optionally run registry garbage collection for internal registries
+            if args.apply and args.run_registry_gc:
+                from utils.registry_maintenance import run_registry_garbage_collection
+                logger.info(
+                    "Running Docker registry garbage collection after unused environment tag deletion..."
+                )
+                gc_ok = run_registry_garbage_collection(
+                    registry_statefulset=args.registry_statefulset
+                )
+                if not gc_ok:
+                    logger.warning(
+                        "Docker registry garbage collection did not complete successfully; "
+                        "see logs for details."
+                    )
             
         else:
             # Find mode - calculate freed space and generate report

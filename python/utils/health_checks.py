@@ -12,7 +12,7 @@ import logging
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
-from utils.config_manager import config_manager
+from utils.config_manager import config_manager, _get_kubernetes_clients, is_registry_in_cluster
 from utils.mongo_utils import get_mongo_client
 from utils.logging_utils import get_logger
 from utils.error_utils import create_registry_connection_error, create_mongodb_connection_error, create_kubernetes_error, create_s3_error
@@ -45,29 +45,64 @@ class HealthChecker:
             from utils.config_manager import SkopeoClient
             
             registry_url = config_manager.get_registry_url()
-            repository = config_manager.get_repository()
+            base_repository = config_manager.get_repository()
             
-            self.logger.info(f"Checking registry connectivity: {registry_url}/{repository}")
+            # Determine which repositories to probe.
+            # If the configured repository already includes a type segment (e.g. "dominodatalab/environment"),
+            # just use it as-is. Otherwise, try common sub-repositories that we actually use.
+            if "/" in base_repository:
+                candidate_repos = [base_repository]
+            else:
+                candidate_repos = [
+                    f"{base_repository}/environment",
+                    f"{base_repository}/model",
+                ]
             
-            # Try to create a SkopeoClient and list tags
-            skopeo_client = SkopeoClient(
-                config_manager,
-                use_pod=config_manager.get_skopeo_use_pod(),
-                enable_docker_deletion=False
+            self.logger.info(
+                f"Checking registry connectivity at {registry_url} using repositories: "
+                + ", ".join(candidate_repos)
             )
             
-            # Try to list tags (this will fail if registry is unreachable)
-            tags = skopeo_client.list_tags(repository)
+            # Try to create a SkopeoClient
+            skopeo_client = SkopeoClient(config_manager, enable_docker_deletion=False)
+
+            last_error: Optional[Exception] = None
+            # Try each candidate repository until one succeeds
+            for repo in candidate_repos:
+                try:
+                    tags = skopeo_client.list_tags(repo)
+                    return HealthCheckResult(
+                        name="registry_connectivity",
+                        status=True,
+                        message=f"Successfully connected to registry {registry_url}",
+                        details={
+                            "registry_url": registry_url,
+                            "repository": repo,
+                            "tags_count": len(tags) if tags else 0,
+                        },
+                    )
+                except Exception as e_repo:
+                    # Record the error and try the next candidate
+                    last_error = e_repo
+                    self.logger.debug(
+                        f"Failed to list tags for candidate repository '{repo}': {e_repo}"
+                    )
             
+            # If all candidates failed, raise the last error to be handled below
+            if last_error is not None:
+                raise last_error
+            
+            # Fallback (should not normally reach here)
             return HealthCheckResult(
                 name="registry_connectivity",
-                status=True,
-                message=f"Successfully connected to registry {registry_url}",
+                status=False,
+                message=f"Failed to connect to registry {registry_url} using any candidate repository",
                 details={
                     "registry_url": registry_url,
-                    "repository": repository,
-                    "tags_count": len(tags) if tags else 0
-                }
+                    "repository": ",".join(candidate_repos),
+                    "error": "Unknown error",
+                    "suggestions": [],
+                },
             )
         except Exception as e:
             # Use actionable error for better user guidance
@@ -83,7 +118,7 @@ class HealthChecker:
                 message=error_message,
                 details={
                     "registry_url": registry_url,
-                    "repository": repository,
+                    "repository": ",".join(candidate_repos) if 'candidate_repos' in locals() else None,
                     "error": str(e),
                     "suggestions": actionable_error.suggestions if 'actionable_error' in locals() else []
                 }
@@ -151,15 +186,6 @@ class HealthChecker:
             HealthCheckResult indicating Kubernetes access status
         """
         try:
-            # Only check if skopeo_use_pod is enabled
-            if not config_manager.get_skopeo_use_pod():
-                return HealthCheckResult(
-                    name="kubernetes_access",
-                    status=True,
-                    message="Kubernetes access not required (skopeo_use_pod is False)",
-                    details={"skopeo_use_pod": False}
-                )
-            
             from kubernetes import client as k8s_client
             from kubernetes.config import load_incluster_config, load_kube_config
             from kubernetes.client.rest import ApiException
@@ -182,8 +208,7 @@ class HealthChecker:
                 status=True,
                 message=f"Successfully connected to Kubernetes API",
                 details={
-                    "namespace": namespace,
-                    "skopeo_use_pod": True
+                    "namespace": namespace
                 }
             )
         except ImportError:
@@ -191,7 +216,7 @@ class HealthChecker:
                 name="kubernetes_access",
                 status=False,
                 message="Kubernetes client not available (kubernetes package not installed)",
-                details={"skopeo_use_pod": config_manager.get_skopeo_use_pod()}
+                details={}
             )
         except Exception as e:
             # Use actionable error for better user guidance
@@ -207,10 +232,148 @@ class HealthChecker:
                 message=error_message,
                 details={
                     "namespace": namespace,
-                    "skopeo_use_pod": config_manager.get_skopeo_use_pod(),
                     "error": str(e),
                     "suggestions": actionable_error.suggestions if 'actionable_error' in locals() else []
                 }
+            )
+    
+    def check_registry_deletion_rbac(self) -> HealthCheckResult:
+        """Check if we can patch the docker-registry StatefulSet (required to enable deletion).
+
+        Skips the check if the registry is not running inside the cluster (e.g. ECR);
+        RBAC to patch the registry StatefulSet is only needed for in-cluster registries.
+        Uses a dry-run patch so it does not modify the actual StatefulSet.
+        """
+        statefulset_name = "docker-registry"
+        namespace = config_manager.get_domino_platform_namespace()
+        registry_url = config_manager.get_registry_url()
+
+        if not is_registry_in_cluster(registry_url, namespace):
+            return HealthCheckResult(
+                name="registry_deletion_rbac",
+                status=True,
+                message="Registry is not running in cluster; RBAC check skipped",
+                details={
+                    "namespace": namespace,
+                    "registry_url": registry_url,
+                },
+            )
+
+        try:
+            from kubernetes.client.rest import ApiException
+            
+            # Initialize Kubernetes clients via shared helper
+            try:
+                _, apps_v1 = _get_kubernetes_clients()
+            except Exception as e:
+                return HealthCheckResult(
+                    name="registry_deletion_rbac",
+                    status=False,
+                    message=f"Failed to load Kubernetes config for RBAC check: {str(e)}",
+                    details={
+                        "namespace": namespace,
+                        "statefulset": statefulset_name,
+                        "error": str(e),
+                    },
+                )
+            
+            # Minimal patch body; dryRun=All ensures no persistent change
+            body = {
+                "metadata": {
+                    "annotations": {
+                        "docker-registry-cleaner/rbac-test": "true"
+                    }
+                }
+            }
+            
+            apps_v1.patch_namespaced_stateful_set(
+                name=statefulset_name,
+                namespace=namespace,
+                body=body,
+                dry_run="All",
+            )
+            
+            return HealthCheckResult(
+                name="registry_deletion_rbac",
+                status=True,
+                message=(
+                    f"ServiceAccount can PATCH StatefulSet '{statefulset_name}' "
+                    f"in namespace '{namespace}' (dry-run succeeded)"
+                ),
+                details={
+                    "namespace": namespace,
+                    "statefulset": statefulset_name,
+                },
+            )
+        
+        except ImportError:
+            return HealthCheckResult(
+                name="registry_deletion_rbac",
+                status=False,
+                message="Kubernetes client not available (kubernetes package not installed)",
+                details={
+                    "namespace": namespace,
+                    "statefulset": statefulset_name,
+                },
+            )
+        except ApiException as e:
+            # 403 is the most interesting case (missing RBAC)
+            status = getattr(e, "status", None)
+            if status == 403:
+                msg = (
+                    f"ServiceAccount does NOT have permission to PATCH StatefulSet "
+                    f"'{statefulset_name}' in namespace '{namespace}' (HTTP 403 Forbidden)"
+                )
+            else:
+                msg = (
+                    f"Failed to PATCH StatefulSet '{statefulset_name}' in namespace "
+                    f"'{namespace}' for RBAC check: {str(e)}"
+                )
+            
+            try:
+                actionable_error = create_kubernetes_error(
+                    f"Patch StatefulSet {statefulset_name} in namespace {namespace}",
+                    e,
+                )
+                msg = actionable_error.message
+                suggestions = actionable_error.suggestions
+            except Exception:
+                suggestions = []
+            
+            return HealthCheckResult(
+                name="registry_deletion_rbac",
+                status=False,
+                message=msg,
+                details={
+                    "namespace": namespace,
+                    "statefulset": statefulset_name,
+                    "error": str(e),
+                    "status": status,
+                    "suggestions": suggestions,
+                },
+            )
+        except Exception as e:
+            try:
+                actionable_error = create_kubernetes_error(
+                    f"Patch StatefulSet {statefulset_name} in namespace {namespace}",
+                    e,
+                )
+                msg = actionable_error.message
+                suggestions = actionable_error.suggestions
+            except Exception:
+                msg = f"Unexpected error during registry deletion RBAC check: {str(e)}"
+                suggestions = []
+            
+            return HealthCheckResult(
+                name="registry_deletion_rbac",
+                status=False,
+                message=msg,
+                details={
+                    "namespace": namespace,
+                    "statefulset": statefulset_name,
+                    "error": str(e),
+                    "suggestions": suggestions,
+                },
             )
     
     def check_s3_access(self) -> HealthCheckResult:
@@ -359,12 +522,9 @@ class HealthChecker:
         # Check optional services
         if not skip_optional:
             results.append(self.check_kubernetes_access())
+            results.append(self.check_registry_deletion_rbac())
             results.append(self.check_s3_access())
         else:
-            # Still check Kubernetes if it's required
-            if config_manager.get_skopeo_use_pod():
-                results.append(self.check_kubernetes_access())
-            
             # Still check S3 if it's configured
             if config_manager.get_s3_bucket():
                 results.append(self.check_s3_access())

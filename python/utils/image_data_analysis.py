@@ -38,7 +38,7 @@ class ImageAnalyzer:
     def __init__(self, registry_url: str, repository: str):
         self.registry_url = registry_url
         self.repository = repository
-        self.skopeo_client = SkopeoClient(config_manager, use_pod=config_manager.get_skopeo_use_pod())
+        self.skopeo_client = SkopeoClient(config_manager)
         
         # Initialize data structures
         self.layers = {}  # layer_id -> {size_bytes, ref_count}
