@@ -9,7 +9,7 @@ post-processing steps after tag deletion workflows.
 import logging
 from typing import Optional
 
-from utils.config_manager import config_manager, _get_kubernetes_clients
+from utils.config_manager import config_manager, _get_kubernetes_clients, is_registry_in_cluster
 from utils.logging_utils import get_logger
 from utils.error_utils import create_kubernetes_error
 
@@ -30,7 +30,7 @@ def run_registry_garbage_collection(
     against a pod belonging to the specified StatefulSet. Intended for in-cluster
     Docker Registry deployments (e.g. the classic `docker-registry` chart). Managed
     registries such as ECR handle their own garbage collection and do not require
-    this.
+    this. Skips if the registry is not running in the cluster (no K8s API calls).
 
     Args:
         registry_statefulset: Name of the registry StatefulSet/Deployment. If not
@@ -43,13 +43,11 @@ def run_registry_garbage_collection(
     """
     workload_name = registry_statefulset or "docker-registry"
     ns = namespace or config_manager.get_domino_platform_namespace()
-
-    # Heuristic: skip GC for obviously managed registries (e.g. ECR)
     registry_url = config_manager.get_registry_url() or ""
-    if "amazonaws.com" in registry_url:
+
+    if not is_registry_in_cluster(registry_url, ns):
         logger.info(
-            "Registry URL appears to be a managed service (%s); skipping in-cluster "
-            "garbage collection.",
+            "Registry is not running in cluster (%s); skipping garbage collection.",
             registry_url,
         )
         return False
