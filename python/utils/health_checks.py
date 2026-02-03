@@ -12,7 +12,7 @@ import logging
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
-from utils.config_manager import config_manager, _get_kubernetes_clients
+from utils.config_manager import config_manager, _get_kubernetes_clients, is_registry_in_cluster
 from utils.mongo_utils import get_mongo_client
 from utils.logging_utils import get_logger
 from utils.error_utils import create_registry_connection_error, create_mongodb_connection_error, create_kubernetes_error, create_s3_error
@@ -239,15 +239,26 @@ class HealthChecker:
     
     def check_registry_deletion_rbac(self) -> HealthCheckResult:
         """Check if we can patch the docker-registry StatefulSet (required to enable deletion).
-        
-        Uses a dry-run patch so it does not modify the actual StatefulSet. This validates that the
-        current Kubernetes identity (e.g. pod ServiceAccount when running in-cluster) has
-        permission to PATCH the registry StatefulSet, which is required before enabling
-        REGISTRY_STORAGE_DELETE_ENABLED.
+
+        Skips the check if the registry is not running inside the cluster (e.g. ECR);
+        RBAC to patch the registry StatefulSet is only needed for in-cluster registries.
+        Uses a dry-run patch so it does not modify the actual StatefulSet.
         """
         statefulset_name = "docker-registry"
         namespace = config_manager.get_domino_platform_namespace()
-        
+        registry_url = config_manager.get_registry_url()
+
+        if not is_registry_in_cluster(registry_url, namespace):
+            return HealthCheckResult(
+                name="registry_deletion_rbac",
+                status=True,
+                message="Registry is not running in cluster; RBAC check skipped",
+                details={
+                    "namespace": namespace,
+                    "registry_url": registry_url,
+                },
+            )
+
         try:
             from kubernetes.client.rest import ApiException
             

@@ -63,6 +63,60 @@ def _get_kubernetes_clients() -> Tuple[Any, Any]:
     return k8s_client.CoreV1Api(), k8s_client.AppsV1Api()
 
 
+def is_registry_in_cluster(registry_url: str, namespace: str) -> bool:
+    """Check if the registry service exists in the Kubernetes cluster.
+
+    Parses the registry URL to extract the service name and checks if it exists
+    as a Service or StatefulSet in the cluster. Use this when you need to know
+    if Docker/registry is running in-cluster without creating a SkopeoClient.
+
+    Args:
+        registry_url: Registry URL (e.g. "docker-registry:5000", "registry.namespace.svc:5000").
+        namespace: Kubernetes namespace to check when URL has no namespace segment.
+
+    Returns:
+        True if registry Service or StatefulSet is found in the cluster, False otherwise.
+    """
+    try:
+        from kubernetes.client.rest import ApiException
+
+        url = registry_url.split(':')[0]
+        parts = url.split('.')
+        service_name = parts[0]
+        check_namespace = parts[1] if len(parts) > 1 and parts[1] != 'svc' else namespace
+
+        try:
+            core_v1, apps_v1 = _get_kubernetes_clients()
+        except Exception as e:
+            logging.debug(f"Could not load Kubernetes config: {e}")
+            return False
+
+        try:
+            core_v1.read_namespaced_service(name=service_name, namespace=check_namespace)
+            logging.debug(f"Found {service_name} Service in namespace {check_namespace}")
+            return True
+        except ApiException as e:
+            if e.status != 404:
+                logging.debug(f"Error checking for Service: {e}")
+
+        try:
+            apps_v1.read_namespaced_stateful_set(name=service_name, namespace=check_namespace)
+            logging.debug(f"Found {service_name} StatefulSet in namespace {check_namespace}")
+            return True
+        except ApiException as e:
+            if e.status != 404:
+                logging.debug(f"Error checking for StatefulSet: {e}")
+
+        logging.debug(f"Registry '{service_name}' not found in namespace {check_namespace}")
+        return False
+    except ImportError:
+        logging.debug("Kubernetes client not available")
+        return False
+    except Exception as e:
+        logging.debug(f"Unexpected error checking registry in cluster: {e}")
+        return False
+
+
 class ConfigManager:
     """Manages configuration for the Docker registry cleaner project"""
     
@@ -940,72 +994,17 @@ class SkopeoClient:
     
     def is_registry_in_cluster(self) -> bool:
         """Check if the registry service exists in the Kubernetes cluster.
-        
+
         First checks if enable_docker_deletion override is enabled. If so, returns True.
-        Otherwise, parses the registry URL to extract the service name and checks if it exists
-        as a Service or StatefulSet in the cluster.
-        
+        Otherwise uses the shared is_registry_in_cluster(registry_url, namespace) helper.
+
         Returns:
             True if registry service/workload is found in the cluster (or forced), False otherwise.
         """
-        # Check override first
         if self.enable_docker_deletion:
             logging.info(f"Registry deletion enabled (using statefulset: {self.registry_statefulset})")
             return True
-        
-        try:
-            from kubernetes.client.rest import ApiException
-            
-            # Parse registry URL to extract service name and namespace
-            # Formats: "docker-registry:5000", "registry.namespace", "registry.namespace.svc.cluster.local:5000"
-            url = self.registry_url.split(':')[0]  # Remove port
-            parts = url.split('.')
-            
-            service_name = parts[0]
-            # If URL has namespace in it (service.namespace), use that; otherwise use config namespace
-            check_namespace = parts[1] if len(parts) > 1 and parts[1] != 'svc' else self.namespace
-            
-            # Initialize Kubernetes clients
-            try:
-                core_v1, apps_v1 = _get_kubernetes_clients()
-            except Exception as e:
-                logging.debug(f"Could not load Kubernetes config: {e}")
-                return False
-            
-            # Check 1: Try to find as a Service (most common)
-            try:
-                core_v1.read_namespaced_service(
-                    name=service_name,
-                    namespace=check_namespace
-                )
-                logging.debug(f"Found {service_name} Service in namespace {check_namespace}")
-                return True
-            except ApiException as e:
-                if e.status != 404:
-                    logging.debug(f"Error checking for Service: {e}")
-            
-            # Check 2: Try to find as a StatefulSet
-            try:
-                apps_v1.read_namespaced_stateful_set(
-                    name=service_name,
-                    namespace=check_namespace
-                )
-                logging.debug(f"Found {service_name} StatefulSet in namespace {check_namespace}")
-                return True
-            except ApiException as e:
-                if e.status != 404:
-                    logging.debug(f"Error checking for StatefulSet: {e}")
-            
-            # Not found
-            logging.debug(f"Registry '{service_name}' not found in namespace {check_namespace}")
-            return False
-                    
-        except ImportError:
-            logging.debug("Kubernetes client not available")
-            return False
-        except Exception as e:
-            logging.debug(f"Unexpected error checking registry in cluster: {e}")
-            return False
+        return is_registry_in_cluster(self.registry_url, self.namespace)
     
     def _parse_registry_name(self) -> Tuple[str, str]:
         """Parse registry URL to extract service name and namespace.

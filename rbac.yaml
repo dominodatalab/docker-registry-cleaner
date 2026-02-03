@@ -30,3 +30,27 @@ subjects:
   - kind: ServiceAccount
     name: docker-registry-cleaner
     namespace: domino-platform
+---
+# ClusterRole for Kubernetes access health check (read_namespace) and in-cluster registry detection.
+# Namespaces are cluster-scoped; a namespaced Role cannot grant permission to read them.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: docker-registry-cleaner
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: docker-registry-cleaner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: docker-registry-cleaner
+subjects:
+  - kind: ServiceAccount
+    name: docker-registry-cleaner
+    namespace: domino-platform
