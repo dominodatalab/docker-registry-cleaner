@@ -50,9 +50,9 @@ class TestAgeFiltering:
         now = datetime.now(timezone.utc)
         usage_info = {
             "runs": [
-                {"started": (now - timedelta(days=10)).isoformat().replace('+00:00', 'Z')},
-                {"completed": (now - timedelta(days=5)).isoformat().replace('+00:00', 'Z')},
-                {"last_used": (now - timedelta(days=2)).isoformat().replace('+00:00', 'Z')},  # Most recent
+                {"started": (now - timedelta(days=10)).isoformat().replace("+00:00", "Z")},
+                {"completed": (now - timedelta(days=5)).isoformat().replace("+00:00", "Z")},
+                {"last_used": (now - timedelta(days=2)).isoformat().replace("+00:00", "Z")},  # Most recent
             ],
             "workspaces": [],
             "models": [],
@@ -71,8 +71,8 @@ class TestAgeFiltering:
         usage_info = {
             "runs": [],
             "workspaces": [
-                {"workspace_last_change": (now - timedelta(days=7)).isoformat().replace('+00:00', 'Z')},
-                {"workspace_last_change": (now - timedelta(days=3)).isoformat().replace('+00:00', 'Z')},  # Most recent
+                {"workspace_last_change": (now - timedelta(days=7)).isoformat().replace("+00:00", "Z")},
+                {"workspace_last_change": (now - timedelta(days=3)).isoformat().replace("+00:00", "Z")},  # Most recent
             ],
             "models": [],
         }
@@ -90,9 +90,9 @@ class TestAgeFiltering:
         usage_info = {
             "runs": [
                 {
-                    "started": (now - timedelta(days=10)).isoformat().replace('+00:00', 'Z'),
-                    "completed": (now - timedelta(days=8)).isoformat().replace('+00:00', 'Z'),
-                    "last_used": (now - timedelta(days=1)).isoformat().replace('+00:00', 'Z'),  # Should use this
+                    "started": (now - timedelta(days=10)).isoformat().replace("+00:00", "Z"),
+                    "completed": (now - timedelta(days=8)).isoformat().replace("+00:00", "Z"),
+                    "last_used": (now - timedelta(days=1)).isoformat().replace("+00:00", "Z"),  # Should use this
                 }
             ],
             "workspaces": [],
@@ -109,8 +109,8 @@ class TestAgeFiltering:
         service = ImageUsageService()
 
         now = datetime.now(timezone.utc)
-        recent_date = (now - timedelta(days=5)).isoformat().replace('+00:00', 'Z')
-        old_date = (now - timedelta(days=35)).isoformat().replace('+00:00', 'Z')
+        recent_date = (now - timedelta(days=5)).isoformat().replace("+00:00", "Z")
+        old_date = (now - timedelta(days=35)).isoformat().replace("+00:00", "Z")
 
         # Mock mongodb_reports
         mongodb_reports = {
@@ -139,7 +139,7 @@ class TestAgeFiltering:
         service = ImageUsageService()
 
         now = datetime.now(timezone.utc)
-        old_date = (now - timedelta(days=100)).isoformat().replace('+00:00', 'Z')
+        old_date = (now - timedelta(days=100)).isoformat().replace("+00:00", "Z")
 
         mongodb_reports = {
             "runs": [{"environment_docker_tag": "old-but-in-project", "last_used": old_date}],
@@ -162,7 +162,7 @@ class TestAgeFiltering:
         service = ImageUsageService()
 
         now = datetime.now(timezone.utc)
-        old_date = (now - timedelta(days=100)).isoformat().replace('+00:00', 'Z')
+        old_date = (now - timedelta(days=100)).isoformat().replace("+00:00", "Z")
 
         mongodb_reports = {
             "runs": [{"environment_docker_tag": "old-tag", "last_used": old_date}],
