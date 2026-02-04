@@ -38,8 +38,6 @@ spec:
         - name: docker-registry-cleaner
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          # Chainguard Python image has no /bin/sh; use Python to keep the pod alive
-          command: ["python", "-c", "import time; exec('while True: time.sleep(30)')"]
           env:
             - name: CONFIG_FILE
               value: "/config.yaml"

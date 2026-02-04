@@ -26,6 +26,7 @@ def load_script_paths() -> Dict[str, Optional[str]]:
         "delete_all_unused_environments": None,  # Special: runs multiple scripts
         "delete_unused_references": "scripts/delete_unused_references.py",
         "find_environment_usage": "scripts/find_environment_usage.py",
+        "health_check": None,  # Special: runs health checks
         "image_size_report": "scripts/image_size_report.py",
         "mongo_cleanup": "scripts/mongo_cleanup.py",
         "reports": "scripts/reports.py",
@@ -45,6 +46,7 @@ def get_script_descriptions() -> Dict[str, str]:
         "delete_all_unused_environments": "Run comprehensive unused environment cleanup (unused environments + deactivated user private environments)",
         "delete_unused_references": "Find and optionally delete MongoDB references to non-existent Docker images",
         "find_environment_usage": "Find where a specific environment ID is used (projects, jobs, workspaces, runs, workloads)",
+        "health_check": "Run health checks and verify system connectivity (registry, MongoDB, Kubernetes, S3)",
         "image_size_report": "Generate a report of the largest images sorted by total size, showing space that would be freed if deleted",
         "mongo_cleanup": "Simple tag/ObjectID-based Mongo cleanup (consider using delete_unused_references for advanced features)",
         "reports": "Generate tag usage reports from analysis data (auto-generates metadata)",
@@ -180,6 +182,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Available scripts:
+  health_check                       - Run health checks and verify system connectivity (registry, MongoDB, Kubernetes, S3)
   find_environment_usage             - Find where a specific environment ID is used (projects, jobs, workspaces, runs, workloads)
   mongo_cleanup                      - Simple tag/ObjectID-based Mongo cleanup
   reports                            - Generate tag usage reports from analysis data (auto-generates metadata)
@@ -201,6 +204,9 @@ Configuration:
   - DOMINO_PLATFORM_NAMESPACE: Domino platform namespace
 
 Examples:
+  # Check system health (recommended first step)
+  python main.py health_check
+
   # Basic usage (uses config.yaml defaults)
   python main.py delete_image
   python main.py delete_archived_tags --environment --output archived-tags.json
@@ -362,8 +368,6 @@ Safety Notes:
         """,
     )
 
-    parser.add_argument("--health-check", action="store_true", help="Run health checks and exit")
-
     parser.add_argument("script_keyword", nargs="?", choices=script_paths.keys(), help="Script to run")
 
     parser.add_argument(
@@ -396,13 +400,6 @@ Safety Notes:
 
     args = parser.parse_args()
 
-    # Handle --health-check flag
-    if args.health_check:
-        health_checker = HealthChecker()
-        results = health_checker.run_all_checks(skip_optional=False)
-        all_healthy = health_checker.print_health_report(results)
-        sys.exit(0 if all_healthy else 1)
-
     # Show configuration if requested
     if args.config:
         config_manager.print_config()
@@ -412,6 +409,13 @@ Safety Notes:
     if not args.script_keyword:
         parser.print_help()
         sys.exit(1)
+
+    # Special handling for health_check
+    if args.script_keyword == "health_check":
+        health_checker = HealthChecker()
+        results = health_checker.run_all_checks(skip_optional=False)
+        all_healthy = health_checker.print_health_report(results)
+        sys.exit(0 if all_healthy else 1)
 
     # Special handling for delete_all_unused_environments (runs multiple scripts)
     if args.script_keyword == "delete_all_unused_environments":
