@@ -25,7 +25,7 @@ class ErrorCategory(Enum):
 class ActionableError(Exception):
     """Exception with actionable guidance for users"""
 
-    def __init__(
+    def __init__(  # noqa: B042
         self,
         message: str,
         category: ErrorCategory = ErrorCategory.UNKNOWN,

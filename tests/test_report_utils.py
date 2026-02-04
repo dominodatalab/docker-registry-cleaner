@@ -9,7 +9,7 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
-from report_utils import save_json, save_table_and_json
+from utils.report_utils import save_json, save_table_and_json
 
 
 class TestSaveJson:
