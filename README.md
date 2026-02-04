@@ -52,7 +52,7 @@ helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
 # Upgrade existing installation
 helm upgrade docker-registry-cleaner ./charts/docker-registry-cleaner \
   --namespace domino-platform \
-  --set image.tag=v0.2.10
+  --set image.tag=v0.3.1
 
 # Uninstall
 helm uninstall docker-registry-cleaner --namespace domino-platform
