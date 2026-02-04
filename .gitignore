@@ -6,3 +6,16 @@ __pycache__/
 *$py.class
 *.so
 .Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Test coverage
+.coverage
+coverage.xml
+htmlcov/
+
+# Generated reports
+reports/*.json

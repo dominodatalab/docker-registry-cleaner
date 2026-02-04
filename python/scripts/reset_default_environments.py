@@ -32,31 +32,29 @@ Usage examples:
 
   # Dry-run: show which userPreferences/organizations would be changed
   python python/main.py reset_default_environments --input environments
-  
+
   # Actually unset defaults for matching userPreferences, organizations, and projects
   python python/main.py reset_default_environments --input environments --apply
 """
 
 import argparse
+
+# Add parent directory to path for imports
+import sys
 from pathlib import Path
 from typing import Dict, List
 
 from bson import ObjectId
-
-# Add parent directory to path for imports
-import os
-import sys
 
 _parent_dir = Path(__file__).parent.parent.absolute()
 if str(_parent_dir) not in sys.path:
     sys.path.insert(0, str(_parent_dir))
 
 from utils.config_manager import config_manager  # noqa: E402
+from utils.image_metadata import lookup_user_names_and_logins  # noqa: E402
 from utils.logging_utils import get_logger, setup_logging  # noqa: E402
 from utils.mongo_utils import get_mongo_client  # noqa: E402
 from utils.object_id_utils import validate_object_id  # noqa: E402
-from utils.image_metadata import lookup_user_names_and_logins  # noqa: E402
-
 
 logger = get_logger(__name__)
 
@@ -117,16 +115,16 @@ def reset_default_environments(
 ) -> Dict[str, int]:
     """
     Reset default environment references in userPreferences, organizations, and/or projects.
-    
+
     For the provided environment IDs, this function (for each enabled scope):
-    
+
     - userPreferences: finds docs whose ``defaultEnvironmentId`` matches and (optionally) unsets it.
     - organizations: finds docs whose ``defaultV2EnvironmentId`` matches and (optionally) unsets it.
     - projects: finds docs whose ``overrideV2EnvironmentId`` matches and (optionally) unsets it.
-    
+
     Scope is controlled by reset_user, reset_organization, reset_project. If all are True, all three
     are processed; otherwise only the enabled ones are.
-    
+
     Returns a summary dict with:
       - 'matched_user_prefs': number of userPreferences docs with matching defaultEnvironmentId
       - 'updated_user_prefs': number of userPreferences docs actually modified (0 in dry-run)
@@ -159,13 +157,13 @@ def reset_default_environments(
         db = mongo_client[config_manager.get_mongo_db()]
 
         env_oids = [ObjectId(eid) for eid in env_ids]
-        
+
         collections = db.list_collection_names()
 
         # --- userPreferences: defaultEnvironmentId ---
         if reset_user and "userPreferences" in collections:
             user_prefs = db["userPreferences"]
-            
+
             # Aggregate user IDs per environment defaultEnvironmentId
             pipeline = [
                 {"$match": {"defaultEnvironmentId": {"$in": env_oids}}},
@@ -178,21 +176,21 @@ def reset_default_environments(
                 },
             ]
             results = list(user_prefs.aggregate(pipeline))
-            
+
             if results:
                 summary["affected_environments"] = len(results)
-                
+
                 # Collect all userIds to look up names/loginIds in users collection
                 all_user_ids = set()
                 for doc in results:
                     for uid in doc.get("user_ids", []):
                         if isinstance(uid, ObjectId):
                             all_user_ids.add(uid)
-                
+
                 user_id_to_name, user_id_to_login = lookup_user_names_and_logins(all_user_ids)
-                
+
                 total_matched = 0
-                
+
                 logger.info("Found userPreferences with defaultEnvironmentId matching provided environments:")
                 for doc in results:
                     env_oid = doc.get("_id")
@@ -200,7 +198,7 @@ def reset_default_environments(
                     user_ids = doc.get("user_ids") or []
                     env_id_str = str(env_oid) if env_oid is not None else "<unknown>"
                     total_matched += user_count
-                    
+
                     # Build example labels "<fullName> (<loginId.id>)" for up to 5 users
                     example_labels: List[str] = []
                     for uid in user_ids[:5]:
@@ -212,16 +210,16 @@ def reset_default_environments(
                         else:
                             label = name or uid_str
                         example_labels.append(label)
-                    
+
                     example_str = ", ".join(example_labels) if example_labels else "no user details available"
-                    
+
                     logger.info(
                         f"  Environment {env_id_str}: {user_count} user(s) with this as defaultEnvironmentId "
                         f"(example users: {example_str})"
                     )
-                
+
                 summary["matched_user_prefs"] = total_matched
-                
+
                 if apply:
                     # Apply the update: unset defaultEnvironmentId for all matching docs
                     logger.warning(
@@ -256,7 +254,7 @@ def reset_default_environments(
         # --- organizations: defaultV2EnvironmentId ---
         if reset_organization and "organizations" in collections:
             orgs = db["organizations"]
-            
+
             pipeline = [
                 {"$match": {"defaultV2EnvironmentId": {"$in": env_oids}}},
                 {
@@ -268,10 +266,10 @@ def reset_default_environments(
                 },
             ]
             org_results = list(orgs.aggregate(pipeline))
-            
+
             if org_results:
                 summary["affected_org_environments"] = len(org_results)
-                
+
                 total_org_matched = 0
                 logger.info("Found organizations with defaultV2EnvironmentId matching provided environments:")
                 for doc in org_results:
@@ -279,13 +277,13 @@ def reset_default_environments(
                     org_count = doc.get("org_count", 0)
                     env_id_str = str(env_oid) if env_oid is not None else "<unknown>"
                     total_org_matched += org_count
-                    
+
                     logger.info(
                         f"  Environment {env_id_str}: {org_count} organization(s) with this as defaultV2EnvironmentId"
                     )
-                
+
                 summary["matched_organizations"] = total_org_matched
-                
+
                 if apply:
                     logger.warning(
                         f"Applying changes: unsetting defaultV2EnvironmentId for {total_org_matched} organization document(s)..."
@@ -308,9 +306,7 @@ def reset_default_environments(
                         f"{total_org_matched} organization document(s) would have defaultV2EnvironmentId unset."
                     )
             else:
-                logger.info(
-                    "No organizations found with defaultV2EnvironmentId matching the provided environment IDs."
-                )
+                logger.info("No organizations found with defaultV2EnvironmentId matching the provided environment IDs.")
         elif reset_organization:
             logger.info("Collection 'organizations' not found. Nothing to reset for organizations.")
         else:
@@ -371,9 +367,7 @@ def reset_default_environments(
                         f"{total_proj_matched} project document(s) would have overrideV2EnvironmentId unset."
                     )
             else:
-                logger.info(
-                    "No projects found with overrideV2EnvironmentId matching the provided environment IDs."
-                )
+                logger.info("No projects found with overrideV2EnvironmentId matching the provided environment IDs.")
         elif reset_project:
             logger.info("Collection 'projects' not found. Nothing to reset for projects.")
         else:
@@ -392,13 +386,13 @@ def parse_arguments() -> argparse.Namespace:
 Examples:
   # Dry-run with explicit environment IDs
   python python/main.py reset_default_environments --input environments
-  
+
   # Actually unset defaults for matching userPreferences and organizations (explicit IDs)
   python python/main.py reset_default_environments --input environments --apply
 
   # Dry-run using all archived environments (isArchived: true) as candidates
   python python/main.py reset_default_environments
-  
+
   # Actually unset defaults for any archived environments referenced in userPreferences/organizations/projects
   python python/main.py reset_default_environments --apply
 
@@ -498,7 +492,7 @@ def main() -> None:
                 if env_ids:
                     logger.info(
                         f"No --input provided. Loaded {len(env_ids)} archived environment IDs "
-                        f"from environments_v2 (isArchived: true)."
+                        "from environments_v2 (isArchived: true)."
                     )
                 else:
                     logger.info(
@@ -517,12 +511,13 @@ def main() -> None:
 
     logger.info("\nSummary:")
     logger.info(f"  Environment IDs provided: {len(env_ids)}")
-    logger.info(f"  Environments with matching userPreferences.defaultEnvironmentId: {summary['affected_environments']}")
+    logger.info(
+        f"  Environments with matching userPreferences.defaultEnvironmentId: {summary['affected_environments']}"
+    )
     logger.info(f"  Matched userPreferences: {summary['matched_user_prefs']}")
     logger.info(f"  Updated userPreferences: {summary['updated_user_prefs']}")
     logger.info(
-        f"  Environments with matching organizations.defaultV2EnvironmentId: "
-        f"{summary['affected_org_environments']}"
+        "  Environments with matching organizations.defaultV2EnvironmentId: " f"{summary['affected_org_environments']}"
     )
     logger.info(f"  Matched organizations: {summary['matched_organizations']}")
     logger.info(f"  Updated organizations: {summary['updated_organizations']}")
@@ -535,4 +530,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

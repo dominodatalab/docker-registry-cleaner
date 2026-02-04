@@ -6,13 +6,11 @@ These helpers are intended to be used both from standalone scripts and as
 post-processing steps after tag deletion workflows.
 """
 
-import logging
 from typing import Optional
 
-from utils.config_manager import config_manager, _get_kubernetes_clients, is_registry_in_cluster
-from utils.logging_utils import get_logger
+from utils.config_manager import _get_kubernetes_clients, config_manager, is_registry_in_cluster
 from utils.error_utils import create_kubernetes_error
-
+from utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -73,9 +71,7 @@ def run_registry_garbage_collection(
             sts = apps_v1.read_namespaced_stateful_set(name=workload_name, namespace=ns)
         except ApiException as e:
             try:
-                actionable = create_kubernetes_error(
-                    f"Read StatefulSet {workload_name} in namespace {ns}", e
-                )
+                actionable = create_kubernetes_error(f"Read StatefulSet {workload_name} in namespace {ns}", e)
                 logger.error(actionable.message)
             except Exception:
                 logger.error(
@@ -140,9 +136,7 @@ def run_registry_garbage_collection(
         return True
 
     except ImportError:
-        logger.error(
-            "Kubernetes client library is not installed; cannot run registry garbage collection."
-        )
+        logger.error("Kubernetes client library is not installed; cannot run registry garbage collection.")
         return False
     except Exception as e:
         try:
@@ -154,4 +148,3 @@ def run_registry_garbage_collection(
         except Exception:
             logger.error("Unexpected error running registry garbage collection: %s", e)
         return False
-

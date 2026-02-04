@@ -7,6 +7,15 @@ image:
 podSecurityContext:
   fsGroup: 65532
 
+# Resource requests and limits for the container
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
 # Optional env overrides (e.g. REGISTRY_URL for ECR)
 env:
   registryUrl: ""  # Set to registry host (e.g. 946429944765.dkr.ecr.eu-west-1.amazonaws.com) to override config

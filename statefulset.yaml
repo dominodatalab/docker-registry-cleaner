@@ -30,7 +30,13 @@ spec:
           imagePullPolicy: Always
           # Chainguard Python image has no /bin/sh; use Python to keep the pod alive
           command: ["python", "-c", "import time; exec('while True: time.sleep(30)')"]
-          resources: {}
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
           env:
             - name: CONFIG_FILE
               value: "/config.yaml"

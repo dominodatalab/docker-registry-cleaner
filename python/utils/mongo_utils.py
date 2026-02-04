@@ -3,10 +3,10 @@ MongoDB utility helpers shared across scripts.
 """
 
 import json
+from typing import Any, Optional
 
 from bson import json_util
 from pymongo import MongoClient
-from typing import Optional, Any
 
 from utils.config_manager import config_manager
 
@@ -45,5 +45,3 @@ def get_collection(collection_name: str, client: Optional[MongoClient] = None):
 def bson_to_jsonable(data: Any) -> Any:
     """Convert BSON-containing structures to JSON-serializable Python objects."""
     return json.loads(json_util.dumps(data))
-
-
