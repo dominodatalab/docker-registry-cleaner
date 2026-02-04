@@ -40,7 +40,6 @@ Usage examples:
 import argparse
 
 # Add parent directory to path for imports
-import os
 import sys
 from pathlib import Path
 from typing import Dict, List
@@ -387,13 +386,13 @@ def parse_arguments() -> argparse.Namespace:
 Examples:
   # Dry-run with explicit environment IDs
   python python/main.py reset_default_environments --input environments
-  
+
   # Actually unset defaults for matching userPreferences and organizations (explicit IDs)
   python python/main.py reset_default_environments --input environments --apply
 
   # Dry-run using all archived environments (isArchived: true) as candidates
   python python/main.py reset_default_environments
-  
+
   # Actually unset defaults for any archived environments referenced in userPreferences/organizations/projects
   python python/main.py reset_default_environments --apply
 
@@ -493,7 +492,7 @@ def main() -> None:
                 if env_ids:
                     logger.info(
                         f"No --input provided. Loaded {len(env_ids)} archived environment IDs "
-                        f"from environments_v2 (isArchived: true)."
+                        "from environments_v2 (isArchived: true)."
                     )
                 else:
                     logger.info(
@@ -518,7 +517,7 @@ def main() -> None:
     logger.info(f"  Matched userPreferences: {summary['matched_user_prefs']}")
     logger.info(f"  Updated userPreferences: {summary['updated_user_prefs']}")
     logger.info(
-        f"  Environments with matching organizations.defaultV2EnvironmentId: " f"{summary['affected_org_environments']}"
+        "  Environments with matching organizations.defaultV2EnvironmentId: " f"{summary['affected_org_environments']}"
     )
     logger.info(f"  Matched organizations: {summary['matched_organizations']}")
     logger.info(f"  Updated organizations: {summary['updated_organizations']}")

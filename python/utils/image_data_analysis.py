@@ -438,7 +438,7 @@ class ImageAnalyzer:
 
         # Tag sums (sum of single-use layer sizes per tag)
         tag_sums = {}
-        for layer_id, data in filtered_legacy.items():
+        for _layer_id, data in filtered_legacy.items():
             for tag in data["tags"]:
                 if tag not in tag_sums:
                     tag_sums[tag] = {"size": 0, "environments": data["environments"]}
@@ -463,7 +463,7 @@ def main() -> None:
 Examples:
   # Use config_manager defaults
   python image_data_analysis.py
-  
+
   # Filter by ObjectIDs from file
   python image_data_analysis.py --file environments environment model
         """,

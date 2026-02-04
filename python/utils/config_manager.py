@@ -18,15 +18,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from utils.cache_utils import cached_image_inspect, cached_tag_list, get_image_inspect_cache, get_tag_list_cache
-from utils.error_utils import create_rate_limit_error, create_registry_auth_error, create_registry_connection_error
+from utils.cache_utils import cached_image_inspect, cached_tag_list
 from utils.retry_utils import is_retryable_error, retry_with_backoff
 
 
 class ConfigValidationError(Exception):
     """Raised when configuration validation fails"""
-
-    pass
 
 
 def _load_kubernetes_config():
@@ -44,7 +41,7 @@ def _load_kubernetes_config():
         from kubernetes.config import load_incluster_config
 
         load_incluster_config()
-    except:
+    except Exception:
         from kubernetes.config import load_kube_config
 
         load_kube_config()
@@ -1113,7 +1110,6 @@ class SkopeoClient:
 
         try:
             from kubernetes import client as k8s_client
-            from kubernetes.client.rest import ApiException
 
             # Initialize Kubernetes clients
             try:
@@ -1147,7 +1143,7 @@ class SkopeoClient:
             # Wait for pod to restart and become ready
             label_selector = f"app.kubernetes.io/name={service_name}"
             if not self._wait_for_pod_ready(label_selector, ns):
-                logging.warning(f"Pod may not be ready yet, but continuing anyway")
+                logging.warning("Pod may not be ready yet, but continuing anyway")
 
             return True
 
@@ -1169,8 +1165,7 @@ class SkopeoClient:
         ns = namespace or parsed_ns
 
         try:
-            from kubernetes import client as k8s_client
-            from kubernetes.client.rest import ApiException
+            pass
 
             # Initialize Kubernetes clients
             try:
@@ -1197,7 +1192,7 @@ class SkopeoClient:
             # Wait for pod to restart and become ready
             label_selector = f"app.kubernetes.io/name={service_name}"
             if not self._wait_for_pod_ready(label_selector, ns):
-                logging.warning(f"Pod may not be ready yet, but continuing anyway")
+                logging.warning("Pod may not be ready yet, but continuing anyway")
 
             return True
 

@@ -26,7 +26,6 @@ Usage examples:
 
 import argparse
 import sys
-from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List
 

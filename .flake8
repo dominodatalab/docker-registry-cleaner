@@ -16,3 +16,9 @@ exclude =
 per-file-ignores =
     # Allow unused imports in __init__.py files
     __init__.py:F401
+    # Scripts need sys.path manipulation before imports
+    python/scripts/*.py:E402
+    python/main.py:E402
+    # Utils and tests need sys.path manipulation before imports
+    python/utils/*.py:E402
+    tests/*.py:E402

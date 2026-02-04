@@ -8,7 +8,7 @@ These tests verify:
 - Health check integration
 """
 
-from unittest.mock import MagicMock, Mock, PropertyMock, patch
+from unittest.mock import MagicMock, Mock
 
 import pytest
 from bson import ObjectId

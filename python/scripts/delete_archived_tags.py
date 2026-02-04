@@ -898,10 +898,10 @@ class ArchivedTagsFinder(BaseDeletionScript):
                                     f"    ✓ Deleted successfully (contains {len(associated_object_ids)} archived ObjectIDs)"
                                 )
                             else:
-                                self.logger.info(f"    ✓ Deleted successfully")
+                                self.logger.info("    ✓ Deleted successfully")
                             return ("success", tag_info.full_image, associated_object_ids, None)
                         else:
-                            self.logger.warning(f"    ✗ Failed to delete - MongoDB record will NOT be cleaned")
+                            self.logger.warning("    ✗ Failed to delete - MongoDB record will NOT be cleaned")
                             return ("failed", tag_info.full_image, None, None)
                     except Exception as e:
                         self.logger.error(f"    ✗ Error deleting: {e} - MongoDB record will NOT be cleaned")
@@ -1287,7 +1287,7 @@ class ArchivedTagsFinder(BaseDeletionScript):
         mongodb_reports = service.load_mongodb_usage_reports()
 
         # Log report statistics for debugging
-        self.logger.info(f"Loaded MongoDB usage reports:")
+        self.logger.info("Loaded MongoDB usage reports:")
         for key, value in mongodb_reports.items():
             count = len(value) if isinstance(value, list) else 0
             self.logger.info(f"  {key}: {count} records")
@@ -1858,7 +1858,7 @@ def main():
             logger.info(f"Total matching tags: {summary['total_matching_tags']}")
             freed_space_bytes = summary.get("freed_space_bytes", summary.get("freed_space_gb", 0) * (1024**3))
             logger.info(f"Space that would be freed: {sizeof_fmt(freed_space_bytes)}")
-            logger.info(f"Tags by image type:")
+            logger.info("Tags by image type:")
             for img_type, count in summary["tags_by_image_type"].items():
                 logger.info(f"  {img_type}: {count} tags")
             logger.info(f"ObjectIDs with tags: {summary['object_ids_with_tags']}")
@@ -1867,9 +1867,7 @@ def main():
             logger.info(f"\nDetailed report saved to: {output_file}")
 
             if archived_tags:
-                logger.warning(
-                    f"\n⚠️  Found {len(archived_tags)} archived {processing_str} tags that may need cleanup!"
-                )
+                logger.warning(f"\n⚠️  Found {len(archived_tags)} archived {processing_str} tags that may need cleanup!")
                 logger.info(
                     "Review the detailed report to identify which Docker images are associated with archived records."
                 )

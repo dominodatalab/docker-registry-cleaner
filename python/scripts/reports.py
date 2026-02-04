@@ -33,7 +33,6 @@ if str(_parent_dir) not in sys.path:
     sys.path.insert(0, str(_parent_dir))
 
 from utils.config_manager import config_manager
-from utils.image_data_analysis import ImageAnalyzer
 from utils.logging_utils import get_logger, setup_logging
 from utils.report_utils import ensure_all_reports, sizeof_fmt
 
@@ -133,7 +132,7 @@ def analyze_tag_usage(tag_data: Dict, workspace_data: str, model_data: str) -> N
 
     if unused_tags:
         logger.info("\nUnused tags details:")
-        for tag, size, human_size in sorted(unused_tags, key=lambda x: x[1], reverse=True):
+        for tag, _size, human_size in sorted(unused_tags, key=lambda x: x[1], reverse=True):
             logger.info(f"  {tag}: {human_size}")
 
 
@@ -146,7 +145,7 @@ def parse_arguments():
 Examples:
   # Generate report (auto-generates metadata if missing)
   python reports.py
-  
+
   # Force regeneration of metadata reports
   python reports.py --generate-reports
         """,

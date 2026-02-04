@@ -326,7 +326,7 @@ class ImageUsageService:
                     "organizations": data.get("organizations", []),
                     "app_versions": data.get("app_versions", []),
                 }
-        except Exception as e:
+        except Exception:
             # If file is corrupted, return empty dict
             return {
                 "runs": [],

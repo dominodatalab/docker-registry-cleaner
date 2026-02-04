@@ -83,7 +83,7 @@ def run_script(script_path: str, args: List[str], dry_run: bool = True) -> None:
     except subprocess.CalledProcessError as e:
         logging.error(f"Error running script {script_path}: {e}")
         sys.exit(1)
-    except FileNotFoundError as e:
+    except FileNotFoundError:
         logging.error(f"Script not found: {script_path}")
         sys.exit(1)
 
@@ -173,7 +173,7 @@ def validate_script_requirements(script_keyword: str, args: List[str]) -> None:
 def main():
     setup_logging()
     script_paths = load_script_paths()
-    script_descriptions = get_script_descriptions()
+    get_script_descriptions()
 
     parser = argparse.ArgumentParser(
         description="Unified entrypoint for Docker registry cleaner scripts",
@@ -222,53 +222,53 @@ Examples:
 
   # Filter by ObjectIDs from file (first column contains ObjectIDs)
   python main.py delete_image --input environments
-  
+
   # Only consider images as unused if not used in last 30 days
   python main.py delete_image --unused-since-days 30
-  
+
   # Delete unused images (only if not used in last 30 days)
   python main.py delete_image --unused-since-days 30 --apply
 
   # Mongo cleanup
   python main.py mongo_cleanup --file environments
   python main.py mongo_cleanup --apply --file environments --collection environment_revisions
-  
+
   # Generate tag usage reports (auto-generates metadata if missing)
   python main.py reports
-  
+
   # Force regeneration of metadata before generating reports
   python main.py reports --generate-reports
-  
+
   # Generate image size report (auto-generates image analysis if missing)
   python main.py image_size_report
-  
+
   # Force regeneration of image analysis before generating size report
   python main.py image_size_report --generate-reports
-  
+
   # Generate user size report (auto-generates reports if missing)
   python main.py user_size_report
-  
+
   # Force regeneration of all reports before generating user report
   python main.py user_size_report --generate-reports
-  
+
   # Find archived environment tags (dry-run)
   python main.py delete_archived_tags --environment --output archived-tags.json
-  
+
   # Find archived model tags (dry-run)
   python main.py delete_archived_tags --model --output archived-model-tags.json
-  
+
   # Find both archived environments and models
   python main.py delete_archived_tags --environment --model --output archived-tags.json
-  
+
   # Delete archived environment tags
   python main.py delete_archived_tags --environment --apply
-  
+
   # Delete archived model tags
   python main.py delete_archived_tags --model --apply
-  
+
   # Only consider tags as in-use if used in last 30 days
   python main.py delete_archived_tags --environment --unused-since-days 30 --apply
-  
+
   # Delete both with backup to S3
   python main.py delete_archived_tags --environment --model --apply --backup --s3-bucket my-bucket
 
@@ -292,13 +292,13 @@ Examples:
 
   # Delete from pre-generated file
    python main.py delete_unused_private_environments --apply --input deactivated-user-envs.json
-  
+
   # Only consider tags as in-use if used in last 30 days
    python main.py delete_unused_private_environments --unused-since-days 30 --apply
 
   # Find unused environments (auto-generates required reports if missing)
    python main.py delete_unused_environments
-   
+
   # Force regeneration of metadata reports before analysis
    python main.py delete_unused_environments --generate-reports
 
@@ -310,16 +310,16 @@ Examples:
 
   # Full workflow: generate reports and delete
    python main.py delete_unused_environments --generate-reports --apply
-   
+
   # Delete from pre-generated file
    python main.py delete_unused_environments --apply --input unused-envs.json
-  
+
   # Comprehensive unused environment cleanup - analyze (dry-run)
    python main.py delete_all_unused_environments
-  
+
   # Comprehensive cleanup - delete (requires --apply)
    python main.py delete_all_unused_environments --apply
-  
+
   # Comprehensive cleanup with backup
    python main.py delete_all_unused_environments --apply --backup --s3-bucket my-backup-bucket
 
@@ -329,22 +329,22 @@ Examples:
 Backup Examples (all delete scripts support backup to S3 before deletion):
   # Backup images to S3 before deleting archived tags
   python main.py delete_archived_tags --environment --apply --backup --s3-bucket my-backup-bucket
-   
+
   # Backup with custom region
   python main.py delete_archived_tags --model --apply --backup --s3-bucket my-backup-bucket --region us-east-1
-   
+
   # Backup before deleting unused environments
   python main.py delete_unused_environments --apply --backup --s3-bucket my-backup-bucket
-  
+
   # Backup only for unused environments (no deletion)
   python main.py delete_unused_environments --backup --s3-bucket my-backup-bucket --force
-   
+
   # Backup before deleting private environments of deactivated users
   python main.py delete_unused_private_environments --apply --backup --s3-bucket my-backup-bucket
 
   # Backup only for deactivated user private environments (no deletion)
   python main.py delete_unused_private_environments --backup --s3-bucket my-backup-bucket --force
-   
+
   # Backup before deleting unused Docker images
   python main.py delete_image --apply --backup --s3-bucket my-backup-bucket
 

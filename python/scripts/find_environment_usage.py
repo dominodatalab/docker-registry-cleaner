@@ -86,7 +86,7 @@ def find_environment_usage(env_id: str) -> None:
         organizations: List[Dict] = []
         app_versions: List[Dict] = []
 
-        for env_key, usage_info in direct_usage.items():
+        for _env_key, usage_info in direct_usage.items():
             projects.extend(usage_info.get("projects", []))
             scheduler_jobs.extend(usage_info.get("scheduler_jobs", []))
             organizations.extend(usage_info.get("organizations", []))
@@ -107,8 +107,8 @@ def find_environment_usage(env_id: str) -> None:
         # Load Docker tag usage reports
         mongodb_reports = service.load_mongodb_usage_reports()
 
-        workspace_usages = mongodb_reports.get("workspaces", [])
-        runs_usages = mongodb_reports.get("runs", [])
+        mongodb_reports.get("workspaces", [])
+        mongodb_reports.get("runs", [])
 
         # Use service to find usage for all environment/revision IDs
         usage_by_id = service.find_usage_for_environment_ids(all_ids, mongodb_reports=mongodb_reports)
@@ -120,7 +120,7 @@ def find_environment_usage(env_id: str) -> None:
         seen_workspace_ids: Set[str] = set()
         seen_run_ids: Set[str] = set()
 
-        for env_id, usage_info in usage_by_id.items():
+        for _env_id, usage_info in usage_by_id.items():
             # Collect matching tags
             all_matching_tags.update(usage_info["matching_tags"])
 

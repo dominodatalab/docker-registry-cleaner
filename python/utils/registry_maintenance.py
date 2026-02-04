@@ -6,7 +6,6 @@ These helpers are intended to be used both from standalone scripts and as
 post-processing steps after tag deletion workflows.
 """
 
-import logging
 from typing import Optional
 
 from utils.config_manager import _get_kubernetes_clients, config_manager, is_registry_in_cluster

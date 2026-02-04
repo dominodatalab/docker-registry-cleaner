@@ -8,7 +8,7 @@ These tests verify the Kubernetes-related functionality:
 - Registry deletion mode management
 """
 
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -386,7 +386,7 @@ class TestHealthCheckerRunAllChecks:
         mock_rbac = mocker.patch.object(checker, "check_registry_deletion_rbac")
         mock_s3 = mocker.patch.object(checker, "check_s3_access")
 
-        results = checker.run_all_checks(skip_optional=True)
+        _ = checker.run_all_checks(skip_optional=True)
 
         # K8s and RBAC checks should not be called
         mock_k8s.assert_not_called()

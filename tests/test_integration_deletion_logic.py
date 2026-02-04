@@ -4,14 +4,11 @@ import json
 import os
 import sys
 import tempfile
-from unittest.mock import MagicMock, Mock, call, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
 from scripts.delete_image import IntelligentImageDeleter, WorkloadAnalysis
-from utils.image_data_analysis import ImageAnalyzer
 
 
 class TestDeletionLogic:
@@ -230,7 +227,7 @@ class TestDeletionLogic:
             with open(results_file, "r") as f:
                 results = json.load(f)
 
-            assert results["dry_run"] == False
+            assert results["dry_run"] is False
             assert results["summary"]["successful_deletions"] == 1
             assert results["summary"]["total_size_saved_bytes"] == 2000
             assert len(results["deleted_images"]) == 1
@@ -277,7 +274,7 @@ class TestDeletionFlowIntegration:
         assert "tag2" in [tag.split(":")[1] if ":" in tag else tag for tag in analysis.unused_images]
 
         # Delete (dry-run)
-        deleted_tags = deleter.delete_unused_images(analysis, password=None, dry_run=True)
+        _ = deleter.delete_unused_images(analysis, password=None, dry_run=True)
 
         # Verify no actual deletion in dry-run
         assert not mock_skopeo.delete_image.called

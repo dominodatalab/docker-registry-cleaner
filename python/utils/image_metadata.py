@@ -189,7 +189,7 @@ def build_model_tag_to_metadata_mapping(
             owner_id_to_name, owner_id_to_login = lookup_user_names_and_logins(created_by_ids)
 
         # Build final mapping
-        for tag, (version_id, created_by_id, model_id) in tag_to_model_info.items():
+        for tag, (_version_id, created_by_id, model_id) in tag_to_model_info.items():
             metadata_entry = {}
 
             if include_model_name:

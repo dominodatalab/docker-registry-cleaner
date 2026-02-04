@@ -22,8 +22,6 @@ Usage examples:
 """
 
 import argparse
-import json
-import re
 import sys
 from collections import defaultdict
 from datetime import datetime
@@ -128,7 +126,6 @@ def extract_owners_from_usage_info(
     if not model_version_info:
         for model in usage_info.get("models", []):
             model_owner = model.get("model_owner", "")  # Name from pipeline
-            model_created_by = model.get("model_created_by", "")  # Name from pipeline
             version_id = model.get("version_id") or model.get("model_version_id", "")
 
             if model_owner and model_owner != "unknown":
@@ -192,7 +189,7 @@ def build_tag_to_model_version_created_by_mapping(analyzer: ImageAnalyzer) -> Di
     Returns:
         Dict mapping tag -> (model_version_id as string, createdBy ObjectId as string, createdBy_name)
     """
-    from utils.tag_matching import extract_model_tag_prefix, model_tags_match
+    from utils.tag_matching import model_tags_match
 
     tag_to_version_created_by = {}
 
@@ -208,7 +205,7 @@ def build_tag_to_model_version_created_by_mapping(analyzer: ImageAnalyzer) -> Di
 
     # Query MongoDB to get model_version_id and createdBy for each tag
     try:
-        from bson import ObjectId
+        pass
 
         from utils.config_manager import config_manager
         from utils.mongo_utils import get_mongo_client
@@ -324,7 +321,7 @@ def build_tag_to_author_mapping(analyzer: ImageAnalyzer) -> Dict[str, Tuple[str,
 
     # Query MongoDB to get authorId for each tag
     try:
-        from bson import ObjectId
+        pass
 
         from utils.config_manager import config_manager
         from utils.mongo_utils import get_mongo_client
@@ -414,7 +411,7 @@ def build_tag_to_owners_mapping(
     unknown_tags_info = []  # Track why tags are unknown
 
     # For each image tag, find its owners
-    for image_id, image_data in analyzer.images.items():
+    for _image_id, image_data in analyzer.images.items():
         tag = image_data["tag"]
 
         # Get usage info for this tag
@@ -654,10 +651,10 @@ def parse_arguments():
 Examples:
   # Generate report (auto-generates reports if missing)
   python user_size_report.py
-  
+
   # Force regeneration of all reports
   python user_size_report.py --generate-reports
-  
+
   # Specify output file
   python user_size_report.py --output custom-report.json
         """,

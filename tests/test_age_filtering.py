@@ -7,9 +7,6 @@ Tests verify that images are correctly filtered based on last usage timestamps.
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import Mock, patch
-
-import pytest
 
 # Add python directory to path (also handled by conftest.py for pytest)
 _python_dir = Path(__file__).parent.parent / "python"

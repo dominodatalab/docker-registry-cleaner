@@ -413,15 +413,15 @@ class TestStartsWithAnyObjectId:
 
     def test_empty_object_ids_returns_false(self):
         """Test that empty object_ids returns False"""
-        assert starts_with_any_object_id("507f1f77bcf86cd799439011", []) == False
+        assert starts_with_any_object_id("507f1f77bcf86cd799439011", []) is False
 
     def test_none_object_ids_returns_false(self):
         """Test that None object_ids returns False"""
-        assert starts_with_any_object_id("507f1f77bcf86cd799439011", None) == False
+        assert starts_with_any_object_id("507f1f77bcf86cd799439011", None) is False
 
     def test_single_match(self):
         """Test with single matching ObjectID"""
-        assert starts_with_any_object_id("507f1f77bcf86cd799439011-1", ["507f1f77bcf86cd799439011"]) == True
+        assert starts_with_any_object_id("507f1f77bcf86cd799439011-1", ["507f1f77bcf86cd799439011"]) is True
 
     def test_multiple_object_ids_one_match(self):
         """Test with multiple ObjectIDs where one matches"""
@@ -429,17 +429,17 @@ class TestStartsWithAnyObjectId:
             starts_with_any_object_id(
                 "507f1f77bcf86cd799439011-1", ["507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012"]
             )
-            == True
+            is True
         )
 
     def test_no_match(self):
         """Test with no matching ObjectID"""
-        assert starts_with_any_object_id("507f1f77bcf86cd799439011-1", ["507f1f77bcf86cd799439999"]) == False
+        assert starts_with_any_object_id("507f1f77bcf86cd799439011-1", ["507f1f77bcf86cd799439999"]) is False
 
     def test_exact_match(self):
         """Test that exact match returns True"""
-        assert starts_with_any_object_id("507f1f77bcf86cd799439011", ["507f1f77bcf86cd799439011"]) == True
+        assert starts_with_any_object_id("507f1f77bcf86cd799439011", ["507f1f77bcf86cd799439011"]) is True
 
     def test_prefix_not_at_start(self):
         """Test that ObjectID in middle doesn't match"""
-        assert starts_with_any_object_id("prefix-507f1f77bcf86cd799439011", ["507f1f77bcf86cd799439011"]) == False
+        assert starts_with_any_object_id("prefix-507f1f77bcf86cd799439011", ["507f1f77bcf86cd799439011"]) is False

@@ -1,4 +1,4 @@
-"""Retry utilities for network operations with exponential backoff"""
+"""Retry utilities for network operations with exponential backof"""
 
 import logging
 import time
@@ -125,7 +125,6 @@ def retry_with_backoff(
         @wraps(func)
         def wrapper(*args, **kwargs) -> Optional[T]:
             last_error = None
-            last_error_type = None
 
             for attempt in range(max_retries + 1):
                 try:
@@ -136,7 +135,7 @@ def retry_with_backoff(
                         # Check if we should retry None results
                         # For now, we'll retry None results as they might indicate transient failures
                         logger.warning(
-                            f"{func.__name__} returned None on attempt {attempt + 1}/{max_retries + 1}. " f"Retrying..."
+                            f"{func.__name__} returned None on attempt {attempt + 1}/{max_retries + 1}. " "Retrying..."
                         )
                     else:
                         if attempt > 0:
@@ -150,7 +149,6 @@ def retry_with_backoff(
                         error_message = e.stderr
 
                     is_retryable, error_type = is_retryable_error(e, error_message)
-                    last_error_type = error_type
 
                     # Check if this error type should be retried
                     if not is_retryable or error_type not in retryable_errors:

@@ -5,7 +5,6 @@ import hashlib
 import json
 import logging
 import time
-from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -135,7 +134,7 @@ def cached(cache: TTLCache, key_func: Optional[Callable] = None):
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         @functools.wraps(func)
         def wrapper(*args, **kwargs) -> T:
-            # Generate cache key - skip 'self' for methods
+            # Generate cache key - skip 'sel' for methods
             if key_func:
                 cache_key_str = key_func(*args, **kwargs)
             else:

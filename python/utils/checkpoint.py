@@ -9,9 +9,8 @@ import json
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
-from utils.config_manager import config_manager
 from utils.logging_utils import get_logger
 from utils.report_utils import get_reports_dir
 

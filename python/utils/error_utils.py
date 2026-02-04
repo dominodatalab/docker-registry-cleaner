@@ -93,7 +93,7 @@ def create_registry_connection_error(registry_url: str, error: Exception) -> Act
 
 def create_registry_auth_error(registry_url: str, error: Exception) -> ActionableError:
     """Create actionable error for registry authentication failures"""
-    error_str = str(error).lower()
+    str(error).lower()
 
     suggestions = [
         "Verify REGISTRY_PASSWORD environment variable is set correctly",

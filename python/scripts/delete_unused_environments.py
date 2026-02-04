@@ -56,7 +56,7 @@ _parent_dir = Path(__file__).parent.parent.absolute()
 if str(_parent_dir) not in sys.path:
     sys.path.insert(0, str(_parent_dir))
 
-from utils.config_manager import SkopeoClient, config_manager
+from utils.config_manager import config_manager
 from utils.deletion_base import BaseDeletionScript
 from utils.image_data_analysis import ImageAnalyzer
 from utils.image_usage import ImageUsageService
@@ -222,7 +222,7 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
             # If it's a single dict, wrap it in a list
             elif isinstance(parsed, dict):
                 return [parsed]
-        except:
+        except Exception:
             # Fall back to line-by-line parsing
             pass
 
@@ -244,7 +244,7 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
                             documents.extend(doc)
                         else:
                             documents.append(doc)
-                    except:
+                    except Exception:
                         pass
                 current_doc = line
             else:
@@ -260,7 +260,7 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
                     documents.extend(doc)
                 else:
                     documents.append(doc)
-            except:
+            except Exception:
                 pass
 
         return documents
@@ -880,10 +880,10 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
                                     f"    ✓ Deleted successfully (contains {len(associated_object_ids)} unused ObjectIDs)"
                                 )
                             else:
-                                self.logger.info(f"    ✓ Deleted successfully")
+                                self.logger.info("    ✓ Deleted successfully")
                             return ("success", tag_info.full_image, associated_object_ids, None)
                         else:
-                            self.logger.warning(f"    ✗ Failed to delete - MongoDB record will NOT be cleaned")
+                            self.logger.warning("    ✗ Failed to delete - MongoDB record will NOT be cleaned")
                             return ("failed", tag_info.full_image, None, None)
                     except Exception as e:
                         self.logger.error(f"    ✗ Error deleting: {e} - MongoDB record will NOT be cleaned")
@@ -1241,7 +1241,7 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
 
             # Load from grouped_by_object_id
             grouped_data = report.get("grouped_by_object_id", {})
-            for obj_id, tags_list in grouped_data.items():
+            for _obj_id, tags_list in grouped_data.items():
                 for tag_data in tags_list:
                     tag = UnusedEnvInfo(
                         object_id=tag_data["object_id"],
@@ -1288,7 +1288,7 @@ Examples:
 
   # Force deletion without confirmation
   python delete_unused_environments.py --apply --force
-  
+
   # Generate reports and then delete (full workflow)
   python delete_unused_environments.py --generate-reports --apply
         """,

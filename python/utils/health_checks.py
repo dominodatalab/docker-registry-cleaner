@@ -8,9 +8,8 @@ This module provides health checks for:
 - S3 access (if configured)
 """
 
-import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from utils.config_manager import _get_kubernetes_clients, config_manager, is_registry_in_cluster
 from utils.error_utils import (
@@ -112,7 +111,7 @@ class HealthChecker:
             try:
                 actionable_error = create_registry_connection_error(registry_url, e)
                 error_message = actionable_error.message
-            except:
+            except Exception:
                 error_message = f"Failed to connect to registry: {str(e)}"
 
             return HealthCheckResult(
@@ -149,7 +148,7 @@ class HealthChecker:
             return HealthCheckResult(
                 name="mongodb_connectivity",
                 status=True,
-                message=f"Successfully connected to MongoDB",
+                message="Successfully connected to MongoDB",
                 details={
                     "host": config_manager.get_mongo_host(),
                     "port": config_manager.get_mongo_port(),
@@ -164,7 +163,7 @@ class HealthChecker:
                     config_manager.get_mongo_host(), config_manager.get_mongo_port(), e
                 )
                 error_message = actionable_error.message
-            except:
+            except Exception:
                 error_message = f"Failed to connect to MongoDB: {str(e)}"
 
             return HealthCheckResult(
@@ -188,13 +187,12 @@ class HealthChecker:
         """
         try:
             from kubernetes import client as k8s_client
-            from kubernetes.client.rest import ApiException
             from kubernetes.config import load_incluster_config, load_kube_config
 
             # Try to load config
             try:
                 load_incluster_config()
-            except:
+            except Exception:
                 load_kube_config()
 
             # Try to access the API
@@ -207,7 +205,7 @@ class HealthChecker:
             return HealthCheckResult(
                 name="kubernetes_access",
                 status=True,
-                message=f"Successfully connected to Kubernetes API",
+                message="Successfully connected to Kubernetes API",
                 details={"namespace": namespace},
             )
         except ImportError:
@@ -222,7 +220,7 @@ class HealthChecker:
             try:
                 actionable_error = create_kubernetes_error(f"Access namespace {namespace}", e)
                 error_message = actionable_error.message
-            except:
+            except Exception:
                 error_message = f"Failed to access Kubernetes API: {str(e)}"
 
             return HealthCheckResult(
@@ -314,7 +312,7 @@ class HealthChecker:
             status = getattr(e, "status", None)
             if status == 403:
                 msg = (
-                    f"ServiceAccount does NOT have permission to PATCH StatefulSet "
+                    "ServiceAccount does NOT have permission to PATCH StatefulSet "
                     f"'{statefulset_name}' in namespace '{namespace}' (HTTP 403 Forbidden)"
                 )
             else:
@@ -416,7 +414,7 @@ class HealthChecker:
                     "head_bucket", s3_bucket, Exception("AWS credentials not configured")
                 )
                 error_message = actionable_error.message
-            except:
+            except Exception:
                 error_message = "AWS credentials not configured"
             return HealthCheckResult(
                 name="s3_access",
@@ -433,7 +431,7 @@ class HealthChecker:
             try:
                 actionable_error = create_s3_error("head_bucket", s3_bucket, e)
                 error_message = actionable_error.message
-            except:
+            except Exception:
                 error_message = f"Failed to access S3 bucket: {error_code}"
             return HealthCheckResult(
                 name="s3_access",
@@ -451,7 +449,7 @@ class HealthChecker:
             try:
                 actionable_error = create_s3_error("head_bucket", s3_bucket, e)
                 error_message = actionable_error.message
-            except:
+            except Exception:
                 error_message = f"Failed to access S3: {str(e)}"
             return HealthCheckResult(
                 name="s3_access",

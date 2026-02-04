@@ -7,7 +7,7 @@ Tests verify the complete deletion workflow including analysis, filtering, and d
 import os
 import sys
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -85,9 +85,9 @@ class TestDeletionWorkflows:
         object_ids_map = {"environment": ["env123"]}
 
         # Mock image analysis with ObjectID in tag
-        filtered_analysis = {"layer1": {"tags": ["env123-abc", "env456-def"], "size": 1000000}}  # Only first matches
+        filtered_analysis = {"layer1": {"tags": ["env123-abc", "env456-de"], "size": 1000000}}  # Only first matches
 
-        analysis = deleter.analyze_image_usage(
+        _ = deleter.analyze_image_usage(
             filtered_analysis,
             object_ids=object_ids,
             object_ids_map=object_ids_map,

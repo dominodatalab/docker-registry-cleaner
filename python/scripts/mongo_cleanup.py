@@ -66,7 +66,7 @@ def connect_and_execute(
         value: The tag or ObjectID value to search for
         collection_name: MongoDB collection to clean up (default: environment_revisions)
     """
-    from utils.tag_matching import extract_model_tag_prefix, model_tags_match
+    from utils.tag_matching import extract_model_tag_prefix
 
     db_name = config_manager.get_mongo_db()
     client = get_mongo_client()

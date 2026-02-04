@@ -26,7 +26,6 @@ Usage examples:
   # Force deletion without confirmation
   python delete_image.py --apply --force
 
-
   # Back up images to S3 before deletion
   python delete_image.py --apply --backup
 
@@ -51,7 +50,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 # Add parent directory to path for imports
 _parent_dir = Path(__file__).parent.parent.absolute()
@@ -183,7 +182,7 @@ class IntelligentImageDeleter(BaseDeletionScript):
                 return parsed
             elif isinstance(parsed, dict):
                 return [parsed]
-        except:
+        except Exception:
             pass
 
         # If that fails, return empty list
@@ -874,7 +873,7 @@ class IntelligentImageDeleter(BaseDeletionScript):
             self.logger.error(f"Failed to save deletion report: {e}")
 
         # Log summary
-        self.logger.info(f"\n📊 Deletion Analysis Summary:")
+        self.logger.info("\n📊 Deletion Analysis Summary:")
         self.logger.info(f"   Total images analyzed: {report['summary']['total_images_analyzed']}")
         self.logger.info(f"   Images in use: {report['summary']['used_images']}")
         self.logger.info(f"   Images unused: {report['summary']['unused_images']}")
@@ -1149,12 +1148,12 @@ class IntelligentImageDeleter(BaseDeletionScript):
                     self.logger.info(f"  Deleting: {repository}:{tag} ({sizeof_fmt(size)})")
                     # Use standardized Skopeo client for deletion
                     if self.skopeo_client.delete_image(repository, tag):
-                        self.logger.info(f"    ✅ Deleted successfully")
+                        self.logger.info("    ✅ Deleted successfully")
                         successful_deletions += 1
                         total_size_deleted += size
                         deleted_tags.append(f"{repository}:{tag}")
                     else:
-                        self.logger.warning(f"    ❌ Failed to delete")
+                        self.logger.warning("    ❌ Failed to delete")
                         failed_deletions += 1
                 else:
                     # Try both environment and model repositories
@@ -1170,10 +1169,10 @@ class IntelligentImageDeleter(BaseDeletionScript):
                             deleted = True
                             break
                     if not deleted:
-                        self.logger.warning(f"    ❌ Failed to delete from both environment and model repositories")
+                        self.logger.warning("    ❌ Failed to delete from both environment and model repositories")
                         failed_deletions += 1
 
-        self.logger.info(f"\n📊 Deletion Summary:")
+        self.logger.info("\n📊 Deletion Summary:")
         self.logger.info(f"   {'Would delete' if dry_run else 'Successfully deleted'}: {successful_deletions} images")
         if not dry_run:
             self.logger.info(f"   Failed deletions: {failed_deletions} images")
@@ -1472,7 +1471,7 @@ def main():
             # Parse image format: repository/type:tag
             if ":" not in args.image:
                 logger.error(
-                    f"❌ Error: Invalid image format. Expected format: repository/type:tag (e.g., dominodatalab/environment:abc-123)"
+                    "❌ Error: Invalid image format. Expected format: repository/type:tag (e.g., dominodatalab/environment:abc-123)"
                 )
                 sys.exit(1)
 
@@ -1502,10 +1501,10 @@ def main():
                 else:
                     logger.info(f"  Deleting: {args.image}")
                     if deleter.skopeo_client.delete_image(repository, tag):
-                        logger.info(f"    ✅ Deleted successfully")
+                        logger.info("    ✅ Deleted successfully")
                         deleted_tags = [args.image]
                     else:
-                        logger.warning(f"    ❌ Failed to delete")
+                        logger.warning("    ❌ Failed to delete")
 
                 # Clean up Mongo references for deleted tags
                 if deleted_tags and not dry_run and not args.skip_cleanup_mongo:

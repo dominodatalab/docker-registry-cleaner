@@ -7,7 +7,7 @@ in MongoDB, and identifies matching Docker tags in the registry. Can optionally
 delete the Docker images and clean up MongoDB records.
 
 Workflow:
-- Query Keycloak for deactivated users (enabled == False)
+- Query Keycloak for deactivated users (enabled is False)
 - Extract Domino user IDs from Keycloak user attributes
 - Query MongoDB environments_v2 collection for private environments owned by these users
 - Query environment_revisions collection for related revisions
@@ -557,7 +557,7 @@ class DeactivatedUserEnvFinder(BaseDeletionScript):
                 failed_items = []
                 skipped_items = []
 
-                for idx, ((image_type, tag), data) in enumerate(unique_tags.items()):
+                for idx, ((_image_type, _tag), data) in enumerate(unique_tags.items()):
                     tag_info = data["tag_info"]
                     associated_object_ids = data["object_ids"]
 
@@ -591,12 +591,12 @@ class DeactivatedUserEnvFinder(BaseDeletionScript):
                                     f"    ✓ Deleted successfully (contains {len(associated_object_ids)} deactivated user ObjectIDs)"
                                 )
                             else:
-                                self.logger.info(f"    ✓ Deleted successfully")
+                                self.logger.info("    ✓ Deleted successfully")
                         else:
                             failed_deletions.append(tag_info.full_image)
                             failed_items.append(tag_info.full_image)
                             failed_deletions_with_reason[tag_info.full_image] = {"reason": "deletion_failed"}
-                            self.logger.warning(f"    ✗ Failed to delete - MongoDB record will NOT be cleaned")
+                            self.logger.warning("    ✗ Failed to delete - MongoDB record will NOT be cleaned")
                     except Exception as e:
                         failed_deletions.append(tag_info.full_image)
                         failed_items.append(tag_info.full_image)
@@ -907,7 +907,7 @@ class DeactivatedUserEnvFinder(BaseDeletionScript):
             with open(file_path, "r") as f:
                 report = json.load(f)
 
-            summary = report.get("summary", {})
+            report.get("summary", {})
             # For backwards compatibility, we can derive environment_ids and revision_ids if needed
             environment_ids = []
             revision_ids = []

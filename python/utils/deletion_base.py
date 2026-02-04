@@ -9,9 +9,8 @@ This module provides common functionality for all deletion scripts including:
 - Logging consistency
 """
 
-import sys
-from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple
+from abc import ABC
+from typing import Any, Dict, Optional
 
 from utils.checkpoint import CheckpointManager
 from utils.config_manager import SkopeoClient, config_manager
@@ -20,7 +19,11 @@ from utils.logging_utils import get_logger
 from utils.report_utils import sizeof_fmt
 
 
-class BaseDeletionScript(ABC):
+# NOTE: BaseDeletionScript intentionally does not define abstract methods.
+# It provides shared infrastructure (confirmation, deletion workflow, backup integration)
+# but does not enforce a specific interface on subclasses. Subclasses can implement
+# their own deletion logic as needed without being constrained by abstract method requirements.
+class BaseDeletionScript(ABC):  # noqa: B024
     """Base class for deletion scripts with common functionality"""
 
     def __init__(

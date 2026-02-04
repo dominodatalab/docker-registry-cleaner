@@ -15,7 +15,6 @@ Usage examples:
 """
 
 import argparse
-import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -30,7 +29,6 @@ from utils.config_manager import config_manager
 from utils.image_data_analysis import ImageAnalyzer
 from utils.image_metadata import build_environment_tag_to_metadata_mapping, build_model_tag_to_metadata_mapping
 from utils.logging_utils import get_logger, setup_logging
-from utils.object_id_utils import normalize_object_id
 from utils.report_utils import ensure_image_analysis_reports, save_json, sizeof_fmt
 
 logger = get_logger(__name__)
@@ -243,10 +241,10 @@ def parse_arguments():
 Examples:
   # Generate report (auto-generates image analysis if missing)
   python image_size_report.py
-  
+
   # Force regeneration of image analysis before generating report
   python image_size_report.py --generate-reports
-  
+
   # Specify output file
   python image_size_report.py --output custom-report.json
         """,
