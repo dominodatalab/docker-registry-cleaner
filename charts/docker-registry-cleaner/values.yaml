@@ -1,6 +1,6 @@
 image:
   repository: quay.io/domino/docker-registry-cleaner
-  tag: v0.2.8
+  tag: v0.3.0
   pullPolicy: Always
 
 # fsGroup makes the PVC at /data/reports writable by nonroot (65532)
@@ -34,7 +34,7 @@ dominoPlatformNamespace: domino-platform
 persistence:
   enabled: true
   size: 10Gi
-  storageClass: ""  # Use default storage class if empty
+  storageClass: "dominodisk"  # Use default storage class if empty
 
 config:
   # Inline config.yaml content mounted into the container

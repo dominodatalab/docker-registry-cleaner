@@ -9,9 +9,9 @@ FROM cgr.dev/dominodatalab.com/python:3.14.2-dev AS dev
 WORKDIR /app
 RUN python -m venv venv
 ENV PATH="/app/venv/bin:${PATH}"
-COPY requirements.txt requirements.txt
-RUN pip install -r requirements.txt
+COPY pyproject.toml .
 COPY python python
+RUN pip install --no-cache-dir -e .
 
 # 2) Source hardened skopeo binary from dedicated image
 FROM cgr.dev/dominodatalab.com/skopeo:1.21.0 AS skopeo
@@ -31,6 +31,12 @@ COPY --from=skopeo --chown=nonroot:nonroot /usr/bin/skopeo /usr/bin/skopeo
 # If your base does not define nonroot, remove the USER line or set your runtime user.
 USER nonroot:nonroot
 
-# Default entrypoint is a long sleep so the pod can be used interactively;
-# actual commands are typically provided at runtime (kubectl exec / kubectl run).
-ENTRYPOINT ["/bin/sh", "-c", "sleep 3600"]
+# Clear the base image's ENTRYPOINT and set our own CMD
+# Base image has ENTRYPOINT ["/usr/bin/python"], which we don't want
+ENTRYPOINT []
+
+# Default command keeps the container alive for interactive use.
+# Run commands via: kubectl exec -it <pod> -- docker-registry-cleaner <command>
+# Or override with: docker run <image> docker-registry-cleaner --help
+# Sleep for 30 days (2,592,000 seconds)
+CMD ["python", "-c", "import time; time.sleep(2592000)"]
