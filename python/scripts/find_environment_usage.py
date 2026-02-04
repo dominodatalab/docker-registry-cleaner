@@ -10,10 +10,10 @@ This script/function inspects:
 import argparse
 import logging
 import sys
-
-from bson import ObjectId
 from pathlib import Path
 from typing import Dict, List, Set
+
+from bson import ObjectId
 
 # Add parent directory to path for imports
 _parent_dir = Path(__file__).parent.parent.absolute()
@@ -76,22 +76,22 @@ def find_environment_usage(env_id: str) -> None:
 
         # Load auxiliary JSON reports using service
         service = ImageUsageService()
-        
+
         # Find direct environment ID usage in MongoDB collections (projects, scheduler_jobs, organizations, app_versions)
         direct_usage = service.find_direct_environment_id_usage(all_ids)
-        
+
         # Aggregate direct usage results
         projects: List[Dict] = []
         scheduler_jobs: List[Dict] = []
         organizations: List[Dict] = []
         app_versions: List[Dict] = []
-        
+
         for env_key, usage_info in direct_usage.items():
-            projects.extend(usage_info.get('projects', []))
-            scheduler_jobs.extend(usage_info.get('scheduler_jobs', []))
-            organizations.extend(usage_info.get('organizations', []))
-            app_versions.extend(usage_info.get('app_versions', []))
-        
+            projects.extend(usage_info.get("projects", []))
+            scheduler_jobs.extend(usage_info.get("scheduler_jobs", []))
+            organizations.extend(usage_info.get("organizations", []))
+            app_versions.extend(usage_info.get("app_versions", []))
+
         # User preferences: defaultEnvironmentId → userId
         # If any user has this environment set as defaultEnvironmentId, report it as usage.
         user_prefs: List[Dict] = []
@@ -103,40 +103,37 @@ def find_environment_usage(env_id: str) -> None:
             user_prefs = list(prefs_cursor)
         else:
             logging.info("Collection 'userPreferences' not found, skipping userPreferences check.")
-        
+
         # Load Docker tag usage reports
         mongodb_reports = service.load_mongodb_usage_reports()
-        
-        workspace_usages = mongodb_reports.get('workspaces', [])
-        runs_usages = mongodb_reports.get('runs', [])
+
+        workspace_usages = mongodb_reports.get("workspaces", [])
+        runs_usages = mongodb_reports.get("runs", [])
 
         # Use service to find usage for all environment/revision IDs
-        usage_by_id = service.find_usage_for_environment_ids(
-            all_ids,
-            mongodb_reports=mongodb_reports
-        )
-        
+        usage_by_id = service.find_usage_for_environment_ids(all_ids, mongodb_reports=mongodb_reports)
+
         # Aggregate results across all IDs
         all_matching_tags: Set[str] = set()
         matching_workspaces: List[Dict] = []
         matching_runs: List[Dict] = []
         seen_workspace_ids: Set[str] = set()
         seen_run_ids: Set[str] = set()
-        
+
         for env_id, usage_info in usage_by_id.items():
             # Collect matching tags
-            all_matching_tags.update(usage_info['matching_tags'])
-            
+            all_matching_tags.update(usage_info["matching_tags"])
+
             # Collect workspaces (deduplicate by workspace_id)
-            for ws in usage_info['workspaces']:
-                ws_id = str(ws.get('workspace_id') or ws.get('_id') or ws.get('workspaceId') or '')
+            for ws in usage_info["workspaces"]:
+                ws_id = str(ws.get("workspace_id") or ws.get("_id") or ws.get("workspaceId") or "")
                 if ws_id and ws_id not in seen_workspace_ids:
                     matching_workspaces.append(ws)
                     seen_workspace_ids.add(ws_id)
-            
+
             # Collect runs (deduplicate by run_id)
-            for run in usage_info['runs']:
-                run_id = str(run.get('run_id') or run.get('_id') or run.get('runId') or '')
+            for run in usage_info["runs"]:
+                run_id = str(run.get("run_id") or run.get("_id") or run.get("runId") or "")
                 if run_id and run_id not in seen_run_ids:
                     matching_runs.append(run)
                     seen_run_ids.add(run_id)
@@ -160,9 +157,7 @@ def find_environment_usage(env_id: str) -> None:
         logging.info("\n===== Projects Using as Default Environment =====")
         if projects:
             for p in projects:
-                logging.info(
-                    f"Project _id={p.get('_id')} name={p.get('name', '')} ownerId={p.get('ownerId')}"
-                )
+                logging.info(f"Project _id={p.get('_id')} name={p.get('name', '')} ownerId={p.get('ownerId')}")
         else:
             logging.info("No projects found using this environment as overrideV2EnvironmentId.")
 
@@ -179,17 +174,14 @@ def find_environment_usage(env_id: str) -> None:
         if organizations:
             for org in organizations:
                 logging.info(
-                    f"Organization _id={org.get('_id')} name={org.get('name', '')} "
-                    f"defaultV2EnvironmentId={env_id}"
+                    f"Organization _id={org.get('_id')} name={org.get('name', '')} " f"defaultV2EnvironmentId={env_id}"
                 )
         else:
             logging.info("No organizations found using this environment as defaultV2EnvironmentId.")
 
         logging.info("\n===== Users With This as defaultEnvironmentId =====")
         if user_prefs:
-            logging.info(
-                f"Found {len(user_prefs)} userPreferences records with defaultEnvironmentId={env_id}"
-            )
+            logging.info(f"Found {len(user_prefs)} userPreferences records with defaultEnvironmentId={env_id}")
             for up in user_prefs:
                 logging.info(
                     "userPreferences _id=%s userId=%s",
@@ -197,9 +189,7 @@ def find_environment_usage(env_id: str) -> None:
                     up.get("userId"),
                 )
         else:
-            logging.info(
-                "No userPreferences documents found with defaultEnvironmentId pointing to this environment."
-            )
+            logging.info("No userPreferences documents found with defaultEnvironmentId pointing to this environment.")
 
         logging.info("\n===== App Versions Referencing Environment =====")
         if app_versions:
@@ -231,9 +221,7 @@ def find_environment_usage(env_id: str) -> None:
                 workspace_id = rec.get("workspace_id") or rec.get("workspaceId")
                 project_id = rec.get("project_id") or rec.get("projectId")
                 owner = rec.get("owner_username") or rec.get("user_name")
-                logging.info(
-                    f"Workspace workspace_id={workspace_id} project_id={project_id} owner={owner}"
-                )
+                logging.info(f"Workspace workspace_id={workspace_id} project_id={project_id} owner={owner}")
         else:
             logging.info("No workspace usage records found for this environment.")
 
@@ -244,9 +232,7 @@ def find_environment_usage(env_id: str) -> None:
                 run_id = rec.get("run_id") or rec.get("runId")
                 project_id = rec.get("project_id") or rec.get("projectId")
                 last_used = rec.get("last_used") or rec.get("completed") or rec.get("started")
-                logging.info(
-                    f"Run run_id={run_id} project_id={project_id} last_used={last_used}"
-                )
+                logging.info(f"Run run_id={run_id} project_id={project_id} last_used={last_used}")
             if len(matching_runs) > 50:
                 logging.info(
                     "Additional %d run records omitted from log (use JSON files for full details).",
@@ -279,4 +265,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

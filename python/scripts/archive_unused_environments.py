@@ -26,11 +26,11 @@ Usage examples:
 
 import argparse
 import sys
-
-from bson import ObjectId
 from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List
+
+from bson import ObjectId
 
 # Add parent directory to path for imports
 _parent_dir = Path(__file__).parent.parent.absolute()
@@ -42,7 +42,6 @@ from utils.config_manager import config_manager
 from utils.logging_utils import get_logger, setup_logging
 from utils.mongo_utils import get_mongo_client
 from utils.report_utils import save_json
-
 
 logger = get_logger(__name__)
 
@@ -71,41 +70,32 @@ Examples:
 
   # Custom output file
   python archive_unused_environments.py --output archive-unused-environments.json
-        """
+        """,
+    )
+
+    parser.add_argument("--output", help="Output file path (default: reports/archive-unused-environments.json)")
+
+    parser.add_argument(
+        "--apply", action="store_true", help="Actually mark environments as archived in MongoDB (default: dry-run)"
+    )
+
+    parser.add_argument("--force", action="store_true", help="Skip confirmation prompt when using --apply")
+
+    parser.add_argument(
+        "--generate-reports",
+        action="store_true",
+        help="Generate required metadata reports before analysis (reports are auto-generated if missing or stale)",
     )
 
     parser.add_argument(
-        '--output',
-        help='Output file path (default: reports/archive-unused-environments.json)'
-    )
-
-    parser.add_argument(
-        '--apply',
-        action='store_true',
-        help='Actually mark environments as archived in MongoDB (default: dry-run)'
-    )
-
-    parser.add_argument(
-        '--force',
-        action='store_true',
-        help='Skip confirmation prompt when using --apply'
-    )
-
-    parser.add_argument(
-        '--generate-reports',
-        action='store_true',
-        help='Generate required metadata reports before analysis (reports are auto-generated if missing or stale)'
-    )
-
-    parser.add_argument(
-        '--unused-since-days',
-        dest='days',
+        "--unused-since-days",
+        dest="days",
         type=int,
-        metavar='N',
+        metavar="N",
         help='Only consider environments as "in-use" if they were used in a run within the last N days. '
-             'If the last execution that used an environment was more than N days ago, it will be considered '
-             'unused and eligible for archiving. If omitted, any historical run marks the environment as in-use. '
-             'This filters based on the last_used, completed, or started timestamp from runs.'
+        "If the last execution that used an environment was more than N days ago, it will be considered "
+        "unused and eligible for archiving. If omitted, any historical run marks the environment as in-use. "
+        "This filters based on the last_used, completed, or started timestamp from runs.",
     )
 
     return parser.parse_args()
@@ -338,11 +328,10 @@ def main():
     except Exception as e:
         logger.error(f"\n❌ Operation failed: {e}")
         from utils.logging_utils import log_exception
+
         log_exception(logger, "Error in main", exc_info=e)
         sys.exit(1)
 
 
 if __name__ == "__main__":
     main()
-
-

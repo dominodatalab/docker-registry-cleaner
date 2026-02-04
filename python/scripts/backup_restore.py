@@ -37,19 +37,19 @@ Usage:
 """
 
 import argparse
-import boto3
 import hashlib
 import logging
 import os
 import re
 import sys
 import tempfile
-
-from botocore.config import Config
-from botocore.exceptions import ClientError
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
 
 # Add parent directory to path for imports
 _parent_dir = Path(__file__).parent.parent.absolute()
@@ -62,21 +62,24 @@ from utils.object_id_utils import read_typed_object_ids_from_file
 
 logger = get_logger(__name__)
 
+
 def parse_registry_and_repo(full_repo: str) -> Tuple[str, str]:
-    parts = full_repo.split('/')
+    parts = full_repo.split("/")
     registry = parts[0]
-    repository = '/'.join(parts[1:])
+    repository = "/".join(parts[1:])
     return registry, repository
+
 
 def get_s3_key(repository: str, tag: str) -> str:
     """Generate S3 key for an image tag."""
     return f"{repository.replace('/', '_')}/{tag}.tar"
 
+
 def cleanup_tmpdir(tmpdir: Optional[str], dry_run: bool) -> None:
     """Clean up any stale temporary files left from previous runs."""
     if not tmpdir or dry_run:
         return
-    
+
     try:
         for fname in os.listdir(tmpdir):
             if fname.startswith("tmp") or fname.startswith("docker-tarfile-blob"):
@@ -90,12 +93,14 @@ def cleanup_tmpdir(tmpdir: Optional[str], dry_run: bool) -> None:
     except Exception as list_err:
         logger.warning(f"Could not list tmpdir {tmpdir} for cleanup: {list_err}")
 
+
 def create_temp_tar_file(tmpdir: Optional[str]):
     """Create a temporary tar file with optional custom tmpdir."""
     tmp_kwargs = {"suffix": ".tar", "delete": False}
     if tmpdir:
         tmp_kwargs["dir"] = tmpdir
     return tempfile.NamedTemporaryFile(**tmp_kwargs)
+
 
 def cleanup_temp_file(filepath: str) -> None:
     """Remove a temporary file, logging any errors."""
@@ -104,19 +109,22 @@ def cleanup_temp_file(filepath: str) -> None:
     except Exception as rm_err:
         logger.warning(f"Could not remove temporary file {filepath}: {rm_err}")
 
+
 def record_failed_tag(tag: str, failed_tags_file: Optional[str]) -> None:
     """Record a failed tag to a file."""
     if not failed_tags_file:
         return
-    
+
     try:
         with open(failed_tags_file, "a") as f:
             f.write(f"{tag}\n")
     except Exception as fw_err:
         logger.warning(f"Could not record failed tag {tag} to {failed_tags_file}: {fw_err}")
 
+
 def get_ecr_client(region_name):
     return boto3.client("ecr", region_name=region_name)
+
 
 def get_s3_client(max_pool_connections: int = 20):
     """
@@ -143,14 +151,16 @@ def get_s3_client(max_pool_connections: int = 20):
     config = Config(max_pool_connections=max_pool_connections)
     return boto3.client("s3", config=config)
 
+
 def list_ecr_images(ecr_client, repository_name):
-    paginator = ecr_client.get_paginator('list_images')
-    page_iterator = paginator.paginate(repositoryName=repository_name, filter={'tagStatus': 'TAGGED'})
+    paginator = ecr_client.get_paginator("list_images")
+    page_iterator = paginator.paginate(repositoryName=repository_name, filter={"tagStatus": "TAGGED"})
     tags = []
     for page in page_iterator:
-        for image in page['imageIds']:
-            tags.append(image['imageTag'])
+        for image in page["imageIds"]:
+            tags.append(image["imageTag"])
     return tags
+
 
 def filter_tags(tags, prefix, exclude_latest=True, min_age_days=None):
     versioned_tags = []
@@ -165,9 +175,10 @@ def filter_tags(tags, prefix, exclude_latest=True, min_age_days=None):
         versioned_tags = versioned_tags[:-1]
     return [tag for _, tag in versioned_tags]
 
-def calculate_checksum(file_path, algo='sha256'):
+
+def calculate_checksum(file_path, algo="sha256"):
     h = hashlib.new(algo)
-    with open(file_path, 'rb') as f:
+    with open(file_path, "rb") as f:
         while True:
             chunk = f.read(8192)
             if not chunk:
@@ -175,8 +186,10 @@ def calculate_checksum(file_path, algo='sha256'):
             h.update(chunk)
     return h.hexdigest()
 
+
 def upload_to_s3(s3_client, bucket, key, file_path):
     s3_client.upload_file(file_path, bucket, key)
+
 
 def s3_checksum_exists(s3_client, bucket, key):
     try:
@@ -185,11 +198,12 @@ def s3_checksum_exists(s3_client, bucket, key):
     except ClientError as e:
         # Treat 404 and 403 as "does not exist"/not accessible so that backup/restore
         # proceeds.  Many bucket policies require additional permissions for HeadObject.
-        code = e.response.get('Error', {}).get('Code')
-        if code in ('404', '403', 'NoSuchKey', 'AccessDenied'):
+        code = e.response.get("Error", {}).get("Code")
+        if code in ("404", "403", "NoSuchKey", "AccessDenied"):
             return False
         logger.error(f"Error checking s3 object {key}: {e}")
         return False
+
 
 def s3_checksum_matches(s3_client, bucket, key, local_checksum):
     try:
@@ -201,6 +215,7 @@ def s3_checksum_matches(s3_client, bucket, key, local_checksum):
     except ClientError as e:
         logger.error(f"S3 download/checksum failed for {key}: {e}")
         return False
+
 
 def skopeo_copy_to_tar(
     skopeo_client: SkopeoClient,
@@ -225,10 +240,12 @@ def skopeo_copy_to_tar(
     args = ["--all"]
     if tmpdir:
         args.extend(["--tmpdir", tmpdir])
-    args.extend([
-        f"docker://{image}",
-        f"docker-archive:{output_path}",
-    ])
+    args.extend(
+        [
+            f"docker://{image}",
+            f"docker-archive:{output_path}",
+        ]
+    )
     skopeo_client.run_skopeo_command("copy", args)
 
 
@@ -272,7 +289,7 @@ def restore_images(
     cleanup_tmpdir(tmpdir, dry_run)
 
     # SkopeoClient handles authentication automatically
-    
+
     for tag in tags:
         s3_key = get_s3_key(repository, tag)
         image = f"{registry}/{repository}:{tag}"
@@ -305,10 +322,12 @@ def restore_images(
                     args = ["--all"]
                     if tmpdir:
                         args.extend(["--tmpdir", tmpdir])
-                    args.extend([
-                        f"docker-archive:{tmp_file.name}",
-                        f"docker://{image}",
-                    ])
+                    args.extend(
+                        [
+                            f"docker-archive:{tmp_file.name}",
+                            f"docker://{image}",
+                        ]
+                    )
                     skopeo_client.run_skopeo_command("copy", args)
                     logger.info(f"✅ Restored {image}")
             finally:
@@ -316,6 +335,7 @@ def restore_images(
         except Exception as ex:
             logger.error(f"❌ Failed to restore {image}: {ex}")
             record_failed_tag(tag, failed_tags_file)
+
 
 def process_backup(
     skopeo_client: SkopeoClient,
@@ -342,7 +362,7 @@ def process_backup(
 
     When ``workers`` is greater than 1, multiple tags are processed concurrently
     using a thread pool.
-    
+
     Parameters
     ----------
     skopeo_client : SkopeoClient
@@ -431,6 +451,7 @@ def process_backup(
     if workers and workers > 1:
         try:
             from concurrent.futures import ThreadPoolExecutor, as_completed
+
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = [executor.submit(process_single_tag, t) for t in tags]
                 for fut in as_completed(futures):
@@ -445,6 +466,7 @@ def process_backup(
     else:
         for t in tags:
             process_single_tag(t)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -461,7 +483,9 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Simulate operations")
     parser.add_argument("--min-age-days", type=int, help="Skip tags younger than this")
     parser.add_argument("--delete", action="store_true", help="Delete image from registry after successful backup")
-    parser.add_argument("--workers", type=int, default=1, help="Number of concurrent workers for processing tags (default: 1)")
+    parser.add_argument(
+        "--workers", type=int, default=1, help="Number of concurrent workers for processing tags (default: 1)"
+    )
     parser.add_argument(
         "--tmpdir",
         help=(
@@ -520,7 +544,7 @@ def main():
     if args.log_file:
         try:
             file_handler = logging.FileHandler(args.log_file)
-            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
             logger.logger.addHandler(file_handler)
         except Exception as log_err:
             logger.warning(f"Unable to set up log file {args.log_file}: {log_err}")
@@ -621,20 +645,17 @@ def main():
             _, repo = parse_registry_and_repo(full_repo)
             all_tags = list_ecr_images(get_ecr_client(args.region), repo)
             delete_tags = filter_tags(all_tags, args.prefix, exclude_latest=True)
-    
+
         if not delete_tags:
             logger.warning("No tags to delete. Skipping delete operation.")
             return
-    
+
         ecr = get_ecr_client(args.region)
         for tag in delete_tags:
             image = f"{full_repo}:{tag}"
             try:
                 if not args.dry_run:
-                    ecr.batch_delete_image(
-                        repositoryName=repo,
-                        imageIds=[{"imageTag": tag}]
-                    )
+                    ecr.batch_delete_image(repositoryName=repo, imageIds=[{"imageTag": tag}])
                 logger.info(f"🗑️  {'(dry-run) would delete' if args.dry_run else 'Deleted'} {image}")
             except Exception as e:
                 logger.error(f"❌ Failed to delete {image}: {e}")

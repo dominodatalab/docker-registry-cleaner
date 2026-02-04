@@ -8,58 +8,57 @@ These tests verify the Kubernetes-related functionality:
 - Registry deletion mode management
 """
 
-import pytest
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
+import pytest
 
 # ============================================================================
 # Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def mock_k8s_clients(mocker):
     """Fixture providing mocked Kubernetes clients."""
     mock_core_v1 = MagicMock()
     mock_apps_v1 = MagicMock()
-    mocker.patch(
-        'utils.config_manager._get_kubernetes_clients',
-        return_value=(mock_core_v1, mock_apps_v1)
-    )
+    mocker.patch("utils.config_manager._get_kubernetes_clients", return_value=(mock_core_v1, mock_apps_v1))
     return mock_core_v1, mock_apps_v1
 
 
 @pytest.fixture
 def mock_config_manager(mocker):
     """Fixture providing mocked config_manager."""
-    mock = mocker.patch('utils.health_checks.config_manager')
-    mock.get_domino_platform_namespace.return_value = 'domino-platform'
-    mock.get_registry_url.return_value = 'docker-registry.domino-platform.svc.cluster.local:5000'
-    mock.get_repository.return_value = 'dominodatalab'
-    mock.get_mongo_host.return_value = 'localhost'
+    mock = mocker.patch("utils.health_checks.config_manager")
+    mock.get_domino_platform_namespace.return_value = "domino-platform"
+    mock.get_registry_url.return_value = "docker-registry.domino-platform.svc.cluster.local:5000"
+    mock.get_repository.return_value = "dominodatalab"
+    mock.get_mongo_host.return_value = "localhost"
     mock.get_mongo_port.return_value = 27017
-    mock.get_mongo_db.return_value = 'domino'
+    mock.get_mongo_db.return_value = "domino"
     mock.get_s3_bucket.return_value = None
-    mock.get_s3_region.return_value = 'us-east-1'
+    mock.get_s3_region.return_value = "us-east-1"
     return mock
 
 
 @pytest.fixture
 def mock_in_cluster_registry(mocker):
     """Fixture that mocks registry as in-cluster."""
-    mocker.patch('utils.health_checks.is_registry_in_cluster', return_value=True)
-    mocker.patch('utils.registry_maintenance.is_registry_in_cluster', return_value=True)
+    mocker.patch("utils.health_checks.is_registry_in_cluster", return_value=True)
+    mocker.patch("utils.registry_maintenance.is_registry_in_cluster", return_value=True)
 
 
 @pytest.fixture
 def mock_external_registry(mocker):
     """Fixture that mocks registry as external (ECR, etc.)."""
-    mocker.patch('utils.health_checks.is_registry_in_cluster', return_value=False)
-    mocker.patch('utils.registry_maintenance.is_registry_in_cluster', return_value=False)
+    mocker.patch("utils.health_checks.is_registry_in_cluster", return_value=False)
+    mocker.patch("utils.registry_maintenance.is_registry_in_cluster", return_value=False)
 
 
 # ============================================================================
 # Tests: is_registry_in_cluster()
 # ============================================================================
+
 
 class TestIsRegistryInCluster:
     """Tests for the is_registry_in_cluster() function."""
@@ -69,37 +68,28 @@ class TestIsRegistryInCluster:
         from utils.config_manager import is_registry_in_cluster
 
         # Mock the K8s API call to avoid actual cluster access
-        mocker.patch('utils.config_manager._get_kubernetes_clients', side_effect=Exception("No cluster"))
+        mocker.patch("utils.config_manager._get_kubernetes_clients", side_effect=Exception("No cluster"))
 
         # ECR URLs should return False without even checking K8s
-        result = is_registry_in_cluster(
-            "123456789.dkr.ecr.us-east-1.amazonaws.com",
-            "domino-platform"
-        )
+        result = is_registry_in_cluster("123456789.dkr.ecr.us-east-1.amazonaws.com", "domino-platform")
         assert result is False
 
     def test_gcr_registry_returns_false(self, mocker):
         """GCR registries should be detected as external."""
         from utils.config_manager import is_registry_in_cluster
 
-        mocker.patch('utils.config_manager._get_kubernetes_clients', side_effect=Exception("No cluster"))
+        mocker.patch("utils.config_manager._get_kubernetes_clients", side_effect=Exception("No cluster"))
 
-        result = is_registry_in_cluster(
-            "gcr.io/my-project/my-repo",
-            "domino-platform"
-        )
+        result = is_registry_in_cluster("gcr.io/my-project/my-repo", "domino-platform")
         assert result is False
 
     def test_acr_registry_returns_false(self, mocker):
         """Azure Container Registry should be detected as external."""
         from utils.config_manager import is_registry_in_cluster
 
-        mocker.patch('utils.config_manager._get_kubernetes_clients', side_effect=Exception("No cluster"))
+        mocker.patch("utils.config_manager._get_kubernetes_clients", side_effect=Exception("No cluster"))
 
-        result = is_registry_in_cluster(
-            "myregistry.azurecr.io",
-            "domino-platform"
-        )
+        result = is_registry_in_cluster("myregistry.azurecr.io", "domino-platform")
         assert result is False
 
     def test_in_cluster_registry_with_statefulset_returns_true(self, mocker):
@@ -108,45 +98,35 @@ class TestIsRegistryInCluster:
 
         mock_core_v1 = MagicMock()
         mock_apps_v1 = MagicMock()
-        mocker.patch(
-            'utils.config_manager._get_kubernetes_clients',
-            return_value=(mock_core_v1, mock_apps_v1)
-        )
+        mocker.patch("utils.config_manager._get_kubernetes_clients", return_value=(mock_core_v1, mock_apps_v1))
 
         # Mock successful StatefulSet read
         mock_apps_v1.read_namespaced_stateful_set.return_value = Mock()
 
-        result = is_registry_in_cluster(
-            "docker-registry.domino-platform.svc.cluster.local:5000",
-            "domino-platform"
-        )
+        result = is_registry_in_cluster("docker-registry.domino-platform.svc.cluster.local:5000", "domino-platform")
         assert result is True
 
     def test_in_cluster_registry_without_statefulset_returns_false(self, mocker):
         """In-cluster URL but no StatefulSet should return False."""
-        from utils.config_manager import is_registry_in_cluster
         from kubernetes.client.rest import ApiException
+
+        from utils.config_manager import is_registry_in_cluster
 
         mock_core_v1 = MagicMock()
         mock_apps_v1 = MagicMock()
-        mocker.patch(
-            'utils.config_manager._get_kubernetes_clients',
-            return_value=(mock_core_v1, mock_apps_v1)
-        )
+        mocker.patch("utils.config_manager._get_kubernetes_clients", return_value=(mock_core_v1, mock_apps_v1))
 
         # Mock 404 - StatefulSet not found
         mock_apps_v1.read_namespaced_stateful_set.side_effect = ApiException(status=404)
 
-        result = is_registry_in_cluster(
-            "docker-registry.domino-platform.svc.cluster.local:5000",
-            "domino-platform"
-        )
+        result = is_registry_in_cluster("docker-registry.domino-platform.svc.cluster.local:5000", "domino-platform")
         assert result is False
 
 
 # ============================================================================
 # Tests: HealthChecker.check_kubernetes_access()
 # ============================================================================
+
 
 class TestHealthCheckerKubernetesAccess:
     """Tests for HealthChecker.check_kubernetes_access()."""
@@ -156,12 +136,12 @@ class TestHealthCheckerKubernetesAccess:
         from utils.health_checks import HealthChecker
 
         # Mock K8s config loading
-        mocker.patch('utils.health_checks.load_incluster_config')
+        mocker.patch("utils.health_checks.load_incluster_config")
 
         # Mock CoreV1Api
         mock_core_v1 = MagicMock()
         mock_core_v1.read_namespace.return_value = Mock()
-        mocker.patch('utils.health_checks.k8s_client.CoreV1Api', return_value=mock_core_v1)
+        mocker.patch("utils.health_checks.k8s_client.CoreV1Api", return_value=mock_core_v1)
 
         checker = HealthChecker()
         result = checker.check_kubernetes_access()
@@ -172,16 +152,17 @@ class TestHealthCheckerKubernetesAccess:
 
     def test_kubernetes_access_forbidden(self, mocker, mock_config_manager):
         """Test handling of 403 Forbidden errors."""
-        from utils.health_checks import HealthChecker
         from kubernetes.client.rest import ApiException
 
+        from utils.health_checks import HealthChecker
+
         # Mock K8s config loading
-        mocker.patch('utils.health_checks.load_incluster_config')
+        mocker.patch("utils.health_checks.load_incluster_config")
 
         # Mock CoreV1Api with 403 error
         mock_core_v1 = MagicMock()
         mock_core_v1.read_namespace.side_effect = ApiException(status=403, reason="Forbidden")
-        mocker.patch('utils.health_checks.k8s_client.CoreV1Api', return_value=mock_core_v1)
+        mocker.patch("utils.health_checks.k8s_client.CoreV1Api", return_value=mock_core_v1)
 
         checker = HealthChecker()
         result = checker.check_kubernetes_access()
@@ -194,8 +175,8 @@ class TestHealthCheckerKubernetesAccess:
         from utils.health_checks import HealthChecker
 
         # Mock import error
-        mocker.patch('utils.health_checks.load_incluster_config', side_effect=ImportError())
-        mocker.patch('utils.health_checks.load_kube_config', side_effect=ImportError())
+        mocker.patch("utils.health_checks.load_incluster_config", side_effect=ImportError())
+        mocker.patch("utils.health_checks.load_kube_config", side_effect=ImportError())
 
         checker = HealthChecker()
         result = checker.check_kubernetes_access()
@@ -207,6 +188,7 @@ class TestHealthCheckerKubernetesAccess:
 # ============================================================================
 # Tests: HealthChecker.check_registry_deletion_rbac()
 # ============================================================================
+
 
 class TestHealthCheckerRegistryDeletionRBAC:
     """Tests for HealthChecker.check_registry_deletion_rbac()."""
@@ -227,10 +209,7 @@ class TestHealthCheckerRegistryDeletionRBAC:
 
         mock_core_v1 = MagicMock()
         mock_apps_v1 = MagicMock()
-        mocker.patch(
-            'utils.health_checks._get_kubernetes_clients',
-            return_value=(mock_core_v1, mock_apps_v1)
-        )
+        mocker.patch("utils.health_checks._get_kubernetes_clients", return_value=(mock_core_v1, mock_apps_v1))
 
         # Mock successful dry-run patch
         mock_apps_v1.patch_namespaced_stateful_set.return_value = Mock()
@@ -244,15 +223,13 @@ class TestHealthCheckerRegistryDeletionRBAC:
 
     def test_rbac_forbidden_error(self, mocker, mock_config_manager, mock_in_cluster_registry):
         """Test handling of 403 Forbidden when patching StatefulSet."""
-        from utils.health_checks import HealthChecker
         from kubernetes.client.rest import ApiException
+
+        from utils.health_checks import HealthChecker
 
         mock_core_v1 = MagicMock()
         mock_apps_v1 = MagicMock()
-        mocker.patch(
-            'utils.health_checks._get_kubernetes_clients',
-            return_value=(mock_core_v1, mock_apps_v1)
-        )
+        mocker.patch("utils.health_checks._get_kubernetes_clients", return_value=(mock_core_v1, mock_apps_v1))
 
         # Mock 403 Forbidden error
         mock_apps_v1.patch_namespaced_stateful_set.side_effect = ApiException(status=403, reason="Forbidden")
@@ -268,6 +245,7 @@ class TestHealthCheckerRegistryDeletionRBAC:
 # Tests: run_registry_garbage_collection()
 # ============================================================================
 
+
 class TestRegistryGarbageCollection:
     """Tests for run_registry_garbage_collection()."""
 
@@ -275,7 +253,7 @@ class TestRegistryGarbageCollection:
         """GC should be skipped for external registries."""
         from utils.registry_maintenance import run_registry_garbage_collection
 
-        mocker.patch('utils.registry_maintenance.config_manager')
+        mocker.patch("utils.registry_maintenance.config_manager")
 
         result = run_registry_garbage_collection()
 
@@ -287,17 +265,14 @@ class TestRegistryGarbageCollection:
         from utils.registry_maintenance import run_registry_garbage_collection
 
         # Mock config_manager
-        mock_config = mocker.patch('utils.registry_maintenance.config_manager')
-        mock_config.get_domino_platform_namespace.return_value = 'domino-platform'
-        mock_config.get_registry_url.return_value = 'docker-registry:5000'
+        mock_config = mocker.patch("utils.registry_maintenance.config_manager")
+        mock_config.get_domino_platform_namespace.return_value = "domino-platform"
+        mock_config.get_registry_url.return_value = "docker-registry:5000"
 
         # Mock K8s clients
         mock_core_v1 = MagicMock()
         mock_apps_v1 = MagicMock()
-        mocker.patch(
-            'utils.registry_maintenance._get_kubernetes_clients',
-            return_value=(mock_core_v1, mock_apps_v1)
-        )
+        mocker.patch("utils.registry_maintenance._get_kubernetes_clients", return_value=(mock_core_v1, mock_apps_v1))
 
         # Mock StatefulSet lookup
         mock_sts = Mock()
@@ -328,17 +303,14 @@ class TestRegistryGarbageCollection:
         from utils.registry_maintenance import run_registry_garbage_collection
 
         # Mock config_manager
-        mock_config = mocker.patch('utils.registry_maintenance.config_manager')
-        mock_config.get_domino_platform_namespace.return_value = 'domino-platform'
-        mock_config.get_registry_url.return_value = 'docker-registry:5000'
+        mock_config = mocker.patch("utils.registry_maintenance.config_manager")
+        mock_config.get_domino_platform_namespace.return_value = "domino-platform"
+        mock_config.get_registry_url.return_value = "docker-registry:5000"
 
         # Mock K8s clients
         mock_core_v1 = MagicMock()
         mock_apps_v1 = MagicMock()
-        mocker.patch(
-            'utils.registry_maintenance._get_kubernetes_clients',
-            return_value=(mock_core_v1, mock_apps_v1)
-        )
+        mocker.patch("utils.registry_maintenance._get_kubernetes_clients", return_value=(mock_core_v1, mock_apps_v1))
 
         # Mock StatefulSet lookup
         mock_sts = Mock()
@@ -354,21 +326,19 @@ class TestRegistryGarbageCollection:
 
     def test_gc_fails_when_statefulset_not_found(self, mocker, mock_in_cluster_registry):
         """Test that GC fails gracefully when StatefulSet is not found."""
-        from utils.registry_maintenance import run_registry_garbage_collection
         from kubernetes.client.rest import ApiException
 
+        from utils.registry_maintenance import run_registry_garbage_collection
+
         # Mock config_manager
-        mock_config = mocker.patch('utils.registry_maintenance.config_manager')
-        mock_config.get_domino_platform_namespace.return_value = 'domino-platform'
-        mock_config.get_registry_url.return_value = 'docker-registry:5000'
+        mock_config = mocker.patch("utils.registry_maintenance.config_manager")
+        mock_config.get_domino_platform_namespace.return_value = "domino-platform"
+        mock_config.get_registry_url.return_value = "docker-registry:5000"
 
         # Mock K8s clients
         mock_core_v1 = MagicMock()
         mock_apps_v1 = MagicMock()
-        mocker.patch(
-            'utils.registry_maintenance._get_kubernetes_clients',
-            return_value=(mock_core_v1, mock_apps_v1)
-        )
+        mocker.patch("utils.registry_maintenance._get_kubernetes_clients", return_value=(mock_core_v1, mock_apps_v1))
 
         # Mock StatefulSet not found
         mock_apps_v1.read_namespaced_stateful_set.side_effect = ApiException(status=404)
@@ -382,6 +352,7 @@ class TestRegistryGarbageCollection:
 # Tests: HealthChecker.run_all_checks()
 # ============================================================================
 
+
 class TestHealthCheckerRunAllChecks:
     """Tests for HealthChecker.run_all_checks()."""
 
@@ -391,12 +362,12 @@ class TestHealthCheckerRunAllChecks:
 
         # Mock all the individual checks to return success
         checker = HealthChecker()
-        mocker.patch.object(checker, 'check_configuration', return_value=Mock(status=True, name='configuration'))
-        mocker.patch.object(checker, 'check_registry_connectivity', return_value=Mock(status=True, name='registry'))
-        mocker.patch.object(checker, 'check_mongodb_connectivity', return_value=Mock(status=True, name='mongodb'))
-        mocker.patch.object(checker, 'check_kubernetes_access', return_value=Mock(status=True, name='kubernetes'))
-        mocker.patch.object(checker, 'check_registry_deletion_rbac', return_value=Mock(status=True, name='rbac'))
-        mocker.patch.object(checker, 'check_s3_access', return_value=Mock(status=True, name='s3'))
+        mocker.patch.object(checker, "check_configuration", return_value=Mock(status=True, name="configuration"))
+        mocker.patch.object(checker, "check_registry_connectivity", return_value=Mock(status=True, name="registry"))
+        mocker.patch.object(checker, "check_mongodb_connectivity", return_value=Mock(status=True, name="mongodb"))
+        mocker.patch.object(checker, "check_kubernetes_access", return_value=Mock(status=True, name="kubernetes"))
+        mocker.patch.object(checker, "check_registry_deletion_rbac", return_value=Mock(status=True, name="rbac"))
+        mocker.patch.object(checker, "check_s3_access", return_value=Mock(status=True, name="s3"))
 
         results = checker.run_all_checks()
 
@@ -408,12 +379,12 @@ class TestHealthCheckerRunAllChecks:
         from utils.health_checks import HealthChecker
 
         checker = HealthChecker()
-        mocker.patch.object(checker, 'check_configuration', return_value=Mock(status=True, name='configuration'))
-        mocker.patch.object(checker, 'check_registry_connectivity', return_value=Mock(status=True, name='registry'))
-        mocker.patch.object(checker, 'check_mongodb_connectivity', return_value=Mock(status=True, name='mongodb'))
-        mock_k8s = mocker.patch.object(checker, 'check_kubernetes_access')
-        mock_rbac = mocker.patch.object(checker, 'check_registry_deletion_rbac')
-        mock_s3 = mocker.patch.object(checker, 'check_s3_access')
+        mocker.patch.object(checker, "check_configuration", return_value=Mock(status=True, name="configuration"))
+        mocker.patch.object(checker, "check_registry_connectivity", return_value=Mock(status=True, name="registry"))
+        mocker.patch.object(checker, "check_mongodb_connectivity", return_value=Mock(status=True, name="mongodb"))
+        mock_k8s = mocker.patch.object(checker, "check_kubernetes_access")
+        mock_rbac = mocker.patch.object(checker, "check_registry_deletion_rbac")
+        mock_s3 = mocker.patch.object(checker, "check_s3_access")
 
         results = checker.run_all_checks(skip_optional=True)
 

@@ -9,9 +9,9 @@ such as ECR perform their own garbage collection and do not need this.
 import argparse
 import sys
 
-from utils.logging_utils import setup_logging, get_logger
-from utils.registry_maintenance import run_registry_garbage_collection
 from utils.config_manager import config_manager
+from utils.logging_utils import get_logger, setup_logging
+from utils.registry_maintenance import run_registry_garbage_collection
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -66,4 +66,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

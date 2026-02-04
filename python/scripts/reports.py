@@ -16,7 +16,7 @@ Workflow:
 Usage examples:
   # Generate report (auto-generates metadata if missing)
   python reports.py
-  
+
   # Force regeneration of metadata reports
   python reports.py --generate-reports
 """
@@ -24,7 +24,6 @@ Usage examples:
 import argparse
 import json
 import sys
-
 from pathlib import Path
 from typing import Dict
 
@@ -49,16 +48,16 @@ def generate_required_reports() -> None:
 
 def load_metadata_files() -> tuple:
     """Load metadata files.
-    
+
     Supports both timestamped and non-timestamped report files.
     If exact file doesn't exist, finds the most recent timestamped version.
     """
     from utils.report_utils import get_latest_report, get_reports_dir
-    
+
     # Load tag sums
     tag_sums_path = config_manager.get_tag_sums_path()
     tag_sums_file = Path(tag_sums_path)
-    
+
     # If exact file doesn't exist, try to find latest timestamped version
     if not tag_sums_file.exists():
         reports_dir = get_reports_dir()
@@ -69,27 +68,28 @@ def load_metadata_files() -> tuple:
         if latest:
             tag_sums_file = latest
             logger.info(f"Using latest timestamped report: {tag_sums_file.name}")
-    
+
     if not tag_sums_file.exists():
         logger.error(f"Tag sums file not found: {tag_sums_path}")
         raise FileNotFoundError(f"Tag sums file not found: {tag_sums_path}")
-    
+
     with open(tag_sums_file) as f:
         tag_data = json.load(f)
     logger.info(f"Loaded {len(tag_data)} tags from tag sums")
-    
+
     # Load MongoDB usage reports from consolidated file
     from utils.image_usage import ImageUsageService
+
     service = ImageUsageService()
     reports = service.load_usage_reports()
-    
+
     # Convert to JSON strings for compatibility with existing analyze_tag_usage function
-    workspace_data = json.dumps(reports.get('workspaces', []))
-    model_data = json.dumps(reports.get('models', []))
-    
+    workspace_data = json.dumps(reports.get("workspaces", []))
+    model_data = json.dumps(reports.get("models", []))
+
     logger.info(f"Loaded {len(reports.get('workspaces', []))} workspace environment records")
     logger.info(f"Loaded {len(reports.get('models', []))} model environment records")
-    
+
     return tag_data, workspace_data, model_data
 
 
@@ -99,10 +99,10 @@ def analyze_tag_usage(tag_data: Dict, workspace_data: str, model_data: str) -> N
     unused_tags = []
     workspace_tags = []
     model_tags = []
-    
+
     logger.info("\nAnalyzing tag usage...")
     logger.info("=" * 60)
-    
+
     for key in tag_data.keys():
         if key in workspace_data:
             workspace_tags.append(key)
@@ -116,7 +116,7 @@ def analyze_tag_usage(tag_data: Dict, workspace_data: str, model_data: str) -> N
             total_size += size
             unused_tags.append((key, size, human_readable_size))
             logger.info(f"✗ {key} - {human_readable_size} (unused)")
-    
+
     # Print summary
     logger.info("\n" + "=" * 60)
     logger.info("   TAG USAGE SUMMARY")
@@ -125,12 +125,12 @@ def analyze_tag_usage(tag_data: Dict, workspace_data: str, model_data: str) -> N
     logger.info(f"Tags in use by workspaces: {len(workspace_tags)}")
     logger.info(f"Tags in use by models: {len(model_tags)}")
     logger.info(f"Unused tags: {len(unused_tags)}")
-    
+
     human_readable_total_size = sizeof_fmt(total_size)
     logger.info("\n" + "=" * 60)
     logger.info(f"💾 You could free up {human_readable_total_size} by deleting unused Docker tags.")
     logger.info("=" * 60)
-    
+
     if unused_tags:
         logger.info("\nUnused tags details:")
         for tag, size, human_size in sorted(unused_tags, key=lambda x: x[1], reverse=True):
@@ -149,15 +149,15 @@ Examples:
   
   # Force regeneration of metadata reports
   python reports.py --generate-reports
-        """
+        """,
     )
-    
+
     parser.add_argument(
-        '--generate-reports',
-        action='store_true',
-        help='Generate required metadata reports (extract_metadata) before analysis'
+        "--generate-reports",
+        action="store_true",
+        help="Generate required metadata reports (extract_metadata) before analysis",
     )
-    
+
     return parser.parse_args()
 
 
@@ -165,42 +165,46 @@ def main():
     """Main function"""
     setup_logging()
     args = parse_arguments()
-    
+
     try:
         logger.info("=" * 60)
         logger.info("   Docker Registry Tag Usage Report")
         logger.info("=" * 60)
-        
+
         # Check if metadata reports need to be generated
         # Use is_report_fresh which handles timestamped reports
         from utils.report_utils import is_report_fresh
-        tag_sums_exists = is_report_fresh('tag-sums.json')
-        mongodb_usage_exists = is_report_fresh('mongodb_usage_report.json')
+
+        tag_sums_exists = is_report_fresh("tag-sums.json")
+        mongodb_usage_exists = is_report_fresh("mongodb_usage_report.json")
         reports_exist = tag_sums_exists and mongodb_usage_exists
-        
+
         # Generate reports if requested or if they don't exist
         if args.generate_reports or not reports_exist:
             if not reports_exist:
                 logger.info("Required metadata reports not found. Generating them now...")
             generate_required_reports()
-        
+
         # Load metadata files
         tag_data, workspace_data, model_data = load_metadata_files()
-        
+
         # Analyze and report
         analyze_tag_usage(tag_data, workspace_data, model_data)
-        
+
         logger.info("\n✅ Report generation completed successfully!")
-        
+
     except FileNotFoundError as e:
         logger.error(f"\n❌ Missing required file: {e}")
         import sys
+
         sys.exit(1)
     except Exception as e:
         logger.error(f"\n❌ Report generation failed: {e}")
         from utils.logging_utils import log_exception
+
         log_exception(logger, "Error in main", exc_info=e)
         import sys
+
         sys.exit(1)
 
 

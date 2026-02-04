@@ -13,7 +13,6 @@ information from various MongoDB collections in Domino:
 
 import argparse
 import sys
-
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -32,449 +31,782 @@ Pipeline = List[PipelineStage]
 
 
 def model_env_usage_pipeline() -> Pipeline:
-	"""Generate aggregation pipeline for model environment usage.
+    """Generate aggregation pipeline for model environment usage.
 
-	Extracts active model versions and their environment/revision information,
-	including base environment Docker tags.
+    Extracts active model versions and their environment/revision information,
+    including base environment Docker tags.
 
-	Returns:
-		MongoDB aggregation pipeline stages
-	"""
-	return [
-		{"$match": {"isArchived": False}},
-		{"$project": {
-			"model_id": "$_id",
-			"model_name": "$name",
-			"model_created_id": "$metadata.createdBy",
-			"model_last_change": "$metadata.lastModified",
-			"model_environment_id": "$environmentId",
-			"collaboratorSettings": {"$first": {"$filter": {"input": "$collaboratorSettings", "as": "item", "cond": {"$eq": ["$$item.role", "Owner"]}}}}
-		}},
-		{"$lookup": {"from": "users", "localField": "collaboratorSettings.collaboratorId", "foreignField": "_id", "as": "user_id"}},
-		{"$lookup": {"from": "users", "localField": "model_created_id", "foreignField": "_id", "as": "created_id"}},
-		{"$lookup": {"from": "environments_v2", "localField": "model_environment_id", "foreignField": "_id", "as": "environment_id"}},
-		{"$lookup": {"from": "model_versions", "localField": "_id", "foreignField": "modelId.value", "as": "model_versions_id"}},
-		{"$unwind": "$model_versions_id"},
-		{"$lookup": {"from": "sagas", "localField": "model_versions_id._id", "foreignField": "parameters.modelVersionId", "as": "sagas_id"}},
-		{"$unwind": "$sagas_id"},
-		{"$sort": {"sagas_id.started": -1}},
-		{"$match": {"sagas_id.sagaName": {"$in": ["ModelVersionDeployment", "StartModelVersion", "StopModelVersion"]}, "sagas_id.state": {"$in": ["slug-build-succeeded", "succeeded"]}, "sagas_id.isCompleted": {"$eq": True}}},
-		{"$lookup": {"from": "environment_revisions", "localField": "model_versions_id.environmentRevisionId", "foreignField": "_id", "as": "environment_revisions_id"}},
-		{"$project": {
-			"model_id": "$model_id",
-			"model_name": 1,
-			"model_last_change": 1,
-			"model_owner": {"$first": "$user_id.fullName"},
-			"model_created_by": {"$first": "$created_id.fullName"},
-			"environment_name": {"$first": "$environment_id.name"},
-			"environment_id": "$model_environment_id",
-			"model_version_id": "$model_versions_id._id",
-			"model_environment_repository": {"$first": "$model_versions_id.metadata.builds.slug.image.repository"},
-			"model_environment_tag": {"$first": "$model_versions_id.metadata.builds.slug.image.tag"},
-			"base_environment_repository": {"$first": "$environment_revisions_id.metadata.dockerImageName.repository"},
-			"base_environment_tag": {"$first": "$environment_revisions_id.metadata.dockerImageName.tag"},
-			"environment_revision_id": "$model_versions_id.environmentRevisionId",
-			"saga_name": "$sagas_id.sagaName"
-		}},
-		{"$group": {
-			"_id": "$model_version_id",
-			"saga_status": {"$push": "$saga_name"},
-			"model_id": {"$first": "$model_id"},
-			"model_name": {"$first": "$model_name"},
-			"model_last_change": {"$first": "$model_last_change"},
-			"model_owner": {"$first": "$model_owner"},
-			"model_created_by": {"$first": "$model_created_by"},
-			"environment_name": {"$first": "$environment_name"},
-			"environment_id": {"$first": "$environment_id"},
-			"environment_revision_id": {"$first": "$environment_revision_id"},
-			"model_version_id": {"$first": "$model_version_id"},
-			"model_environment_repository": {"$first": "$model_environment_repository"},
-			"model_environment_tag": {"$first": "$model_environment_tag"},
-			"base_environment_repository": {"$first": "$base_environment_repository"},
-			"base_environment_tag": {"$first": "$base_environment_tag"}
-		}},
-		{"$match": {"saga_status.0": {"$eq": "StartModelVersion"}}},
-		{"$project": {"saga_status": 0}},
-		{"$group": {
-			"_id": "$model_id",
-			"model_id": {"$first": "$model_id"},
-			"model_name": {"$first": "$model_name"},
-			"model_last_change": {"$first": "$model_last_change"},
-			"model_owner": {"$first": "$model_owner"},
-			"model_created_by": {"$first": "$model_created_by"},
-			"environment_name": {"$first": "$environment_name"},
-			"environment_id": {"$first": "$environment_id"},
-			"model_active_versions": {"$push": {
-				"environment_revision_id": "$environment_revision_id",
-				"model_version_id": "$model_version_id",
-				"model_environment_repository": "$model_environment_repository",
-				"model_environment_tag": "$model_environment_tag",
-				"base_environment_repository": "$base_environment_repository",
-				"base_environment_tag": "$base_environment_tag"
-			}}
-		}}
-	]
+    Returns:
+            MongoDB aggregation pipeline stages
+    """
+    return [
+        {"$match": {"isArchived": False}},
+        {
+            "$project": {
+                "model_id": "$_id",
+                "model_name": "$name",
+                "model_created_id": "$metadata.createdBy",
+                "model_last_change": "$metadata.lastModified",
+                "model_environment_id": "$environmentId",
+                "collaboratorSettings": {
+                    "$first": {
+                        "$filter": {
+                            "input": "$collaboratorSettings",
+                            "as": "item",
+                            "cond": {"$eq": ["$$item.role", "Owner"]},
+                        }
+                    }
+                },
+            }
+        },
+        {
+            "$lookup": {
+                "from": "users",
+                "localField": "collaboratorSettings.collaboratorId",
+                "foreignField": "_id",
+                "as": "user_id",
+            }
+        },
+        {"$lookup": {"from": "users", "localField": "model_created_id", "foreignField": "_id", "as": "created_id"}},
+        {
+            "$lookup": {
+                "from": "environments_v2",
+                "localField": "model_environment_id",
+                "foreignField": "_id",
+                "as": "environment_id",
+            }
+        },
+        {
+            "$lookup": {
+                "from": "model_versions",
+                "localField": "_id",
+                "foreignField": "modelId.value",
+                "as": "model_versions_id",
+            }
+        },
+        {"$unwind": "$model_versions_id"},
+        {
+            "$lookup": {
+                "from": "sagas",
+                "localField": "model_versions_id._id",
+                "foreignField": "parameters.modelVersionId",
+                "as": "sagas_id",
+            }
+        },
+        {"$unwind": "$sagas_id"},
+        {"$sort": {"sagas_id.started": -1}},
+        {
+            "$match": {
+                "sagas_id.sagaName": {"$in": ["ModelVersionDeployment", "StartModelVersion", "StopModelVersion"]},
+                "sagas_id.state": {"$in": ["slug-build-succeeded", "succeeded"]},
+                "sagas_id.isCompleted": {"$eq": True},
+            }
+        },
+        {
+            "$lookup": {
+                "from": "environment_revisions",
+                "localField": "model_versions_id.environmentRevisionId",
+                "foreignField": "_id",
+                "as": "environment_revisions_id",
+            }
+        },
+        {
+            "$project": {
+                "model_id": "$model_id",
+                "model_name": 1,
+                "model_last_change": 1,
+                "model_owner": {"$first": "$user_id.fullName"},
+                "model_created_by": {"$first": "$created_id.fullName"},
+                "environment_name": {"$first": "$environment_id.name"},
+                "environment_id": "$model_environment_id",
+                "model_version_id": "$model_versions_id._id",
+                "model_environment_repository": {"$first": "$model_versions_id.metadata.builds.slug.image.repository"},
+                "model_environment_tag": {"$first": "$model_versions_id.metadata.builds.slug.image.tag"},
+                "base_environment_repository": {
+                    "$first": "$environment_revisions_id.metadata.dockerImageName.repository"
+                },
+                "base_environment_tag": {"$first": "$environment_revisions_id.metadata.dockerImageName.tag"},
+                "environment_revision_id": "$model_versions_id.environmentRevisionId",
+                "saga_name": "$sagas_id.sagaName",
+            }
+        },
+        {
+            "$group": {
+                "_id": "$model_version_id",
+                "saga_status": {"$push": "$saga_name"},
+                "model_id": {"$first": "$model_id"},
+                "model_name": {"$first": "$model_name"},
+                "model_last_change": {"$first": "$model_last_change"},
+                "model_owner": {"$first": "$model_owner"},
+                "model_created_by": {"$first": "$model_created_by"},
+                "environment_name": {"$first": "$environment_name"},
+                "environment_id": {"$first": "$environment_id"},
+                "environment_revision_id": {"$first": "$environment_revision_id"},
+                "model_version_id": {"$first": "$model_version_id"},
+                "model_environment_repository": {"$first": "$model_environment_repository"},
+                "model_environment_tag": {"$first": "$model_environment_tag"},
+                "base_environment_repository": {"$first": "$base_environment_repository"},
+                "base_environment_tag": {"$first": "$base_environment_tag"},
+            }
+        },
+        {"$match": {"saga_status.0": {"$eq": "StartModelVersion"}}},
+        {"$project": {"saga_status": 0}},
+        {
+            "$group": {
+                "_id": "$model_id",
+                "model_id": {"$first": "$model_id"},
+                "model_name": {"$first": "$model_name"},
+                "model_last_change": {"$first": "$model_last_change"},
+                "model_owner": {"$first": "$model_owner"},
+                "model_created_by": {"$first": "$model_created_by"},
+                "environment_name": {"$first": "$environment_name"},
+                "environment_id": {"$first": "$environment_id"},
+                "model_active_versions": {
+                    "$push": {
+                        "environment_revision_id": "$environment_revision_id",
+                        "model_version_id": "$model_version_id",
+                        "model_environment_repository": "$model_environment_repository",
+                        "model_environment_tag": "$model_environment_tag",
+                        "base_environment_repository": "$base_environment_repository",
+                        "base_environment_tag": "$base_environment_tag",
+                    }
+                },
+            }
+        },
+    ]
 
 
 def workspace_env_usage_pipeline() -> Pipeline:
-	"""Generate aggregation pipeline for workspace environment usage.
+    """Generate aggregation pipeline for workspace environment usage.
 
-	Extracts non-deleted workspaces and their environment configurations,
-	including session environments, compute cluster environments, and
-	project default environments.
+    Extracts non-deleted workspaces and their environment configurations,
+    including session environments, compute cluster environments, and
+    project default environments.
 
-	Note: Excludes deleted workspaces since they won't be restarted.
+    Note: Excludes deleted workspaces since they won't be restarted.
 
-	Returns:
-		MongoDB aggregation pipeline stages
-	"""
-	return [
-		{"$match": {"state": {"$ne": "Deleted"}}},
-		{"$lookup": {"from": "users", "localField": "ownerId", "foreignField": "_id", "as": "user_id"}},
-		{"$lookup": {"from": "projects", "localField": "projectId", "foreignField": "_id", "as": "project_id"}},
-		{"$lookup": {"from": "workspace_session", "localField": "_id", "foreignField": "workspaceId", "as": "workspace_id"}},
-		{"$lookup": {"from": "environments_v2", "localField": "configTemplate.environmentId", "foreignField": "_id", "as": "environment_id"}},
-		# Also include distributed compute cluster environment if present
-		{"$lookup": {"from": "environments_v2", "localField": "configTemplate.computeClusterProps.computeEnvironmentId", "foreignField": "_id", "as": "compute_environment_id"}},
-		{"$lookup": {"from": "environments_v2", "localField": "project_id.overrideV2EnvironmentId", "foreignField": "_id", "as": "default_project_environment_id"}},
-		{"$addFields": {
-			"running_environments": {"$filter": {"input": "$workspace_id", "as": "item", "cond": {"$ne": ["$$item.rawExecutionDisplayStatus", "Running"]}}},
-			# Collect session environment and compute environment ids and revision ids
-			"session_env_ids": {"$setUnion": [
-				{"$ifNull": ["$workspace_id.environmentId", []]},
-				{"$ifNull": ["$workspace_id.config.environmentId", []]}
-			]},
-			"session_compute_env_ids": {"$setUnion": [
-				{"$ifNull": ["$workspace_id.computeClusterEnvironmentId", []]},
-				{"$ifNull": ["$workspace_id.config.computeClusterProps.computeEnvironmentId", []]}
-			]},
-			"session_env_rev_ids": {"$ifNull": ["$workspace_id.environmentRevisionId", []]},
-			"session_compute_env_rev_ids": {"$ifNull": ["$workspace_id.computeClusterEnvironmentRevisionId", []]}
-		}},
-		{"$project": {
-			"workspace_name": "$name",
-			"workspace_last_change": "$stateUpdatedAt",
-			"project_name": {"$first": "$project_id.name"},
-			"user_name": {"$first": "$user_id.fullName"},
-			"environment_name": {"$first": "$environment_id.name"},
-			# Compute cluster environment name if present
-			"compute_environment_name": {"$first": "$compute_environment_id.name"},
-			"project_default_environment_name": {"$first": "$default_project_environment_id.name"},
-			"project_default_environment_id": {"$first": "$project_id.overrideV2EnvironmentId"},
-			"project_active_revision_spec": {"$first": "$project_id.defaultEnvironmentRevisionSpec"},
-			"user_active_revision_id": {"$switch": {"branches": [
-				{"case": {"$gt": [{"$size": "$running_environments"}, 0]}, "then": {"$first": "$running_environments.environmentRevisionId"}},
-				{"case": {"$eq": ["$configTemplate.environmentRevisionSpec", "ActiveRevision"]}, "then": {"$first": "$environment_id.activeRevisionId"}},
-				{"case": {"$eq": [True, {"$regexMatch": {"input": "$configTemplate.environmentRevisionSpec", "regex": "SomeRevision", "options": "i"}}]}, "then": {"$toObjectId": {"$replaceOne": {"input": {"$replaceOne": {"input": "$configTemplate.environmentRevisionSpec", "find": "SomeRevision(", "replacement": ""}}, "find": ")", "replacement": ""}}}}
-			], "default": None}}}},
-		{"$lookup": {"from": "environment_revisions", "localField": "user_active_revision_id", "foreignField": "_id", "as": "environment_revision_id"}},
-		# Resolve docker tags for any session-provided revision ids (both user and compute cluster)
-		{"$lookup": {"from": "environment_revisions", "localField": "session_env_rev_ids", "foreignField": "_id", "as": "session_environment_revisions"}},
-		{"$lookup": {"from": "environment_revisions", "localField": "session_compute_env_rev_ids", "foreignField": "_id", "as": "session_compute_environment_revisions"}},
-		# Resolve compute cluster environment active revision (use activeRevisionId)
-		{"$addFields": {"compute_active_revision_id": {"$first": "$compute_environment_id.activeRevisionId"}}},
-		{"$lookup": {"from": "environment_revisions", "localField": "compute_active_revision_id", "foreignField": "_id", "as": "compute_environment_revision_id"}},
-		{"$lookup": {"from": "environments_v2", "localField": "project_default_environment_id", "foreignField": "_id", "as": "default_environment_active_revision"}},
-		{"$project": {
-			"workspace_name": "$workspace_name",
-			"workspace_last_change": "$workspace_last_change",
-			"project_name": "$project_name",
-			"user_name": "$user_name",
-			"environment_name": "$environment_name",
-			"environment_docker_repo": {"$first": "$environment_revision_id.metadata.dockerImageName.repository"},
-			"environment_docker_tag": {"$first": "$environment_revision_id.metadata.dockerImageName.tag"},
-			# Docker tags derived from workspace_session revision ids
-			"session_environment_docker_repo": {"$first": "$session_environment_revisions.metadata.dockerImageName.repository"},
-			"session_environment_docker_tag": {"$first": "$session_environment_revisions.metadata.dockerImageName.tag"},
-			"session_compute_environment_docker_repo": {"$first": "$session_compute_environment_revisions.metadata.dockerImageName.repository"},
-			"session_compute_environment_docker_tag": {"$first": "$session_compute_environment_revisions.metadata.dockerImageName.tag"},
-			# Compute cluster environment docker image
-			"compute_environment_docker_repo": {"$first": "$compute_environment_revision_id.metadata.dockerImageName.repository"},
-			"compute_environment_docker_tag": {"$first": "$compute_environment_revision_id.metadata.dockerImageName.tag"},
-			"user_active_revision_id": "$user_active_revision_id",
-			"project_default_environment_name": "$project_default_environment_name",
-			"project_default_environment_id": "$project_default_environment_id",
-			"project_default_active_revision_id": {"$first": "$default_environment_active_revision.activeRevisionId"},
-			"project_active_revision_spec": "$project_active_revision_spec",
-			"default_active_revision_id": {"$switch": {"branches": [
-				{"case": {"$eq": ["$project_active_revision_spec", "ActiveRevision"]}, "then": {"$first": "$default_environment_active_revision.activeRevisionId"}},
-				{"case": {"$eq": [True, {"$regexMatch": {"input": "$project_active_revision_spec", "regex": "SomeRevision", "options": "i"}}]}, "then": {"$toObjectId": {"$replaceOne": {"input": {"$replaceOne": {"input": "$project_active_revision_spec", "find": "SomeRevision(", "replacement": ""}}, "find": ")", "replacement": ""}}}}
-			], "default": None}}
-		}},
-		{"$lookup": {"from": "environment_revisions", "localField": "default_active_revision_id", "foreignField": "_id", "as": "default_environment_revision_id"}},
-		{"$project": {
-			"workspace_name": "$workspace_name",
-			"workspace_last_change": "$workspace_last_change",
-			"project_name": "$project_name",
-			"user_name": "$user_name",
-			"environment_name": "$environment_name",
-			"environment_docker_repo": "$environment_docker_repo",
-			"environment_docker_tag": "$environment_docker_tag",
-			"session_environment_docker_repo": "$session_environment_docker_repo",
-			"session_environment_docker_tag": "$session_environment_docker_tag",
-			"session_compute_environment_docker_repo": "$session_compute_environment_docker_repo",
-			"session_compute_environment_docker_tag": "$session_compute_environment_docker_tag",
-			"compute_environment_docker_repo": "$compute_environment_docker_repo",
-			"compute_environment_docker_tag": "$compute_environment_docker_tag",
-			"project_default_environment_name": "$project_default_environment_name",
-			"project_default_environment_docker_repo": {"$first": "$default_environment_revision_id.metadata.dockerImageName.repository"},
-			"project_default_environment_docker_tag": {"$first": "$default_environment_revision_id.metadata.dockerImageName.tag"}
-		}}
-	]
+    Returns:
+            MongoDB aggregation pipeline stages
+    """
+    return [
+        {"$match": {"state": {"$ne": "Deleted"}}},
+        {"$lookup": {"from": "users", "localField": "ownerId", "foreignField": "_id", "as": "user_id"}},
+        {"$lookup": {"from": "projects", "localField": "projectId", "foreignField": "_id", "as": "project_id"}},
+        {
+            "$lookup": {
+                "from": "workspace_session",
+                "localField": "_id",
+                "foreignField": "workspaceId",
+                "as": "workspace_id",
+            }
+        },
+        {
+            "$lookup": {
+                "from": "environments_v2",
+                "localField": "configTemplate.environmentId",
+                "foreignField": "_id",
+                "as": "environment_id",
+            }
+        },
+        # Also include distributed compute cluster environment if present
+        {
+            "$lookup": {
+                "from": "environments_v2",
+                "localField": "configTemplate.computeClusterProps.computeEnvironmentId",
+                "foreignField": "_id",
+                "as": "compute_environment_id",
+            }
+        },
+        {
+            "$lookup": {
+                "from": "environments_v2",
+                "localField": "project_id.overrideV2EnvironmentId",
+                "foreignField": "_id",
+                "as": "default_project_environment_id",
+            }
+        },
+        {
+            "$addFields": {
+                "running_environments": {
+                    "$filter": {
+                        "input": "$workspace_id",
+                        "as": "item",
+                        "cond": {"$ne": ["$$item.rawExecutionDisplayStatus", "Running"]},
+                    }
+                },
+                # Collect session environment and compute environment ids and revision ids
+                "session_env_ids": {
+                    "$setUnion": [
+                        {"$ifNull": ["$workspace_id.environmentId", []]},
+                        {"$ifNull": ["$workspace_id.config.environmentId", []]},
+                    ]
+                },
+                "session_compute_env_ids": {
+                    "$setUnion": [
+                        {"$ifNull": ["$workspace_id.computeClusterEnvironmentId", []]},
+                        {"$ifNull": ["$workspace_id.config.computeClusterProps.computeEnvironmentId", []]},
+                    ]
+                },
+                "session_env_rev_ids": {"$ifNull": ["$workspace_id.environmentRevisionId", []]},
+                "session_compute_env_rev_ids": {"$ifNull": ["$workspace_id.computeClusterEnvironmentRevisionId", []]},
+            }
+        },
+        {
+            "$project": {
+                "workspace_name": "$name",
+                "workspace_last_change": "$stateUpdatedAt",
+                "project_name": {"$first": "$project_id.name"},
+                "user_name": {"$first": "$user_id.fullName"},
+                "environment_name": {"$first": "$environment_id.name"},
+                # Compute cluster environment name if present
+                "compute_environment_name": {"$first": "$compute_environment_id.name"},
+                "project_default_environment_name": {"$first": "$default_project_environment_id.name"},
+                "project_default_environment_id": {"$first": "$project_id.overrideV2EnvironmentId"},
+                "project_active_revision_spec": {"$first": "$project_id.defaultEnvironmentRevisionSpec"},
+                "user_active_revision_id": {
+                    "$switch": {
+                        "branches": [
+                            {
+                                "case": {"$gt": [{"$size": "$running_environments"}, 0]},
+                                "then": {"$first": "$running_environments.environmentRevisionId"},
+                            },
+                            {
+                                "case": {"$eq": ["$configTemplate.environmentRevisionSpec", "ActiveRevision"]},
+                                "then": {"$first": "$environment_id.activeRevisionId"},
+                            },
+                            {
+                                "case": {
+                                    "$eq": [
+                                        True,
+                                        {
+                                            "$regexMatch": {
+                                                "input": "$configTemplate.environmentRevisionSpec",
+                                                "regex": "SomeRevision",
+                                                "options": "i",
+                                            }
+                                        },
+                                    ]
+                                },
+                                "then": {
+                                    "$toObjectId": {
+                                        "$replaceOne": {
+                                            "input": {
+                                                "$replaceOne": {
+                                                    "input": "$configTemplate.environmentRevisionSpec",
+                                                    "find": "SomeRevision(",
+                                                    "replacement": "",
+                                                }
+                                            },
+                                            "find": ")",
+                                            "replacement": "",
+                                        }
+                                    }
+                                },
+                            },
+                        ],
+                        "default": None,
+                    }
+                },
+            }
+        },
+        {
+            "$lookup": {
+                "from": "environment_revisions",
+                "localField": "user_active_revision_id",
+                "foreignField": "_id",
+                "as": "environment_revision_id",
+            }
+        },
+        # Resolve docker tags for any session-provided revision ids (both user and compute cluster)
+        {
+            "$lookup": {
+                "from": "environment_revisions",
+                "localField": "session_env_rev_ids",
+                "foreignField": "_id",
+                "as": "session_environment_revisions",
+            }
+        },
+        {
+            "$lookup": {
+                "from": "environment_revisions",
+                "localField": "session_compute_env_rev_ids",
+                "foreignField": "_id",
+                "as": "session_compute_environment_revisions",
+            }
+        },
+        # Resolve compute cluster environment active revision (use activeRevisionId)
+        {"$addFields": {"compute_active_revision_id": {"$first": "$compute_environment_id.activeRevisionId"}}},
+        {
+            "$lookup": {
+                "from": "environment_revisions",
+                "localField": "compute_active_revision_id",
+                "foreignField": "_id",
+                "as": "compute_environment_revision_id",
+            }
+        },
+        {
+            "$lookup": {
+                "from": "environments_v2",
+                "localField": "project_default_environment_id",
+                "foreignField": "_id",
+                "as": "default_environment_active_revision",
+            }
+        },
+        {
+            "$project": {
+                "workspace_name": "$workspace_name",
+                "workspace_last_change": "$workspace_last_change",
+                "project_name": "$project_name",
+                "user_name": "$user_name",
+                "environment_name": "$environment_name",
+                "environment_docker_repo": {"$first": "$environment_revision_id.metadata.dockerImageName.repository"},
+                "environment_docker_tag": {"$first": "$environment_revision_id.metadata.dockerImageName.tag"},
+                # Docker tags derived from workspace_session revision ids
+                "session_environment_docker_repo": {
+                    "$first": "$session_environment_revisions.metadata.dockerImageName.repository"
+                },
+                "session_environment_docker_tag": {
+                    "$first": "$session_environment_revisions.metadata.dockerImageName.tag"
+                },
+                "session_compute_environment_docker_repo": {
+                    "$first": "$session_compute_environment_revisions.metadata.dockerImageName.repository"
+                },
+                "session_compute_environment_docker_tag": {
+                    "$first": "$session_compute_environment_revisions.metadata.dockerImageName.tag"
+                },
+                # Compute cluster environment docker image
+                "compute_environment_docker_repo": {
+                    "$first": "$compute_environment_revision_id.metadata.dockerImageName.repository"
+                },
+                "compute_environment_docker_tag": {
+                    "$first": "$compute_environment_revision_id.metadata.dockerImageName.tag"
+                },
+                "user_active_revision_id": "$user_active_revision_id",
+                "project_default_environment_name": "$project_default_environment_name",
+                "project_default_environment_id": "$project_default_environment_id",
+                "project_default_active_revision_id": {
+                    "$first": "$default_environment_active_revision.activeRevisionId"
+                },
+                "project_active_revision_spec": "$project_active_revision_spec",
+                "default_active_revision_id": {
+                    "$switch": {
+                        "branches": [
+                            {
+                                "case": {"$eq": ["$project_active_revision_spec", "ActiveRevision"]},
+                                "then": {"$first": "$default_environment_active_revision.activeRevisionId"},
+                            },
+                            {
+                                "case": {
+                                    "$eq": [
+                                        True,
+                                        {
+                                            "$regexMatch": {
+                                                "input": "$project_active_revision_spec",
+                                                "regex": "SomeRevision",
+                                                "options": "i",
+                                            }
+                                        },
+                                    ]
+                                },
+                                "then": {
+                                    "$toObjectId": {
+                                        "$replaceOne": {
+                                            "input": {
+                                                "$replaceOne": {
+                                                    "input": "$project_active_revision_spec",
+                                                    "find": "SomeRevision(",
+                                                    "replacement": "",
+                                                }
+                                            },
+                                            "find": ")",
+                                            "replacement": "",
+                                        }
+                                    }
+                                },
+                            },
+                        ],
+                        "default": None,
+                    }
+                },
+            }
+        },
+        {
+            "$lookup": {
+                "from": "environment_revisions",
+                "localField": "default_active_revision_id",
+                "foreignField": "_id",
+                "as": "default_environment_revision_id",
+            }
+        },
+        {
+            "$project": {
+                "workspace_name": "$workspace_name",
+                "workspace_last_change": "$workspace_last_change",
+                "project_name": "$project_name",
+                "user_name": "$user_name",
+                "environment_name": "$environment_name",
+                "environment_docker_repo": "$environment_docker_repo",
+                "environment_docker_tag": "$environment_docker_tag",
+                "session_environment_docker_repo": "$session_environment_docker_repo",
+                "session_environment_docker_tag": "$session_environment_docker_tag",
+                "session_compute_environment_docker_repo": "$session_compute_environment_docker_repo",
+                "session_compute_environment_docker_tag": "$session_compute_environment_docker_tag",
+                "compute_environment_docker_repo": "$compute_environment_docker_repo",
+                "compute_environment_docker_tag": "$compute_environment_docker_tag",
+                "project_default_environment_name": "$project_default_environment_name",
+                "project_default_environment_docker_repo": {
+                    "$first": "$default_environment_revision_id.metadata.dockerImageName.repository"
+                },
+                "project_default_environment_docker_tag": {
+                    "$first": "$default_environment_revision_id.metadata.dockerImageName.tag"
+                },
+            }
+        },
+    ]
 
 
 def runs_env_usage_pipeline() -> Pipeline:
-	"""Generate aggregation pipeline for run environment usage.
+    """Generate aggregation pipeline for run environment usage.
 
-	Extracts runs that reference environments and environment revisions,
-	grouping by environment+revision and computing the most recent usage time.
+    Extracts runs that reference environments and environment revisions,
+    grouping by environment+revision and computing the most recent usage time.
 
-	Returns:
-		MongoDB aggregation pipeline stages
-	"""
-	return [
-		{"$match": {"environmentId": {"$exists": True}, "environmentRevisionId": {"$exists": True}}},
-		{"$lookup": {"from": "environment_revisions", "localField": "environmentRevisionId", "foreignField": "_id", "as": "env_rev"}},
-		{"$project": {
-			"run_id": "$_id",
-			"project_id": "$projectId",
-			"starting_user_id": "$startingUserId",
-			"status": "$status",
-			"started": "$started",
-			"completed": "$completed",
-			"environment_id": "$environmentId",
-			"environment_revision_id": "$environmentRevisionId",
-			"environment_docker_repo": {"$first": "$env_rev.metadata.dockerImageName.repository"},
-			"environment_docker_tag": {"$first": "$env_rev.metadata.dockerImageName.tag"}
-		}},
-		# Enrich with project and project owner info
-		{"$lookup": {"from": "projects", "localField": "project_id", "foreignField": "_id", "as": "project_doc"}},
-		{"$addFields": {
-			"project_name": {"$first": "$project_doc.name"},
-			"project_owner_id": {"$first": "$project_doc.ownerId"}
-		}},
-		{"$lookup": {"from": "users", "localField": "project_owner_id", "foreignField": "_id", "as": "owner_doc"}},
-		{"$addFields": {
-			"project_owner_name": {"$first": "$owner_doc.fullName"}
-		}},
-		# Group by environment + revision to compute most recent completion time as last_used
-		{"$group": {
-			"_id": {"env": "$environment_id", "rev": "$environment_revision_id"},
-			"environment_id": {"$first": "$environment_id"},
-			"environment_revision_id": {"$first": "$environment_revision_id"},
-			"environment_docker_repo": {"$first": "$environment_docker_repo"},
-			"environment_docker_tag": {"$first": "$environment_docker_tag"},
-			"last_used": {"$max": "$completed"},
-			# Preserve a representative started/completed for compatibility
-			"any_started": {"$max": "$started"},
-			"any_completed": {"$max": "$completed"},
-			# Preserve representative identifiers for reporting
-			"run_id": {"$first": "$run_id"},
-			"project_id": {"$first": "$project_id"},
-			"status": {"$first": "$status"},
-			"project_name": {"$first": "$project_name"},
-			"project_owner_id": {"$first": "$project_owner_id"},
-			"project_owner_name": {"$first": "$project_owner_name"}
-		}},
-		# Final projection, keep both last_used and a started field for compatibility
-		{"$project": {
-			"_id": 0,
-			"environment_id": 1,
-			"environment_revision_id": 1,
-			"environment_docker_repo": 1,
-			"environment_docker_tag": 1,
-			"last_used": 1,
-			"started": "$any_started",
-			"completed": "$any_completed",
-			"run_id": 1,
-			"project_id": 1,
-			"status": 1,
-			"project_name": 1,
-			"project_owner_id": 1,
-			"project_owner_name": 1
-		}}
-	]
+    Returns:
+            MongoDB aggregation pipeline stages
+    """
+    return [
+        {"$match": {"environmentId": {"$exists": True}, "environmentRevisionId": {"$exists": True}}},
+        {
+            "$lookup": {
+                "from": "environment_revisions",
+                "localField": "environmentRevisionId",
+                "foreignField": "_id",
+                "as": "env_rev",
+            }
+        },
+        {
+            "$project": {
+                "run_id": "$_id",
+                "project_id": "$projectId",
+                "starting_user_id": "$startingUserId",
+                "status": "$status",
+                "started": "$started",
+                "completed": "$completed",
+                "environment_id": "$environmentId",
+                "environment_revision_id": "$environmentRevisionId",
+                "environment_docker_repo": {"$first": "$env_rev.metadata.dockerImageName.repository"},
+                "environment_docker_tag": {"$first": "$env_rev.metadata.dockerImageName.tag"},
+            }
+        },
+        # Enrich with project and project owner info
+        {"$lookup": {"from": "projects", "localField": "project_id", "foreignField": "_id", "as": "project_doc"}},
+        {
+            "$addFields": {
+                "project_name": {"$first": "$project_doc.name"},
+                "project_owner_id": {"$first": "$project_doc.ownerId"},
+            }
+        },
+        {"$lookup": {"from": "users", "localField": "project_owner_id", "foreignField": "_id", "as": "owner_doc"}},
+        {"$addFields": {"project_owner_name": {"$first": "$owner_doc.fullName"}}},
+        # Group by environment + revision to compute most recent completion time as last_used
+        {
+            "$group": {
+                "_id": {"env": "$environment_id", "rev": "$environment_revision_id"},
+                "environment_id": {"$first": "$environment_id"},
+                "environment_revision_id": {"$first": "$environment_revision_id"},
+                "environment_docker_repo": {"$first": "$environment_docker_repo"},
+                "environment_docker_tag": {"$first": "$environment_docker_tag"},
+                "last_used": {"$max": "$completed"},
+                # Preserve a representative started/completed for compatibility
+                "any_started": {"$max": "$started"},
+                "any_completed": {"$max": "$completed"},
+                # Preserve representative identifiers for reporting
+                "run_id": {"$first": "$run_id"},
+                "project_id": {"$first": "$project_id"},
+                "status": {"$first": "$status"},
+                "project_name": {"$first": "$project_name"},
+                "project_owner_id": {"$first": "$project_owner_id"},
+                "project_owner_name": {"$first": "$project_owner_name"},
+            }
+        },
+        # Final projection, keep both last_used and a started field for compatibility
+        {
+            "$project": {
+                "_id": 0,
+                "environment_id": 1,
+                "environment_revision_id": 1,
+                "environment_docker_repo": 1,
+                "environment_docker_tag": 1,
+                "last_used": 1,
+                "started": "$any_started",
+                "completed": "$any_completed",
+                "run_id": 1,
+                "project_id": 1,
+                "status": 1,
+                "project_name": 1,
+                "project_owner_id": 1,
+                "project_owner_name": 1,
+            }
+        },
+    ]
 
 
 def projects_env_usage_pipeline() -> Pipeline:
-	"""Generate aggregation pipeline for project environment usage.
+    """Generate aggregation pipeline for project environment usage.
 
-	Extracts non-archived projects with overrideV2EnvironmentId set,
-	resolving to the active revision's Docker tag.
+    Extracts non-archived projects with overrideV2EnvironmentId set,
+    resolving to the active revision's Docker tag.
 
-	Returns:
-		MongoDB aggregation pipeline stages
-	"""
-	return [
-		{"$match": {
-			"overrideV2EnvironmentId": {"$exists": True, "$ne": None},
-			"isArchived": {"$ne": True}
-		}},
-		{"$project": {
-			"project_id": "$_id",
-			"project_name": "$name",
-			"owner_id": "$ownerId",
-			"environment_id": "$overrideV2EnvironmentId"
-		}},
-		{"$lookup": {"from": "environments_v2", "localField": "environment_id", "foreignField": "_id", "as": "environment"}},
-		{"$project": {
-			"project_id": "$project_id",
-			"project_name": "$project_name",
-			"owner_id": "$owner_id",
-			"environment_id": "$environment_id",
-			"active_revision_id": {"$first": "$environment.activeRevisionId"}
-		}},
-		{"$lookup": {"from": "environment_revisions", "localField": "active_revision_id", "foreignField": "_id", "as": "environment_revision"}},
-		{"$project": {
-			"project_id": "$project_id",
-			"project_name": "$project_name",
-			"owner_id": "$owner_id",
-			"environment_id": "$environment_id",
-			"environment_docker_repo": {"$first": "$environment_revision.metadata.dockerImageName.repository"},
-			"environment_docker_tag": {"$first": "$environment_revision.metadata.dockerImageName.tag"}
-		}},
-		{"$match": {"environment_docker_tag": {"$exists": True, "$ne": None}}}
-	]
+    Returns:
+            MongoDB aggregation pipeline stages
+    """
+    return [
+        {"$match": {"overrideV2EnvironmentId": {"$exists": True, "$ne": None}, "isArchived": {"$ne": True}}},
+        {
+            "$project": {
+                "project_id": "$_id",
+                "project_name": "$name",
+                "owner_id": "$ownerId",
+                "environment_id": "$overrideV2EnvironmentId",
+            }
+        },
+        {
+            "$lookup": {
+                "from": "environments_v2",
+                "localField": "environment_id",
+                "foreignField": "_id",
+                "as": "environment",
+            }
+        },
+        {
+            "$project": {
+                "project_id": "$project_id",
+                "project_name": "$project_name",
+                "owner_id": "$owner_id",
+                "environment_id": "$environment_id",
+                "active_revision_id": {"$first": "$environment.activeRevisionId"},
+            }
+        },
+        {
+            "$lookup": {
+                "from": "environment_revisions",
+                "localField": "active_revision_id",
+                "foreignField": "_id",
+                "as": "environment_revision",
+            }
+        },
+        {
+            "$project": {
+                "project_id": "$project_id",
+                "project_name": "$project_name",
+                "owner_id": "$owner_id",
+                "environment_id": "$environment_id",
+                "environment_docker_repo": {"$first": "$environment_revision.metadata.dockerImageName.repository"},
+                "environment_docker_tag": {"$first": "$environment_revision.metadata.dockerImageName.tag"},
+            }
+        },
+        {"$match": {"environment_docker_tag": {"$exists": True, "$ne": None}}},
+    ]
 
 
 def scheduler_jobs_env_usage_pipeline() -> Pipeline:
-	"""Generate aggregation pipeline for scheduler job environment usage.
+    """Generate aggregation pipeline for scheduler job environment usage.
 
-	Extracts scheduler jobs with jobDataPlain.overrideEnvironmentId set,
-	resolving to the active revision's Docker tag.
+    Extracts scheduler jobs with jobDataPlain.overrideEnvironmentId set,
+    resolving to the active revision's Docker tag.
 
-	Returns:
-		MongoDB aggregation pipeline stages
-	"""
-	return [
-		{"$match": {"jobDataPlain.overrideEnvironmentId": {"$exists": True, "$ne": None}}},
-		{"$project": {
-			"job_id": "$_id",
-			"job_name": "$jobName",
-			"project_id": "$projectId",
-			"environment_id": "$jobDataPlain.overrideEnvironmentId"
-		}},
-		{"$lookup": {"from": "environments_v2", "localField": "environment_id", "foreignField": "_id", "as": "environment"}},
-		{"$project": {
-			"job_id": "$job_id",
-			"job_name": "$job_name",
-			"project_id": "$project_id",
-			"environment_id": "$environment_id",
-			"active_revision_id": {"$first": "$environment.activeRevisionId"}
-		}},
-		{"$lookup": {"from": "environment_revisions", "localField": "active_revision_id", "foreignField": "_id", "as": "environment_revision"}},
-		{"$project": {
-			"job_id": "$job_id",
-			"job_name": "$job_name",
-			"project_id": "$project_id",
-			"environment_id": "$environment_id",
-			"environment_docker_repo": {"$first": "$environment_revision.metadata.dockerImageName.repository"},
-			"environment_docker_tag": {"$first": "$environment_revision.metadata.dockerImageName.tag"}
-		}},
-		{"$match": {"environment_docker_tag": {"$exists": True, "$ne": None}}}
-	]
+    Returns:
+            MongoDB aggregation pipeline stages
+    """
+    return [
+        {"$match": {"jobDataPlain.overrideEnvironmentId": {"$exists": True, "$ne": None}}},
+        {
+            "$project": {
+                "job_id": "$_id",
+                "job_name": "$jobName",
+                "project_id": "$projectId",
+                "environment_id": "$jobDataPlain.overrideEnvironmentId",
+            }
+        },
+        {
+            "$lookup": {
+                "from": "environments_v2",
+                "localField": "environment_id",
+                "foreignField": "_id",
+                "as": "environment",
+            }
+        },
+        {
+            "$project": {
+                "job_id": "$job_id",
+                "job_name": "$job_name",
+                "project_id": "$project_id",
+                "environment_id": "$environment_id",
+                "active_revision_id": {"$first": "$environment.activeRevisionId"},
+            }
+        },
+        {
+            "$lookup": {
+                "from": "environment_revisions",
+                "localField": "active_revision_id",
+                "foreignField": "_id",
+                "as": "environment_revision",
+            }
+        },
+        {
+            "$project": {
+                "job_id": "$job_id",
+                "job_name": "$job_name",
+                "project_id": "$project_id",
+                "environment_id": "$environment_id",
+                "environment_docker_repo": {"$first": "$environment_revision.metadata.dockerImageName.repository"},
+                "environment_docker_tag": {"$first": "$environment_revision.metadata.dockerImageName.tag"},
+            }
+        },
+        {"$match": {"environment_docker_tag": {"$exists": True, "$ne": None}}},
+    ]
 
 
 def organizations_env_usage_pipeline() -> Pipeline:
-	"""Generate aggregation pipeline for organization environment usage.
+    """Generate aggregation pipeline for organization environment usage.
 
-	Extracts organizations with defaultV2EnvironmentId set,
-	resolving to the active revision's Docker tag.
+    Extracts organizations with defaultV2EnvironmentId set,
+    resolving to the active revision's Docker tag.
 
-	Returns:
-		MongoDB aggregation pipeline stages
-	"""
-	return [
-		{"$match": {"defaultV2EnvironmentId": {"$exists": True, "$ne": None}}},
-		{"$project": {
-			"organization_id": "$_id",
-			"organization_name": "$name",
-			"environment_id": "$defaultV2EnvironmentId"
-		}},
-		{"$lookup": {"from": "environments_v2", "localField": "environment_id", "foreignField": "_id", "as": "environment"}},
-		{"$project": {
-			"organization_id": "$organization_id",
-			"organization_name": "$organization_name",
-			"environment_id": "$environment_id",
-			"active_revision_id": {"$first": "$environment.activeRevisionId"}
-		}},
-		{"$lookup": {"from": "environment_revisions", "localField": "active_revision_id", "foreignField": "_id", "as": "environment_revision"}},
-		{"$project": {
-			"organization_id": "$organization_id",
-			"organization_name": "$organization_name",
-			"environment_id": "$environment_id",
-			"environment_docker_repo": {"$first": "$environment_revision.metadata.dockerImageName.repository"},
-			"environment_docker_tag": {"$first": "$environment_revision.metadata.dockerImageName.tag"}
-		}},
-		{"$match": {"environment_docker_tag": {"$exists": True, "$ne": None}}}
-	]
+    Returns:
+            MongoDB aggregation pipeline stages
+    """
+    return [
+        {"$match": {"defaultV2EnvironmentId": {"$exists": True, "$ne": None}}},
+        {
+            "$project": {
+                "organization_id": "$_id",
+                "organization_name": "$name",
+                "environment_id": "$defaultV2EnvironmentId",
+            }
+        },
+        {
+            "$lookup": {
+                "from": "environments_v2",
+                "localField": "environment_id",
+                "foreignField": "_id",
+                "as": "environment",
+            }
+        },
+        {
+            "$project": {
+                "organization_id": "$organization_id",
+                "organization_name": "$organization_name",
+                "environment_id": "$environment_id",
+                "active_revision_id": {"$first": "$environment.activeRevisionId"},
+            }
+        },
+        {
+            "$lookup": {
+                "from": "environment_revisions",
+                "localField": "active_revision_id",
+                "foreignField": "_id",
+                "as": "environment_revision",
+            }
+        },
+        {
+            "$project": {
+                "organization_id": "$organization_id",
+                "organization_name": "$organization_name",
+                "environment_id": "$environment_id",
+                "environment_docker_repo": {"$first": "$environment_revision.metadata.dockerImageName.repository"},
+                "environment_docker_tag": {"$first": "$environment_revision.metadata.dockerImageName.tag"},
+            }
+        },
+        {"$match": {"environment_docker_tag": {"$exists": True, "$ne": None}}},
+    ]
 
 
 def app_versions_env_usage_pipeline() -> Pipeline:
-	"""Generate aggregation pipeline for app version environment usage.
+    """Generate aggregation pipeline for app version environment usage.
 
-	Extracts app versions with environmentId set,
-	resolving to the active revision's Docker tag.
+    Extracts app versions with environmentId set,
+    resolving to the active revision's Docker tag.
 
-	Returns:
-		MongoDB aggregation pipeline stages
-	"""
-	return [
-		{"$match": {"environmentId": {"$exists": True, "$ne": None}}},
-		{"$project": {
-			"app_version_id": "$_id",
-			"app_id": "$appId",
-			"version_number": "$versionNumber",
-			"environment_id": "$environmentId"
-		}},
-		{"$lookup": {"from": "environments_v2", "localField": "environment_id", "foreignField": "_id", "as": "environment"}},
-		{"$project": {
-			"app_version_id": "$app_version_id",
-			"app_id": "$app_id",
-			"version_number": "$version_number",
-			"environment_id": "$environment_id",
-			"active_revision_id": {"$first": "$environment.activeRevisionId"}
-		}},
-		{"$lookup": {"from": "environment_revisions", "localField": "active_revision_id", "foreignField": "_id", "as": "environment_revision"}},
-		{"$project": {
-			"app_version_id": "$app_version_id",
-			"app_id": "$app_id",
-			"version_number": "$version_number",
-			"environment_id": "$environment_id",
-			"environment_docker_repo": {"$first": "$environment_revision.metadata.dockerImageName.repository"},
-			"environment_docker_tag": {"$first": "$environment_revision.metadata.dockerImageName.tag"}
-		}},
-		{"$match": {"environment_docker_tag": {"$exists": True, "$ne": None}}}
-	]
+    Returns:
+            MongoDB aggregation pipeline stages
+    """
+    return [
+        {"$match": {"environmentId": {"$exists": True, "$ne": None}}},
+        {
+            "$project": {
+                "app_version_id": "$_id",
+                "app_id": "$appId",
+                "version_number": "$versionNumber",
+                "environment_id": "$environmentId",
+            }
+        },
+        {
+            "$lookup": {
+                "from": "environments_v2",
+                "localField": "environment_id",
+                "foreignField": "_id",
+                "as": "environment",
+            }
+        },
+        {
+            "$project": {
+                "app_version_id": "$app_version_id",
+                "app_id": "$app_id",
+                "version_number": "$version_number",
+                "environment_id": "$environment_id",
+                "active_revision_id": {"$first": "$environment.activeRevisionId"},
+            }
+        },
+        {
+            "$lookup": {
+                "from": "environment_revisions",
+                "localField": "active_revision_id",
+                "foreignField": "_id",
+                "as": "environment_revision",
+            }
+        },
+        {
+            "$project": {
+                "app_version_id": "$app_version_id",
+                "app_id": "$app_id",
+                "version_number": "$version_number",
+                "environment_id": "$environment_id",
+                "environment_docker_repo": {"$first": "$environment_revision.metadata.dockerImageName.repository"},
+                "environment_docker_tag": {"$first": "$environment_revision.metadata.dockerImageName.tag"},
+            }
+        },
+        {"$match": {"environment_docker_tag": {"$exists": True, "$ne": None}}},
+    ]
 
 
 def run(target: str) -> None:
-	"""Run aggregations and save reports via ImageUsageService.
+    """Run aggregations and save reports via ImageUsageService.
 
-	Args:
-		target: Which aggregation(s) to run ('model', 'workspace', 'runs',
-			'projects', 'scheduler_jobs', 'organizations', 'app_versions', or 'all')
-	"""
-	from utils.image_usage import ImageUsageService  # Local import to avoid circular dependency
+    Args:
+            target: Which aggregation(s) to run ('model', 'workspace', 'runs',
+                    'projects', 'scheduler_jobs', 'organizations', 'app_versions', or 'all')
+    """
+    from utils.image_usage import ImageUsageService  # Local import to avoid circular dependency
 
-	service = ImageUsageService()
-	logger.info(f"Running image usage aggregations for target={target}...")
-	service.save_aggregations(target)
+    service = ImageUsageService()
+    logger.info(f"Running image usage aggregations for target={target}...")
+    service.save_aggregations(target)
 
 
 def main() -> None:
-	"""Main entry point for running metadata extraction from command line."""
-	setup_logging()
-	parser = argparse.ArgumentParser(description='Extract metadata from MongoDB using PyMongo')
-	parser.add_argument(
-		'--target',
-		choices=['model', 'workspace', 'runs', 'projects', 'scheduler_jobs', 'organizations', 'app_versions', 'all'],
-		default='all',
-		help='Which aggregation(s) to run'
-	)
-	args = parser.parse_args()
-	run(args.target)
+    """Main entry point for running metadata extraction from command line."""
+    setup_logging()
+    parser = argparse.ArgumentParser(description="Extract metadata from MongoDB using PyMongo")
+    parser.add_argument(
+        "--target",
+        choices=["model", "workspace", "runs", "projects", "scheduler_jobs", "organizations", "app_versions", "all"],
+        default="all",
+        help="Which aggregation(s) to run",
+    )
+    args = parser.parse_args()
+    run(args.target)
 
 
 if __name__ == "__main__":
-	main()
+    main()
