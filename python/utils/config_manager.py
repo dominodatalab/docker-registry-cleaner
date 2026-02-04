@@ -218,11 +218,93 @@ class ConfigManager:
         """
         return os.environ.get("REPOSITORY") or self.config["registry"]["repository"]
 
-    def get_registry_password(self) -> Optional[str]:
-        """Get registry password from environment or handle ECR authentication"""
-        password = os.environ.get("REGISTRY_PASSWORD")
+    def _get_password_from_k8s_secret(self) -> Optional[str]:
+        """Get Docker registry password from Kubernetes secret.
 
-        # If password is provided, return it
+        Attempts to read credentials from the 'domino-registry' secret in the
+        domino-platform namespace (or configured platform namespace). This secret
+        should contain a .dockerconfigjson with Docker registry credentials.
+
+        Returns:
+            Password string if found, None otherwise
+        """
+        try:
+            from kubernetes.client.rest import ApiException
+
+            core_v1, _ = _get_kubernetes_clients()
+            namespace = self.get_domino_platform_namespace()
+            secret_name = "domino-registry"
+
+            logging.debug(f"Attempting to read {secret_name} secret from namespace {namespace}")
+
+            try:
+                secret = core_v1.read_namespaced_secret(name=secret_name, namespace=namespace)
+            except ApiException as e:
+                if e.status == 404:
+                    logging.debug(f"Secret {secret_name} not found in namespace {namespace}")
+                else:
+                    logging.debug(f"Error reading secret {secret_name}: {e}")
+                return None
+
+            # Read .dockerconfigjson from the secret
+            if not secret.data or ".dockerconfigjson" not in secret.data:
+                logging.debug(f"Secret {secret_name} does not contain .dockerconfigjson")
+                return None
+
+            # Decode the dockerconfigjson
+            dockerconfig_b64 = secret.data[".dockerconfigjson"]
+            dockerconfig_json = base64.b64decode(dockerconfig_b64).decode("utf-8")
+            dockerconfig = json.loads(dockerconfig_json)
+
+            # Extract credentials for our registry
+            registry_url = self.get_registry_url()
+            # Normalize registry URL for matching (remove port, protocol, etc.)
+            registry_host = registry_url.split(":")[0].split("/")[0]
+
+            if "auths" not in dockerconfig:
+                logging.debug("No 'auths' section in dockerconfigjson")
+                return None
+
+            # Try to find matching registry in auths
+            for auth_url, auth_data in dockerconfig["auths"].items():
+                # Check if this auth entry matches our registry
+                auth_host = auth_url.split(":")[0].split("/")[0]
+                if auth_host == registry_host or registry_host in auth_host:
+                    # Try to get password directly
+                    if "password" in auth_data:
+                        logging.info(f"Found registry password in {secret_name} secret")
+                        return auth_data["password"]
+                    # Otherwise decode from 'auth' field (base64 encoded "username:password")
+                    elif "auth" in auth_data:
+                        auth_decoded = base64.b64decode(auth_data["auth"]).decode("utf-8")
+                        if ":" in auth_decoded:
+                            _, password = auth_decoded.split(":", 1)
+                            logging.info(f"Found registry password in {secret_name} secret (from auth field)")
+                            return password
+
+            logging.debug(f"No matching registry credentials found in {secret_name} secret for {registry_url}")
+            return None
+
+        except Exception as e:
+            # Log but don't fail - fall back to other auth methods
+            logging.debug(f"Could not read credentials from Kubernetes secret: {e}")
+            return None
+
+    def get_registry_password(self) -> Optional[str]:
+        """Get registry password from environment, Kubernetes secret, or handle ECR authentication.
+
+        Priority order:
+        1. REGISTRY_PASSWORD environment variable (explicit override)
+        2. Kubernetes secret (domino-registry in platform namespace)
+        3. ECR authentication (for AWS ECR registries)
+        """
+        # First check explicit password from environment
+        password = os.environ.get("REGISTRY_PASSWORD")
+        if password:
+            return password
+
+        # Try to get password from Kubernetes secret
+        password = self._get_password_from_k8s_secret()
         if password:
             return password
 

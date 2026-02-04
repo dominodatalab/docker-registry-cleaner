@@ -600,11 +600,13 @@ For non-Helm deployments, copy `config-example.yaml` to `config.yaml` and modify
 
 ### Environment Variables
 
+Alternatively, export environment variables to allow quickly overriding values during testing.
+
 ```bash
 # Docker Registry
 export REGISTRY_URL="registry.example.com"
 export REPOSITORY="my-repo"
-export REGISTRY_PASSWORD="your_password"  # Optional for ECR
+export REGISTRY_PASSWORD="your_password"  # Optional - see authentication notes below
 
 # Kubernetes
 export DOMINO_PLATFORM_NAMESPACE="domino-platform"
@@ -622,6 +624,16 @@ export KEYCLOAK_PASSWORD="keycloak_password"
 export S3_BUCKET="my-backup-bucket"
 export S3_REGION="us-west-2"
 ```
+
+#### Docker Registry Authentication
+
+The tool uses the following priority order for Docker registry authentication:
+
+1. **`REGISTRY_PASSWORD` environment variable** - Explicit override for manual authentication
+2. **Kubernetes secret auto-discovery** - Automatically reads credentials from the `domino-registry` secret in the configured namespace (when running in-cluster)
+3. **AWS ECR authentication** - Automatic authentication for AWS ECR registries (*.amazonaws.com)
+
+For most in-cluster deployments with Domino, no explicit password configuration is needed as credentials are automatically discovered from the `domino-registry` Kubernetes secret containing the `.dockerconfigjson` data.
 
 ### View Current Configuration
 
