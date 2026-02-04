@@ -232,13 +232,10 @@ class TestArchivedTagsFinder:
         """Set up mocks for ArchivedTagsFinder dependencies."""
         # Patch at the script level where they're imported
         mocker.patch("scripts.delete_archived_tags.config_manager", mock_config_manager)
-        mocker.patch("scripts.delete_archived_tags.SkopeoClient")
-        mocker.patch("scripts.delete_archived_tags.HealthChecker")
-        mocker.patch("scripts.delete_archived_tags.CheckpointManager")
         mocker.patch("scripts.delete_archived_tags.ImageAnalyzer")
         mocker.patch("scripts.delete_archived_tags.ImageUsageService")
 
-        # Also patch at deletion_base level
+        # Patch at deletion_base level (HealthChecker, CheckpointManager, SkopeoClient are only imported here)
         mocker.patch("utils.deletion_base.config_manager", mock_config_manager)
         mocker.patch("utils.deletion_base.SkopeoClient")
         mocker.patch("utils.deletion_base.HealthChecker")
@@ -407,9 +404,6 @@ class TestFilterClonedDependencies:
     def mock_archived_tags_deps(self, mocker, mock_config_manager):
         """Set up mocks for ArchivedTagsFinder dependencies."""
         mocker.patch("scripts.delete_archived_tags.config_manager", mock_config_manager)
-        mocker.patch("scripts.delete_archived_tags.SkopeoClient")
-        mocker.patch("scripts.delete_archived_tags.HealthChecker")
-        mocker.patch("scripts.delete_archived_tags.CheckpointManager")
         mocker.patch("scripts.delete_archived_tags.ImageAnalyzer")
         mocker.patch("scripts.delete_archived_tags.ImageUsageService")
 
@@ -488,9 +482,6 @@ class TestInUseEnvironmentDetection:
     def mock_archived_tags_deps(self, mocker, mock_config_manager):
         """Set up mocks for ArchivedTagsFinder dependencies."""
         mocker.patch("scripts.delete_archived_tags.config_manager", mock_config_manager)
-        mocker.patch("scripts.delete_archived_tags.SkopeoClient")
-        mocker.patch("scripts.delete_archived_tags.HealthChecker")
-        mocker.patch("scripts.delete_archived_tags.CheckpointManager")
         mocker.patch("scripts.delete_archived_tags.ImageAnalyzer")
         mocker.patch("scripts.delete_archived_tags.ImageUsageService")
 

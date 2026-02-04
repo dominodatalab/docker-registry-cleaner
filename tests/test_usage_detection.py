@@ -47,8 +47,8 @@ class TestUsageDetection:
         deleter = IntelligentImageDeleter()
 
         now = datetime.now(timezone.utc)
-        recent_date = (now - timedelta(days=5)).isoformat() + "Z"
-        old_date = (now - timedelta(days=35)).isoformat() + "Z"
+        recent_date = (now - timedelta(days=5)).isoformat().replace('+00:00', 'Z')
+        old_date = (now - timedelta(days=35)).isoformat().replace('+00:00', 'Z')
 
         image_analysis = {"layer1": {"tags": ["recent-tag", "old-tag"], "size": 1000000}}
 
@@ -79,7 +79,7 @@ class TestUsageDetection:
         deleter = IntelligentImageDeleter()
 
         now = datetime.now(timezone.utc)
-        old_date = (now - timedelta(days=100)).isoformat() + "Z"
+        old_date = (now - timedelta(days=100)).isoformat().replace('+00:00', 'Z')
 
         image_analysis = {"layer1": {"tags": ["project-tag"], "size": 1000000}}
 
@@ -126,8 +126,8 @@ class TestUsageDetection:
 
         now = datetime.now(timezone.utc)
         usage_info = {
-            "runs": [{"last_used": (now - timedelta(days=10)).isoformat() + "Z"}],
-            "workspaces": [{"workspace_last_change": (now - timedelta(days=5)).isoformat() + "Z"}],  # Most recent
+            "runs": [{"last_used": (now - timedelta(days=10)).isoformat().replace('+00:00', 'Z')}],
+            "workspaces": [{"workspace_last_change": (now - timedelta(days=5)).isoformat().replace('+00:00', 'Z')}],  # Most recent
             "models": [],
         }
 

@@ -40,8 +40,8 @@ class TestDeletionWorkflows:
         now = datetime.now(timezone.utc)
         return {
             "runs": [
-                {"environment_docker_tag": "tag1", "last_used": (now - timedelta(days=5)).isoformat() + "Z"},
-                {"environment_docker_tag": "tag2", "last_used": (now - timedelta(days=40)).isoformat() + "Z"},  # Old
+                {"environment_docker_tag": "tag1", "last_used": (now - timedelta(days=5)).isoformat().replace('+00:00', 'Z')},
+                {"environment_docker_tag": "tag2", "last_used": (now - timedelta(days=40)).isoformat().replace('+00:00', 'Z')},  # Old
             ],
             "workspaces": [],
             "models": [],
