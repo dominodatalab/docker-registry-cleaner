@@ -113,6 +113,7 @@ def create_registry_auth_error(registry_url: str, error: Exception) -> Actionabl
         suggestions.insert(1, "Verify managed identity is enabled on the AKS cluster")
         suggestions.insert(2, "Check that the managed identity has AcrPull role on the ACR")
         suggestions.insert(3, "Ensure AZURE_CLIENT_ID is set if multiple identities exist")
+        suggestions.insert(4, "Ensure workload identity is configured if using AKS workload identity")
 
     return ActionableError(
         message=f"Failed to authenticate with Docker registry at {registry_url}",

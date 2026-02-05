@@ -32,23 +32,29 @@ kubectl exec -it docker-registry-cleaner-0 -n domino-platform -- docker-registry
 ```bash
 helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
   --namespace domino-platform \
-  --set image.tag=v0.3.1 \
+  --set image.tag=v0.3.2 \
   --set resources.requests.memory=512Mi \
   --set persistence.size=20Gi
 ```
 
-**Override registry URL (e.g., for AWS ECR):**
+**Override registry URL (e.g., for AWS ECR or Azure ACR):**
 ```bash
+# AWS ECR
 helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
   --namespace domino-platform \
   --set env.registryUrl="946429944765.dkr.ecr.eu-west-1.amazonaws.com"
+
+# Azure ACR
+helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
+  --namespace domino-platform \
+  --set env.registryUrl="myregistry.azurecr.io"
 ```
 
 **Use custom values file:**
 ```bash
 cat > custom-values.yaml <<EOF
 image:
-  tag: v0.3.1
+  tag: v0.3.2
 resources:
   requests:
     memory: 512Mi
@@ -72,7 +78,7 @@ helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
 # Upgrade to a new version
 helm upgrade docker-registry-cleaner ./charts/docker-registry-cleaner \
   --namespace domino-platform \
-  --set image.tag=v0.3.2
+  --set image.tag=v0.3.3
 
 # Upgrade with custom values
 helm upgrade docker-registry-cleaner ./charts/docker-registry-cleaner \
@@ -95,7 +101,7 @@ The following table lists the configurable parameters of the Docker Registry Cle
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `image.repository` | Container image repository | `quay.io/domino/docker-registry-cleaner` |
-| `image.tag` | Container image tag | `v0.3.1` |
+| `image.tag` | Container image tag | `v0.3.2` |
 | `image.pullPolicy` | Image pull policy | `Always` |
 | `imagePullSecrets` | Image pull secrets | `[{name: domino-quay-repos}]` |
 
@@ -128,6 +134,8 @@ The following table lists the configurable parameters of the Docker Registry Cle
 |-----------|-------------|---------|
 | `env.registryUrl` | Override registry URL (e.g., for ECR, Quay) | `""` |
 | `env.registryAuthSecret` | Name of a K8s secret with `.dockerconfigjson` for secure credential storage | `""` |
+| `env.azureClientId` | Client ID of the managed identity for ACR auth | `""` |
+| `env.azureTenantId` | Azure AD tenant ID for ACR auth | `""` |
 | `extraEnv` | Additional environment variables (array) | `[]` |
 | `dominoPlatformNamespace` | Domino platform namespace | `domino-platform` |
 
@@ -185,12 +193,18 @@ extraEnv:
 
 ### Overriding Registry URL
 
-For AWS ECR or other external registries, use the `env.registryUrl` parameter:
+For AWS ECR, Azure ACR, or other external registries, use the `env.registryUrl` parameter:
 
 ```bash
+# AWS ECR
 helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
   --namespace domino-platform \
   --set env.registryUrl="946429944765.dkr.ecr.eu-west-1.amazonaws.com"
+
+# Azure ACR
+helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
+  --namespace domino-platform \
+  --set env.registryUrl="myregistry.azurecr.io"
 ```
 
 This sets the `REGISTRY_URL` environment variable, which overrides the `config.registry.url` value.
@@ -241,16 +255,45 @@ The tool automatically discovers Docker registry credentials from:
 2. Custom Kubernetes secret via `env.registryAuthSecret` (for external registries)
 3. Kubernetes `domino-registry` secret (auto-discovery for in-cluster registries)
 4. AWS ECR authentication (for `*.amazonaws.com` registries)
+5. Azure ACR authentication (for `*.azurecr.io` registries)
 
 **Username priority:**
 1. `REGISTRY_USERNAME` environment variable (explicit override)
 2. Custom Kubernetes secret via `env.registryAuthSecret` (for external registries)
 3. Kubernetes `domino-registry` secret (auto-discovery for in-cluster registries)
 4. AWS ECR registries automatically use `AWS` as the username
+5. Azure ACR registries automatically use a placeholder GUID
 
 For most Domino deployments with in-cluster registries, no additional configuration is needed.
 
-#### External Registries (Quay, GCR, ACR, etc.)
+#### AWS ECR and Azure ACR
+
+For AWS ECR registries (`*.amazonaws.com`) and Azure ACR registries (`*.azurecr.io`), authentication is automatic via managed identity when running in EKS or AKS respectively. Simply set the registry URL:
+
+```yaml
+# For AWS ECR
+env:
+  registryUrl: "123456789.dkr.ecr.us-west-2.amazonaws.com"
+
+# For Azure ACR
+env:
+  registryUrl: "myregistry.azurecr.io"
+```
+
+**For Azure AKS:** You must specify the managed identity client ID and tenant ID:
+
+```yaml
+env:
+  registryUrl: "myregistry.azurecr.io"
+  azureClientId: "12345678-1234-1234-1234-123456789abc"  # Client ID of the managed identity with AcrPull role
+  azureTenantId: "87654321-4321-4321-4321-cba987654321"  # Azure AD tenant ID
+```
+
+Ensure the pod's service account has the appropriate permissions:
+- **AWS EKS:** IAM role with `ecr:GetAuthorizationToken` and `ecr:BatchGetImage` permissions
+- **Azure AKS:** Managed identity with `AcrPull` role on the ACR
+
+#### External Registries (Quay, GCR, etc.)
 
 **Option 1: Using a Kubernetes secret (recommended for production)**
 
