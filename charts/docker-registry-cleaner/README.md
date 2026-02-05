@@ -32,7 +32,7 @@ kubectl exec -it docker-registry-cleaner-0 -n domino-platform -- docker-registry
 ```bash
 helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
   --namespace domino-platform \
-  --set image.tag=v0.3.0 \
+  --set image.tag=v0.3.1 \
   --set resources.requests.memory=512Mi \
   --set persistence.size=20Gi
 ```
@@ -48,7 +48,7 @@ helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
 ```bash
 cat > custom-values.yaml <<EOF
 image:
-  tag: v0.3.0
+  tag: v0.3.1
 resources:
   requests:
     memory: 512Mi
@@ -72,7 +72,7 @@ helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
 # Upgrade to a new version
 helm upgrade docker-registry-cleaner ./charts/docker-registry-cleaner \
   --namespace domino-platform \
-  --set image.tag=v0.3.1
+  --set image.tag=v0.3.2
 
 # Upgrade with custom values
 helm upgrade docker-registry-cleaner ./charts/docker-registry-cleaner \
@@ -95,7 +95,7 @@ The following table lists the configurable parameters of the Docker Registry Cle
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `image.repository` | Container image repository | `quay.io/domino/docker-registry-cleaner` |
-| `image.tag` | Container image tag | `v0.3.0` |
+| `image.tag` | Container image tag | `v0.3.1` |
 | `image.pullPolicy` | Image pull policy | `Always` |
 | `imagePullSecrets` | Image pull secrets | `[{name: domino-quay-repos}]` |
 
@@ -126,7 +126,8 @@ The following table lists the configurable parameters of the Docker Registry Cle
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `env.registryUrl` | Override registry URL (e.g., for ECR) | `""` |
+| `env.registryUrl` | Override registry URL (e.g., for ECR, Quay) | `""` |
+| `env.registryAuthSecret` | Name of a K8s secret with `.dockerconfigjson` for secure credential storage | `""` |
 | `extraEnv` | Additional environment variables (array) | `[]` |
 | `dominoPlatformNamespace` | Domino platform namespace | `domino-platform` |
 
@@ -234,11 +235,55 @@ These permissions are required for:
 ### Docker Registry
 
 The tool automatically discovers Docker registry credentials from:
-1. `REGISTRY_PASSWORD` environment variable (explicit override)
-2. Kubernetes `domino-registry` secret (auto-discovery)
-3. AWS ECR authentication (for `*.amazonaws.com` registries)
 
-For most Domino deployments, no additional configuration is needed.
+**Password priority:**
+1. `REGISTRY_PASSWORD` environment variable (explicit override)
+2. Custom Kubernetes secret via `env.registryAuthSecret` (for external registries)
+3. Kubernetes `domino-registry` secret (auto-discovery for in-cluster registries)
+4. AWS ECR authentication (for `*.amazonaws.com` registries)
+
+**Username priority:**
+1. `REGISTRY_USERNAME` environment variable (explicit override)
+2. Custom Kubernetes secret via `env.registryAuthSecret` (for external registries)
+3. Kubernetes `domino-registry` secret (auto-discovery for in-cluster registries)
+4. AWS ECR registries automatically use `AWS` as the username
+
+For most Domino deployments with in-cluster registries, no additional configuration is needed.
+
+#### External Registries (Quay, GCR, ACR, etc.)
+
+**Option 1: Using a Kubernetes secret (recommended for production)**
+
+Create a secret with `.dockerconfigjson` containing your registry credentials. See the [Kubernetes documentation on Docker config secrets](https://kubernetes.io/docs/concepts/configuration/secret/#docker-config-secrets) for more details.
+
+```bash
+kubectl create secret docker-registry quay-registry-creds \
+  --namespace domino-platform \
+  --docker-server=quay.io \
+  --docker-username="myorg+robotname" \
+  --docker-password="your-robot-token"
+```
+
+Then reference it in your values:
+
+```yaml
+env:
+  registryUrl: "quay.io"
+  registryAuthSecret: "quay-registry-creds"
+```
+
+**Option 2: Using environment variables (simpler but less secure)**
+
+```yaml
+extraEnv:
+  - name: REGISTRY_USERNAME
+    value: "myorg+robotname"  # For Quay robot accounts
+  - name: REGISTRY_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: my-registry-secret
+        key: password
+```
 
 ### MongoDB
 

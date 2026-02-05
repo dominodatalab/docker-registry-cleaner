@@ -411,7 +411,9 @@ For local installations, export environment variables to override configuration 
 # Docker Registry
 export REGISTRY_URL="registry.example.com"
 export REPOSITORY="my-repo"
+export REGISTRY_USERNAME="your_username"    # Required for external registries (Quay, GCR, ACR)
 export REGISTRY_PASSWORD="your_password"
+export REGISTRY_AUTH_SECRET="secret-name"   # Optional: K8s secret with .dockerconfigjson
 
 # Kubernetes
 export DOMINO_PLATFORM_NAMESPACE="domino-platform"
@@ -432,13 +434,20 @@ export S3_REGION="us-west-2"
 
 ### Docker Registry Authentication
 
-Authentication priority:
+**Username & Password priority:**
 
-1. `REGISTRY_PASSWORD` environment variable (explicit override)
-2. Kubernetes secret auto-discovery (reads `domino-registry` secret)
-3. AWS ECR authentication (automatic for `*.amazonaws.com` registries)
+1. `REGISTRY_USERNAME`|`REGISTRY_PASSWORD` environment variable (explicit override)
+2. Custom Kubernetes secret via `REGISTRY_AUTH_SECRET` (for external registries)
+3. Kubernetes secret auto-discovery (reads `domino-registry` secret)
+4. AWS ECR authentication (automatic for `*.amazonaws.com` registries)
 
 For most in-cluster Domino deployments, no explicit configuration is needed.
+
+For external registries (Quay, GCR, ACR, etc.), you have two options:
+
+1. **Kubernetes secret (recommended for production):** Set `REGISTRY_AUTH_SECRET` to the name of a secret containing `.dockerconfigjson` with your registry credentials. See the [Helm Chart README](charts/docker-registry-cleaner/README.md) for examples.
+
+2. **Environment variables:** Set both `REGISTRY_USERNAME` and `REGISTRY_PASSWORD` environment variables.
 
 ## How It Works
 

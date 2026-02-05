@@ -225,12 +225,28 @@ class ConfigManager:
         """
         return os.environ.get("REPOSITORY") or self.config["registry"]["repository"]
 
-    def _get_credentials_from_k8s_secret(self) -> tuple[Optional[str], Optional[str]]:
+    def get_registry_auth_secret(self) -> Optional[str]:
+        """Get the name of a custom Kubernetes secret for registry authentication.
+
+        This allows users to specify a secret containing .dockerconfigjson for
+        external registries (Quay, GCR, ACR, etc.) instead of using environment
+        variables for credentials.
+
+        Returns:
+            Secret name if configured via REGISTRY_AUTH_SECRET env var, None otherwise
+        """
+        return os.environ.get("REGISTRY_AUTH_SECRET")
+
+    def _get_credentials_from_k8s_secret(
+        self, secret_name: Optional[str] = None
+    ) -> tuple[Optional[str], Optional[str]]:
         """Get Docker registry username and password from Kubernetes secret.
 
-        Attempts to read credentials from the 'domino-registry' secret in the
-        domino-platform namespace (or configured platform namespace). This secret
-        should contain a .dockerconfigjson with Docker registry credentials.
+        Attempts to read credentials from a Kubernetes secret containing
+        .dockerconfigjson with Docker registry credentials.
+
+        Args:
+            secret_name: Name of the secret to read. If None, defaults to 'domino-registry'.
 
         Returns:
             Tuple of (username, password) - either or both may be None if not found
@@ -240,7 +256,7 @@ class ConfigManager:
 
             core_v1, _ = _get_kubernetes_clients()
             namespace = self.get_domino_platform_namespace()
-            secret_name = "domino-registry"
+            secret_name = secret_name or "domino-registry"
 
             logging.debug(f"Attempting to read {secret_name} secret from namespace {namespace}")
 
@@ -300,13 +316,16 @@ class ConfigManager:
             logging.debug(f"Could not read credentials from Kubernetes secret: {e}")
             return None, None
 
-    def _get_password_from_k8s_secret(self) -> Optional[str]:
+    def _get_password_from_k8s_secret(self, secret_name: Optional[str] = None) -> Optional[str]:
         """Get Docker registry password from Kubernetes secret.
+
+        Args:
+            secret_name: Name of the secret to read. If None, defaults to 'domino-registry'.
 
         Returns:
             Password string if found, None otherwise
         """
-        _, password = self._get_credentials_from_k8s_secret()
+        _, password = self._get_credentials_from_k8s_secret(secret_name)
         return password
 
     def get_registry_password(self) -> Optional[str]:
@@ -314,15 +333,23 @@ class ConfigManager:
 
         Priority order:
         1. REGISTRY_PASSWORD environment variable (explicit override)
-        2. Kubernetes secret (domino-registry in platform namespace)
-        3. ECR authentication (for AWS ECR registries)
+        2. Custom Kubernetes secret (REGISTRY_AUTH_SECRET, for external registries)
+        3. domino-registry Kubernetes secret (for in-cluster registries)
+        4. ECR authentication (for AWS ECR registries)
         """
         # First check explicit password from environment
         password = os.environ.get("REGISTRY_PASSWORD")
         if password:
             return password
 
-        # Try to get password from Kubernetes secret
+        # Try custom auth secret first (for external registries)
+        custom_secret = self.get_registry_auth_secret()
+        if custom_secret:
+            password = self._get_password_from_k8s_secret(custom_secret)
+            if password:
+                return password
+
+        # Fall back to domino-registry secret (for in-cluster registries)
         password = self._get_password_from_k8s_secret()
         if password:
             return password
@@ -342,15 +369,23 @@ class ConfigManager:
 
         Priority order:
         1. REGISTRY_USERNAME environment variable (explicit override)
-        2. Kubernetes secret (domino-registry in platform namespace)
-        3. For ECR registries, always returns "AWS"
+        2. Custom Kubernetes secret (REGISTRY_AUTH_SECRET, for external registries)
+        3. domino-registry Kubernetes secret (for in-cluster registries)
+        4. For ECR registries, always returns "AWS"
         """
         # First check explicit username from environment
         username = os.environ.get("REGISTRY_USERNAME")
         if username:
             return username
 
-        # Try to get username from Kubernetes secret
+        # Try custom auth secret first (for external registries)
+        custom_secret = self.get_registry_auth_secret()
+        if custom_secret:
+            username, _ = self._get_credentials_from_k8s_secret(custom_secret)
+            if username:
+                return username
+
+        # Fall back to domino-registry secret (for in-cluster registries)
         username, _ = self._get_credentials_from_k8s_secret()
         if username:
             return username
