@@ -150,6 +150,307 @@ class ConfigManager:
         """Get the name of a custom Kubernetes secret for registry authentication."""
         return os.environ.get("REGISTRY_AUTH_SECRET")
 
+    def _get_credentials_from_k8s_secret(
+        self, secret_name: Optional[str] = None
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Get Docker registry username and password from Kubernetes secret.
+
+        Attempts to read credentials from a Kubernetes secret containing
+        .dockerconfigjson with Docker registry credentials.
+
+        Args:
+            secret_name: Name of the secret to read. If None, defaults to 'domino-registry'.
+
+        Returns:
+            Tuple of (username, password) - either or both may be None if not found
+        """
+        try:
+            from kubernetes.client.rest import ApiException
+
+            core_v1, _ = _get_kubernetes_clients()
+            namespace = self.get_domino_platform_namespace()
+            secret_name = secret_name or "domino-registry"
+
+            logging.debug(f"Attempting to read {secret_name} secret from namespace {namespace}")
+
+            try:
+                secret = core_v1.read_namespaced_secret(name=secret_name, namespace=namespace)
+            except ApiException as e:
+                if e.status == 404:
+                    logging.debug(f"Secret {secret_name} not found in namespace {namespace}")
+                else:
+                    logging.debug(f"Error reading secret {secret_name}: {e}")
+                return None, None
+
+            # Read .dockerconfigjson from the secret
+            if not secret.data or ".dockerconfigjson" not in secret.data:
+                logging.debug(f"Secret {secret_name} does not contain .dockerconfigjson")
+                return None, None
+
+            # Decode the dockerconfigjson
+            dockerconfig_b64 = secret.data[".dockerconfigjson"]
+            dockerconfig_json = base64.b64decode(dockerconfig_b64).decode("utf-8")
+            dockerconfig = json.loads(dockerconfig_json)
+
+            # Extract credentials for our registry
+            registry_url = self.get_registry_url()
+            # Normalize registry URL for matching (remove port, protocol, etc.)
+            registry_host = registry_url.split(":")[0].split("/")[0]
+
+            if "auths" not in dockerconfig:
+                logging.debug("No 'auths' section in dockerconfigjson")
+                return None, None
+
+            # Try to find matching registry in auths
+            for auth_url, auth_data in dockerconfig["auths"].items():
+                # Check if this auth entry matches our registry
+                auth_host = auth_url.split(":")[0].split("/")[0]
+                if auth_host == registry_host or registry_host in auth_host:
+                    username = auth_data.get("username")
+                    password = auth_data.get("password")
+
+                    # If username/password not directly available, decode from 'auth' field
+                    if (not username or not password) and "auth" in auth_data:
+                        auth_decoded = base64.b64decode(auth_data["auth"]).decode("utf-8")
+                        if ":" in auth_decoded:
+                            decoded_user, decoded_pass = auth_decoded.split(":", 1)
+                            username = username or decoded_user
+                            password = password or decoded_pass
+
+                    if username or password:
+                        logging.info(f"Found registry credentials in {secret_name} secret")
+                        return username, password
+
+            logging.debug(f"No matching registry credentials found in {secret_name} secret for {registry_url}")
+            return None, None
+
+        except Exception as e:
+            # Log but don't fail - fall back to other auth methods
+            logging.debug(f"Could not read credentials from Kubernetes secret: {e}")
+            return None, None
+
+    def _get_password_from_k8s_secret(self, secret_name: Optional[str] = None) -> Optional[str]:
+        """Get Docker registry password from Kubernetes secret.
+
+        Args:
+            secret_name: Name of the secret to read. If None, defaults to 'domino-registry'.
+
+        Returns:
+            Password string if found, None otherwise
+        """
+        _, password = self._get_credentials_from_k8s_secret(secret_name)
+        return password
+
+    def get_registry_password(self) -> Optional[str]:
+        """Get registry password from environment, Kubernetes secret, or handle cloud registry authentication.
+
+        Priority order:
+        1. REGISTRY_PASSWORD environment variable (explicit override)
+        2. Custom Kubernetes secret (REGISTRY_AUTH_SECRET, for external registries)
+        3. domino-registry Kubernetes secret (for in-cluster registries)
+        4. ECR authentication (for AWS ECR registries)
+        5. ACR authentication (for Azure ACR registries)
+        """
+        # First check explicit password from environment
+        password = os.environ.get("REGISTRY_PASSWORD")
+        if password:
+            return password
+
+        # Try custom auth secret first (for external registries)
+        custom_secret = self.get_registry_auth_secret()
+        if custom_secret:
+            password = self._get_password_from_k8s_secret(custom_secret)
+            if password:
+                return password
+
+        # Fall back to domino-registry secret (for in-cluster registries)
+        password = self._get_password_from_k8s_secret()
+        if password:
+            return password
+
+        # If no password and registry is ECR, handle authentication
+        registry_url = self.get_registry_url()
+        if "amazonaws.com" in registry_url:
+            self._authenticate_ecr(registry_url)
+            # After authentication, we don't need to return a password
+            # as skopeo will use the authenticated session
+            return None
+
+        # If no password and registry is ACR, handle authentication
+        if "azurecr.io" in registry_url:
+            self._authenticate_acr(registry_url)
+            # After authentication, we don't need to return a password
+            # as skopeo will use the authenticated session
+            return None
+
+        return None
+
+    def get_registry_username(self) -> Optional[str]:
+        """Get registry username from environment or Kubernetes secret.
+
+        Priority order:
+        1. REGISTRY_USERNAME environment variable (explicit override)
+        2. Custom Kubernetes secret (REGISTRY_AUTH_SECRET, for external registries)
+        3. domino-registry Kubernetes secret (for in-cluster registries)
+        4. For ECR registries, always returns "AWS"
+        5. For ACR registries, always returns a placeholder GUID
+        """
+        # First check explicit username from environment
+        username = os.environ.get("REGISTRY_USERNAME")
+        if username:
+            return username
+
+        # Try custom auth secret first (for external registries)
+        custom_secret = self.get_registry_auth_secret()
+        if custom_secret:
+            username, _ = self._get_credentials_from_k8s_secret(custom_secret)
+            if username:
+                return username
+
+        # Fall back to domino-registry secret (for in-cluster registries)
+        username, _ = self._get_credentials_from_k8s_secret()
+        if username:
+            return username
+
+        # For ECR registries, username is always "AWS"
+        registry_url = self.get_registry_url()
+        if "amazonaws.com" in registry_url:
+            return "AWS"
+
+        # For ACR registries with AAD auth, username is a placeholder GUID
+        if "azurecr.io" in registry_url:
+            return "00000000-0000-0000-0000-000000000000"
+
+        return None
+
+    def _authenticate_ecr(self, registry_url: str) -> None:
+        """Authenticate with ECR using boto3 (no shell required)."""
+        try:
+            # Extract region from registry URL
+            # ECR URLs are typically: account.dkr.ecr.region.amazonaws.com
+            parts = registry_url.split(".")
+            if len(parts) >= 4 and parts[-2] == "amazonaws" and parts[-1] == "com":
+                region = parts[-3]  # Extract region from URL
+            else:
+                region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+
+            logging.info(f"Authenticating with ECR in region: {region}")
+
+            # Get ECR login password via boto3 (no aws CLI or shell needed)
+            import boto3
+
+            client = boto3.client("ecr", region_name=region)
+            response = client.get_authorization_token()
+            token_b64 = response["authorizationData"][0]["authorizationToken"]
+            token = base64.b64decode(token_b64).decode("utf-8")
+            _, password = token.split(":", 1)
+
+            # Run skopeo login with password on stdin (no shell)
+            # Use explicit --authfile to ensure nonroot users can write auth
+            subprocess.run(
+                [
+                    "skopeo",
+                    "login",
+                    "--authfile",
+                    self.auth_file,
+                    "--username",
+                    "AWS",
+                    "--password-stdin",
+                    registry_url,
+                ],
+                input=password,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            logging.info("ECR authentication successful")
+
+        except subprocess.CalledProcessError as e:
+            logging.error(f"ECR authentication failed: {e}")
+            if e.stderr:
+                logging.error(f"  stderr: {e.stderr}")
+            raise
+        except Exception as e:
+            logging.error(f"Unexpected error during ECR authentication: {e}")
+            raise
+
+    def _authenticate_acr(self, registry_url: str) -> None:
+        """Authenticate with Azure Container Registry using managed identity (no shell required)."""
+        try:
+            import urllib.parse
+            import urllib.request
+
+            logging.info(f"Authenticating with ACR: {registry_url}")
+
+            # Get Azure AD access token using managed identity
+            # If AZURE_CLIENT_ID is set, use ManagedIdentityCredential directly
+            # (required when multiple user-assigned identities exist on the AKS cluster)
+            client_id = os.environ.get("AZURE_CLIENT_ID")
+            if client_id:
+                from azure.identity import ManagedIdentityCredential
+
+                logging.info(f"Using managed identity with client ID: {client_id}")
+                credential = ManagedIdentityCredential(client_id=client_id)
+            else:
+                from azure.identity import DefaultAzureCredential
+
+                credential = DefaultAzureCredential()
+            # Scope for ACR is the registry URL itself
+            token = credential.get_token("https://management.azure.com/.default")
+            access_token = token.token
+
+            # Exchange the AAD token for an ACR refresh token
+            # POST to https://<registry>/oauth2/exchange
+            exchange_url = f"https://{registry_url}/oauth2/exchange"
+            data = urllib.parse.urlencode(
+                {
+                    "grant_type": "access_token",
+                    "service": registry_url,
+                    "access_token": access_token,
+                }
+            ).encode("utf-8")
+
+            req = urllib.request.Request(exchange_url, data=data, method="POST")
+            req.add_header("Content-Type", "application/x-www-form-urlencoded")
+
+            with urllib.request.urlopen(req, timeout=30) as response:
+                import json
+
+                result = json.loads(response.read().decode("utf-8"))
+                refresh_token = result["refresh_token"]
+
+            # Run skopeo login with the refresh token as password
+            # Username for AAD auth is a placeholder GUID
+            subprocess.run(
+                [
+                    "skopeo",
+                    "login",
+                    "--authfile",
+                    self.auth_file,
+                    "--username",
+                    "00000000-0000-0000-0000-000000000000",
+                    "--password-stdin",
+                    registry_url,
+                ],
+                input=refresh_token,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            logging.info("ACR authentication successful")
+
+        except subprocess.CalledProcessError as e:
+            logging.error(f"ACR authentication failed during skopeo login: {e}")
+            if e.stderr:
+                logging.error(f"  stderr: {e.stderr}")
+            raise
+        except urllib.error.HTTPError as e:
+            logging.error(f"ACR token exchange failed: HTTP {e.code} - {e.reason}")
+            raise
+        except Exception as e:
+            logging.error(f"Unexpected error during ACR authentication: {e}")
+            raise
+
     # Kubernetes configuration
     def get_domino_platform_namespace(self) -> str:
         """Get Domino Platform namespace from environment or config"""
