@@ -148,7 +148,7 @@ class TestSaveTableAndJson:
             table_str = "Column1\tColumn2\nValue1\tValue2\n"
             json_obj = {"data": "value"}
 
-            save_table_and_json(base_path, table_str, json_obj)
+            save_table_and_json(base_path, table_str, json_obj, timestamp=False)
 
             txt_path = base_path + ".txt"
             json_path = base_path + ".json"
@@ -163,7 +163,7 @@ class TestSaveTableAndJson:
             table_str = "Header1\tHeader2\nRow1Col1\tRow1Col2\nRow2Col1\tRow2Col2\n"
             json_obj = {}
 
-            save_table_and_json(base_path, table_str, json_obj)
+            save_table_and_json(base_path, table_str, json_obj, timestamp=False)
 
             txt_path = base_path + ".txt"
             with open(txt_path, "r") as f:
@@ -179,7 +179,7 @@ class TestSaveTableAndJson:
             table_str = "Table content"
             json_obj = {"key1": "value1", "key2": 42}
 
-            save_table_and_json(base_path, table_str, json_obj)
+            save_table_and_json(base_path, table_str, json_obj, timestamp=False)
 
             json_path = base_path + ".json"
             with open(json_path, "r") as f:
@@ -193,7 +193,7 @@ class TestSaveTableAndJson:
             table_str = "Table"
             json_obj = {"data": "value"}
 
-            save_table_and_json(base_path, table_str, json_obj)
+            save_table_and_json(base_path, table_str, json_obj, timestamp=False)
 
             assert os.path.exists(base_path + ".txt")
             assert os.path.exists(base_path + ".json")
@@ -206,7 +206,7 @@ class TestSaveTableAndJson:
             table_str = ""
             json_obj = {"data": "value"}
 
-            save_table_and_json(base_path, table_str, json_obj)
+            save_table_and_json(base_path, table_str, json_obj, timestamp=False)
 
             txt_path = base_path + ".txt"
             with open(txt_path, "r") as f:
@@ -220,7 +220,7 @@ class TestSaveTableAndJson:
             table_str = "Table content"
             json_obj = {}
 
-            save_table_and_json(base_path, table_str, json_obj)
+            save_table_and_json(base_path, table_str, json_obj, timestamp=False)
 
             json_path = base_path + ".json"
             with open(json_path, "r") as f:
@@ -236,8 +236,8 @@ class TestSaveTableAndJson:
             table_str2 = "New table"
             json_obj2 = {"new": "data"}
 
-            save_table_and_json(base_path, table_str1, json_obj1)
-            save_table_and_json(base_path, table_str2, json_obj2)
+            save_table_and_json(base_path, table_str1, json_obj1, timestamp=False)
+            save_table_and_json(base_path, table_str2, json_obj2, timestamp=False)
 
             txt_path = base_path + ".txt"
             json_path = base_path + ".json"
@@ -258,7 +258,7 @@ class TestSaveTableAndJson:
                 "people": [{"name": "Alice", "age": 30, "city": "NYC"}, {"name": "Bob", "age": 25, "city": "LA"}],
             }
 
-            save_table_and_json(base_path, table_str, json_obj)
+            save_table_and_json(base_path, table_str, json_obj, timestamp=False)
 
             txt_path = base_path + ".txt"
             json_path = base_path + ".json"

@@ -62,7 +62,7 @@ class TestDeletionLogic:
         unused_tags = [tag.split(":")[1] if ":" in tag else tag for tag in analysis.unused_images]
         assert "507f1f77bcf86cd799439999" not in unused_tags
 
-    @patch("delete_image.ImageAnalyzer")
+    @patch("scripts.delete_image.ImageAnalyzer")
     def test_calculate_freed_space_correctly_uses_image_analyzer(self, mock_analyzer_class):
         """Test that freed space calculation uses ImageAnalyzer correctly"""
         # Setup mock analyzer
@@ -237,7 +237,12 @@ class TestDeletionLogic:
 class TestDeletionFlowIntegration:
     """Integration tests for the complete deletion flow"""
 
-    @patch("delete_image.ImageAnalyzer")
+    def setup_method(self):
+        """Set up test fixtures"""
+        with patch("scripts.delete_image.SkopeoClient"):
+            self.deleter = IntelligentImageDeleter(registry_url="http://test-registry", repository="test-repo")
+
+    @patch("scripts.delete_image.ImageAnalyzer")
     @patch("scripts.delete_image.SkopeoClient")
     def test_complete_deletion_flow(self, mock_skopeo_class, mock_analyzer_class):
         """Test the complete flow from analysis to deletion"""

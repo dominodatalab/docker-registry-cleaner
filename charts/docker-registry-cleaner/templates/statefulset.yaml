@@ -55,6 +55,9 @@ spec:
                 secretKeyRef:
                   name: mongodb-replicaset-admin
                   key: password
+            {{- if .Values.extraEnv }}
+            {{- toYaml .Values.extraEnv | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

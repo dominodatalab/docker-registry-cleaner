@@ -101,7 +101,7 @@ class TestSharedLayerCalculation:
 
         # Delete all three - now base_layer should be freed
         freed_all = self.analyzer.freed_space_if_deleted(["environment:tag1", "environment:tag2", "environment:tag3"])
-        assert freed_all == 16000  # base_layer (5000) + unique1 (1000) + unique2 (2000) + unique3 (3000)
+        assert freed_all == 11000  # base_layer (5000) + unique1 (1000) + unique2 (2000) + unique3 (3000)
 
     def test_partially_shared_layers(self):
         """Test images with some shared and some unique layers"""
@@ -122,7 +122,7 @@ class TestSharedLayerCalculation:
 
         # Delete all - should free everything
         freed_all = self.analyzer.freed_space_if_deleted(["environment:tag1", "environment:tag2", "environment:tag3"])
-        assert freed_all == 16000  # All layers: A(1000) + B(2000) + C(3000) + D(4000) + E(5000)
+        assert freed_all == 15000  # All layers: A(1000) + B(2000) + C(3000) + D(4000) + E(5000)
 
     def test_individual_vs_total_calculation(self):
         """Test that individual tag sizes sum correctly vs total calculation"""
@@ -188,13 +188,13 @@ class TestSharedLayerCalculation:
         freed_all_shared = self.analyzer.freed_space_if_deleted(
             ["environment:tag1", "environment:tag2", "environment:tag3"]
         )
-        assert freed_all_shared == 16000  # A(1000) + B(2000) + C(3000) + D(4000) + E(5000)
+        assert freed_all_shared == 15000  # A(1000) + B(2000) + C(3000) + D(4000) + E(5000)
 
         # Delete all 4
         freed_all = self.analyzer.freed_space_if_deleted(
             ["environment:tag1", "environment:tag2", "environment:tag3", "environment:tag4"]
         )
-        assert freed_all == 29000  # All layers
+        assert freed_all == 28000  # All layers: A(1000) + B(2000) + C(3000) + D(4000) + E(5000) + F(6000) + G(7000)
 
 
 class TestSharedLayerCalculationWithRealisticData:
@@ -232,13 +232,18 @@ class TestSharedLayerCalculationWithRealisticData:
         # Verify ref_count
         assert analyzer.layers[layer_id]["ref_count"] == 2
 
-        # Delete tag1 - layer should still have ref_count 1 (used by tag2)
+        # Delete tag1 alone - layer still has ref_count=2, only 1 would be removed
         freed = analyzer.freed_space_if_deleted(["environment:tag1"])
         assert freed == 0  # Layer still referenced by tag2
 
-        # Delete tag2 - now layer should be freed
+        # Delete tag2 alone - layer still has ref_count=2, only 1 would be removed
+        # (freed_space_if_deleted is a simulation, it doesn't actually modify ref_count)
         freed = analyzer.freed_space_if_deleted(["environment:tag2"])
-        assert freed == layer_size  # Layer no longer referenced
+        assert freed == 0  # Layer still referenced by tag1
+
+        # Delete both tags - now layer should be freed (ref_count=2, delete_count=2)
+        freed = analyzer.freed_space_if_deleted(["environment:tag1", "environment:tag2"])
+        assert freed == layer_size  # Layer no longer referenced by any remaining image
 
     def test_layer_order_preservation(self):
         """Test that layer order is preserved in image_layers"""

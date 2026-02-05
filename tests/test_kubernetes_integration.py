@@ -107,7 +107,7 @@ class TestIsRegistryInCluster:
         assert result is True
 
     def test_in_cluster_registry_without_statefulset_returns_false(self, mocker):
-        """In-cluster URL but no StatefulSet should return False."""
+        """In-cluster URL but no StatefulSet or Service should return False."""
         from kubernetes.client.rest import ApiException
 
         from utils.config_manager import is_registry_in_cluster
@@ -116,7 +116,9 @@ class TestIsRegistryInCluster:
         mock_apps_v1 = MagicMock()
         mocker.patch("utils.config_manager._get_kubernetes_clients", return_value=(mock_core_v1, mock_apps_v1))
 
-        # Mock 404 - StatefulSet not found
+        # Mock 404 - Service not found (checked first)
+        mock_core_v1.read_namespaced_service.side_effect = ApiException(status=404)
+        # Mock 404 - StatefulSet not found (checked second)
         mock_apps_v1.read_namespaced_stateful_set.side_effect = ApiException(status=404)
 
         result = is_registry_in_cluster("docker-registry.domino-platform.svc.cluster.local:5000", "domino-platform")
@@ -135,13 +137,13 @@ class TestHealthCheckerKubernetesAccess:
         """Test successful K8s API access."""
         from utils.health_checks import HealthChecker
 
-        # Mock K8s config loading
-        mocker.patch("utils.health_checks.load_incluster_config")
+        # Mock K8s config loading (patch where it's imported from)
+        mocker.patch("kubernetes.config.load_incluster_config")
 
         # Mock CoreV1Api
         mock_core_v1 = MagicMock()
         mock_core_v1.read_namespace.return_value = Mock()
-        mocker.patch("utils.health_checks.k8s_client.CoreV1Api", return_value=mock_core_v1)
+        mocker.patch("kubernetes.client.CoreV1Api", return_value=mock_core_v1)
 
         checker = HealthChecker()
         result = checker.check_kubernetes_access()
@@ -156,13 +158,13 @@ class TestHealthCheckerKubernetesAccess:
 
         from utils.health_checks import HealthChecker
 
-        # Mock K8s config loading
-        mocker.patch("utils.health_checks.load_incluster_config")
+        # Mock K8s config loading (patch where it's imported from)
+        mocker.patch("kubernetes.config.load_incluster_config")
 
         # Mock CoreV1Api with 403 error
         mock_core_v1 = MagicMock()
         mock_core_v1.read_namespace.side_effect = ApiException(status=403, reason="Forbidden")
-        mocker.patch("utils.health_checks.k8s_client.CoreV1Api", return_value=mock_core_v1)
+        mocker.patch("kubernetes.client.CoreV1Api", return_value=mock_core_v1)
 
         checker = HealthChecker()
         result = checker.check_kubernetes_access()
@@ -174,9 +176,10 @@ class TestHealthCheckerKubernetesAccess:
         """Test graceful handling when kubernetes package is not installed."""
         from utils.health_checks import HealthChecker
 
-        # Mock import error
-        mocker.patch("utils.health_checks.load_incluster_config", side_effect=ImportError())
-        mocker.patch("utils.health_checks.load_kube_config", side_effect=ImportError())
+        # Mock import error by making load_incluster_config and load_kube_config raise ImportError
+        # The code catches ImportError at the top level, so we need to make the import fail
+        mocker.patch("kubernetes.config.load_incluster_config", side_effect=ImportError("No kubernetes"))
+        mocker.patch("kubernetes.config.load_kube_config", side_effect=ImportError("No kubernetes"))
 
         checker = HealthChecker()
         result = checker.check_kubernetes_access()
@@ -238,7 +241,13 @@ class TestHealthCheckerRegistryDeletionRBAC:
         result = checker.check_registry_deletion_rbac()
 
         assert result.status is False
-        assert "403" in result.message or "permission" in result.message.lower()
+        # The 403 status code may be in message or details
+        assert (
+            "403" in result.message
+            or "permission" in result.message.lower()
+            or "forbidden" in result.message.lower()
+            or result.details.get("status") == 403
+        )
 
 
 # ============================================================================

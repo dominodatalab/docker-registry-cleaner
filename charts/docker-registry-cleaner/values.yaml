@@ -20,6 +20,19 @@ resources:
 env:
   registryUrl: ""  # Set to registry host (e.g. 946429944765.dkr.ecr.eu-west-1.amazonaws.com) to override config
 
+# Additional environment variables to add to the container
+# Supports full Kubernetes env var syntax including valueFrom
+# Example:
+# extraEnv:
+#   - name: AWS_DEFAULT_REGION
+#     value: "us-west-2"
+#   - name: CUSTOM_SECRET
+#     valueFrom:
+#       secretKeyRef:
+#         name: my-secret
+#         key: password
+extraEnv: []
+
 imagePullSecrets:
   - name: domino-quay-repos
 

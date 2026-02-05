@@ -21,7 +21,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install ".[dev]"
 
       - name: Check formatting with black
         run: black --check python/ tests/
@@ -46,8 +46,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
+          pip install ".[dev]"
 
       - name: Type check with mypy
         run: mypy python/
@@ -71,8 +70,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
+          pip install ".[dev]"
 
       - name: Run tests with pytest
         run: |

@@ -139,4 +139,4 @@ class TestDeletionWorkflows:
         usage = {"runs": [], "workspaces": [], "models": []}
 
         summary = deleter._generate_usage_summary(usage)
-        assert "Referenced in system" in summary or "unknown" in summary.lower()
+        assert "No usage found" in summary
