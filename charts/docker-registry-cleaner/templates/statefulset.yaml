@@ -49,6 +49,14 @@ spec:
             - name: REGISTRY_AUTH_SECRET
               value: {{ .Values.env.registryAuthSecret | quote }}
             {{- end }}
+            {{- if and .Values.env .Values.env.azureClientId }}
+            - name: AZURE_CLIENT_ID
+              value: {{ .Values.env.azureClientId | quote }}
+            {{- end }}
+            {{- if and .Values.env .Values.env.azureTenantId }}
+            - name: AZURE_TENANT_ID
+              value: {{ .Values.env.azureTenantId | quote }}
+            {{- end }}
             - name: KEYCLOAK_PASSWORD
               valueFrom:
                 secretKeyRef:
