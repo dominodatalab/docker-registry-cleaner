@@ -133,6 +133,13 @@ class ConfigManager:
         self.config_file = config_file
         self.config = self._load_config()
 
+        # Set up skopeo auth file early (before any skopeo commands run)
+        # This ensures nonroot users can authenticate (can't write to /run/containers)
+        auth_dir = self.get_output_dir()
+        os.makedirs(auth_dir, exist_ok=True)
+        self.auth_file = os.path.join(auth_dir, ".registry-auth.json")
+        os.environ["REGISTRY_AUTH_FILE"] = self.auth_file
+
         if validate:
             self.validate_config()
 
@@ -341,10 +348,13 @@ class ConfigManager:
             _, password = token.split(":", 1)
 
             # Run skopeo login with password on stdin (no shell)
+            # Use explicit --authfile to ensure nonroot users can write auth
             subprocess.run(
                 [
                     "skopeo",
                     "login",
+                    "--authfile",
+                    self.auth_file,
                     "--username",
                     "AWS",
                     "--password-stdin",
@@ -929,16 +939,25 @@ class SkopeoClient:
     def _login_to_registry(self):
         """Login to the registry using skopeo login"""
         try:
+            # Get auth file from environment (set by ConfigManager)
+            auth_file = os.environ.get("REGISTRY_AUTH_FILE")
             cmd = [
                 "skopeo",
                 "login",
-                "--username",
-                "domino-registry",
-                "--password",
-                self.password,
-                "--tls-verify=false",
-                self.registry_url,
             ]
+            # Add --authfile if available (for nonroot compatibility)
+            if auth_file:
+                cmd.extend(["--authfile", auth_file])
+            cmd.extend(
+                [
+                    "--username",
+                    "domino-registry",
+                    "--password",
+                    self.password,
+                    "--tls-verify=false",
+                    self.registry_url,
+                ]
+            )
 
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             if "Login Succeeded" not in result.stdout:
