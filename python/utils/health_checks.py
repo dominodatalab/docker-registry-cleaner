@@ -71,24 +71,56 @@ class HealthChecker:
             skopeo_client = SkopeoClient(config_manager, enable_docker_deletion=False)
 
             last_error: Optional[Exception] = None
-            # Try each candidate repository until one succeeds
+            # Try each candidate repository until one succeeds with tags
+            total_tags_found = 0
+            successful_repo = None
             for repo in candidate_repos:
                 try:
                     tags = skopeo_client.list_tags(repo)
-                    return HealthCheckResult(
-                        name="registry_connectivity",
-                        status=True,
-                        message=f"Successfully connected to registry {registry_url}",
-                        details={
-                            "registry_url": registry_url,
-                            "repository": repo,
-                            "tags_count": len(tags) if tags else 0,
-                        },
-                    )
+                    tag_count = len(tags) if tags else 0
+                    total_tags_found += tag_count
+                    if tag_count > 0:
+                        return HealthCheckResult(
+                            name="registry_connectivity",
+                            status=True,
+                            message=f"Successfully connected to registry {registry_url}",
+                            details={
+                                "registry_url": registry_url,
+                                "repository": repo,
+                                "tags_count": tag_count,
+                            },
+                        )
+                    # Record that we could connect but found 0 tags
+                    if successful_repo is None:
+                        successful_repo = repo
                 except Exception as e_repo:
                     # Record the error and try the next candidate
                     last_error = e_repo
                     self.logger.debug(f"Failed to list tags for candidate repository '{repo}': {e_repo}")
+
+            # If we connected but found 0 tags across all repos, this is suspicious
+            # (likely an auth issue where the registry returns empty instead of 401/403)
+            if successful_repo is not None and total_tags_found == 0:
+                return HealthCheckResult(
+                    name="registry_connectivity",
+                    status=False,
+                    message=(
+                        f"Connected to registry {registry_url} but found 0 tags. "
+                        "This may indicate an authentication problem - some registries return "
+                        "empty results instead of auth errors when credentials are invalid."
+                    ),
+                    details={
+                        "registry_url": registry_url,
+                        "repository": ",".join(candidate_repos),
+                        "tags_count": 0,
+                        "suggestions": [
+                            "Verify registry credentials are configured correctly",
+                            "Check if the docker config secret contains valid credentials",
+                            "Try manually listing tags with: skopeo list-tags docker://<registry>/<repo>",
+                            "For Quay registries, ensure the robot account has read access",
+                        ],
+                    },
+                )
 
             # If all candidates failed, raise the last error to be handled below
             if last_error is not None:

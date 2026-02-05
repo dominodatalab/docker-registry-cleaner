@@ -186,11 +186,16 @@ class TestBaseDeletionScript:
             pass
 
         # Mock health check results - all pass
-        mock_health_checker.run_all_checks.return_value = [
-            Mock(name="configuration", status=True),
-            Mock(name="registry_connectivity", status=True),
-            Mock(name="mongodb_connectivity", status=True),
-        ]
+        # Note: Mock(name=...) uses 'name' for repr, not as an attribute.
+        # We need to set the name attribute explicitly.
+        config_check = Mock(status=True)
+        config_check.name = "configuration"
+        registry_check = Mock(status=True)
+        registry_check.name = "registry_connectivity"
+        mongo_check = Mock(status=True)
+        mongo_check.name = "mongodb_connectivity"
+
+        mock_health_checker.run_all_checks.return_value = [config_check, registry_check, mongo_check]
 
         script = ConcreteDeletionScript()
         result = script.run_health_checks()
@@ -207,11 +212,14 @@ class TestBaseDeletionScript:
             pass
 
         # Mock health check results - registry fails
-        mock_health_checker.run_all_checks.return_value = [
-            Mock(name="configuration", status=True),
-            Mock(name="registry_connectivity", status=False),  # Failed
-            Mock(name="mongodb_connectivity", status=True),
-        ]
+        config_check = Mock(status=True)
+        config_check.name = "configuration"
+        registry_check = Mock(status=False)  # Failed
+        registry_check.name = "registry_connectivity"
+        mongo_check = Mock(status=True)
+        mongo_check.name = "mongodb_connectivity"
+
+        mock_health_checker.run_all_checks.return_value = [config_check, registry_check, mongo_check]
 
         script = ConcreteDeletionScript()
         result = script.run_health_checks()
@@ -341,16 +349,24 @@ class TestArchivedTagsFinder:
         mock_mongo_client = MagicMock()
         mocker.patch("scripts.delete_archived_tags.get_mongo_client", return_value=mock_mongo_client)
 
-        mock_db = MagicMock()
-        mock_mongo_client.__getitem__.return_value = mock_db
-
-        # Mock environments_v2 collection
+        # Create collection mocks upfront to ensure consistency
         env_id = ObjectId()
-        mock_db["environments_v2"].find.return_value = [{"_id": env_id}]
-
-        # Mock environment_revisions collection
         rev_id = ObjectId()
-        mock_db["environment_revisions"].find.return_value = [{"_id": rev_id, "environmentId": env_id}]
+
+        mock_env_collection = MagicMock()
+        mock_env_collection.find.return_value = [{"_id": env_id}]
+
+        mock_rev_collection = MagicMock()
+        mock_rev_collection.find.return_value = [{"_id": rev_id, "environmentId": env_id}]
+
+        # Use side_effect to return the correct collection mock based on key
+        collections = {
+            "environments_v2": mock_env_collection,
+            "environment_revisions": mock_rev_collection,
+        }
+        mock_db = MagicMock()
+        mock_db.__getitem__.side_effect = lambda key: collections.get(key, MagicMock())
+        mock_mongo_client.__getitem__.return_value = mock_db
 
         finder = ArchivedTagsFinder(registry_url="registry:5000", repository="repo", process_environments=True)
 
@@ -369,18 +385,26 @@ class TestArchivedTagsFinder:
         mock_mongo_client = MagicMock()
         mocker.patch("scripts.delete_archived_tags.get_mongo_client", return_value=mock_mongo_client)
 
-        mock_db = MagicMock()
-        mock_mongo_client.__getitem__.return_value = mock_db
-
-        # Mock models collection
+        # Create collection mocks upfront to ensure consistency
         model_id = ObjectId()
-        mock_db["models"].find.return_value = [{"_id": model_id}]
-
-        # Mock model_versions collection
         version_id = ObjectId()
-        mock_db["model_versions"].find.return_value = [
+
+        mock_models_collection = MagicMock()
+        mock_models_collection.find.return_value = [{"_id": model_id}]
+
+        mock_versions_collection = MagicMock()
+        mock_versions_collection.find.return_value = [
             {"_id": version_id, "modelId": {"value": model_id}, "metadata": {}}
         ]
+
+        # Use side_effect to return the correct collection mock based on key
+        collections = {
+            "models": mock_models_collection,
+            "model_versions": mock_versions_collection,
+        }
+        mock_db = MagicMock()
+        mock_db.__getitem__.side_effect = lambda key: collections.get(key, MagicMock())
+        mock_mongo_client.__getitem__.return_value = mock_db
 
         finder = ArchivedTagsFinder(registry_url="registry:5000", repository="repo", process_models=True)
 
@@ -510,14 +534,25 @@ class TestInUseEnvironmentDetection:
         mock_mongo_client = MagicMock()
         mocker.patch("scripts.delete_archived_tags.get_mongo_client", return_value=mock_mongo_client)
 
-        mock_db = MagicMock()
-        mock_mongo_client.__getitem__.return_value = mock_db
-
         env_id = ObjectId()
 
-        # Mock workspace collection finding a reference
-        mock_db["workspace"].find.return_value = [{"_id": ObjectId(), "configTemplate": {"environmentId": env_id}}]
-        mock_db["workspace_session"].find.return_value = []
+        # Create collection mocks with proper distinct() returns
+        mock_workspace = MagicMock()
+        mock_workspace.find.return_value = [{"configTemplate": {"environmentId": env_id}}]
+        # The actual check uses distinct(), not find()
+        mock_workspace.distinct.return_value = [env_id]
+
+        mock_workspace_session = MagicMock()
+        mock_workspace_session.find.return_value = []
+        mock_workspace_session.distinct.return_value = []
+
+        collections = {
+            "workspace": mock_workspace,
+            "workspace_session": mock_workspace_session,
+        }
+        mock_db = MagicMock()
+        mock_db.__getitem__.side_effect = lambda key: collections.get(key, MagicMock())
+        mock_mongo_client.__getitem__.return_value = mock_db
 
         finder = ArchivedTagsFinder(registry_url="registry:5000", repository="repo", process_environments=True)
 

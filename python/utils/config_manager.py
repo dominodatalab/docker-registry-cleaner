@@ -133,6 +133,13 @@ class ConfigManager:
         self.config_file = config_file
         self.config = self._load_config()
 
+        # Set up skopeo auth file early (before any skopeo commands run)
+        # This ensures nonroot users can authenticate (can't write to /run/containers)
+        auth_dir = self.get_output_dir()
+        os.makedirs(auth_dir, exist_ok=True)
+        self.auth_file = os.path.join(auth_dir, ".registry-auth.json")
+        os.environ["REGISTRY_AUTH_FILE"] = self.auth_file
+
         if validate:
             self.validate_config()
 
@@ -218,22 +225,38 @@ class ConfigManager:
         """
         return os.environ.get("REPOSITORY") or self.config["registry"]["repository"]
 
-    def _get_password_from_k8s_secret(self) -> Optional[str]:
-        """Get Docker registry password from Kubernetes secret.
+    def get_registry_auth_secret(self) -> Optional[str]:
+        """Get the name of a custom Kubernetes secret for registry authentication.
 
-        Attempts to read credentials from the 'domino-registry' secret in the
-        domino-platform namespace (or configured platform namespace). This secret
-        should contain a .dockerconfigjson with Docker registry credentials.
+        This allows users to specify a secret containing .dockerconfigjson for
+        external registries (Quay, GCR, ACR, etc.) instead of using environment
+        variables for credentials.
 
         Returns:
-            Password string if found, None otherwise
+            Secret name if configured via REGISTRY_AUTH_SECRET env var, None otherwise
+        """
+        return os.environ.get("REGISTRY_AUTH_SECRET")
+
+    def _get_credentials_from_k8s_secret(
+        self, secret_name: Optional[str] = None
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Get Docker registry username and password from Kubernetes secret.
+
+        Attempts to read credentials from a Kubernetes secret containing
+        .dockerconfigjson with Docker registry credentials.
+
+        Args:
+            secret_name: Name of the secret to read. If None, defaults to 'domino-registry'.
+
+        Returns:
+            Tuple of (username, password) - either or both may be None if not found
         """
         try:
             from kubernetes.client.rest import ApiException
 
             core_v1, _ = _get_kubernetes_clients()
             namespace = self.get_domino_platform_namespace()
-            secret_name = "domino-registry"
+            secret_name = secret_name or "domino-registry"
 
             logging.debug(f"Attempting to read {secret_name} secret from namespace {namespace}")
 
@@ -244,12 +267,12 @@ class ConfigManager:
                     logging.debug(f"Secret {secret_name} not found in namespace {namespace}")
                 else:
                     logging.debug(f"Error reading secret {secret_name}: {e}")
-                return None
+                return None, None
 
             # Read .dockerconfigjson from the secret
             if not secret.data or ".dockerconfigjson" not in secret.data:
                 logging.debug(f"Secret {secret_name} does not contain .dockerconfigjson")
-                return None
+                return None, None
 
             # Decode the dockerconfigjson
             dockerconfig_b64 = secret.data[".dockerconfigjson"]
@@ -263,47 +286,70 @@ class ConfigManager:
 
             if "auths" not in dockerconfig:
                 logging.debug("No 'auths' section in dockerconfigjson")
-                return None
+                return None, None
 
             # Try to find matching registry in auths
             for auth_url, auth_data in dockerconfig["auths"].items():
                 # Check if this auth entry matches our registry
                 auth_host = auth_url.split(":")[0].split("/")[0]
                 if auth_host == registry_host or registry_host in auth_host:
-                    # Try to get password directly
-                    if "password" in auth_data:
-                        logging.info(f"Found registry password in {secret_name} secret")
-                        return auth_data["password"]
-                    # Otherwise decode from 'auth' field (base64 encoded "username:password")
-                    elif "auth" in auth_data:
+                    username = auth_data.get("username")
+                    password = auth_data.get("password")
+
+                    # If username/password not directly available, decode from 'auth' field
+                    if (not username or not password) and "auth" in auth_data:
                         auth_decoded = base64.b64decode(auth_data["auth"]).decode("utf-8")
                         if ":" in auth_decoded:
-                            _, password = auth_decoded.split(":", 1)
-                            logging.info(f"Found registry password in {secret_name} secret (from auth field)")
-                            return password
+                            decoded_user, decoded_pass = auth_decoded.split(":", 1)
+                            username = username or decoded_user
+                            password = password or decoded_pass
+
+                    if username or password:
+                        logging.info(f"Found registry credentials in {secret_name} secret")
+                        return username, password
 
             logging.debug(f"No matching registry credentials found in {secret_name} secret for {registry_url}")
-            return None
+            return None, None
 
         except Exception as e:
             # Log but don't fail - fall back to other auth methods
             logging.debug(f"Could not read credentials from Kubernetes secret: {e}")
-            return None
+            return None, None
+
+    def _get_password_from_k8s_secret(self, secret_name: Optional[str] = None) -> Optional[str]:
+        """Get Docker registry password from Kubernetes secret.
+
+        Args:
+            secret_name: Name of the secret to read. If None, defaults to 'domino-registry'.
+
+        Returns:
+            Password string if found, None otherwise
+        """
+        _, password = self._get_credentials_from_k8s_secret(secret_name)
+        return password
 
     def get_registry_password(self) -> Optional[str]:
         """Get registry password from environment, Kubernetes secret, or handle ECR authentication.
 
         Priority order:
         1. REGISTRY_PASSWORD environment variable (explicit override)
-        2. Kubernetes secret (domino-registry in platform namespace)
-        3. ECR authentication (for AWS ECR registries)
+        2. Custom Kubernetes secret (REGISTRY_AUTH_SECRET, for external registries)
+        3. domino-registry Kubernetes secret (for in-cluster registries)
+        4. ECR authentication (for AWS ECR registries)
         """
         # First check explicit password from environment
         password = os.environ.get("REGISTRY_PASSWORD")
         if password:
             return password
 
-        # Try to get password from Kubernetes secret
+        # Try custom auth secret first (for external registries)
+        custom_secret = self.get_registry_auth_secret()
+        if custom_secret:
+            password = self._get_password_from_k8s_secret(custom_secret)
+            if password:
+                return password
+
+        # Fall back to domino-registry secret (for in-cluster registries)
         password = self._get_password_from_k8s_secret()
         if password:
             return password
@@ -315,6 +361,39 @@ class ConfigManager:
             # After authentication, we don't need to return a password
             # as skopeo will use the authenticated session
             return None
+
+        return None
+
+    def get_registry_username(self) -> Optional[str]:
+        """Get registry username from environment or Kubernetes secret.
+
+        Priority order:
+        1. REGISTRY_USERNAME environment variable (explicit override)
+        2. Custom Kubernetes secret (REGISTRY_AUTH_SECRET, for external registries)
+        3. domino-registry Kubernetes secret (for in-cluster registries)
+        4. For ECR registries, always returns "AWS"
+        """
+        # First check explicit username from environment
+        username = os.environ.get("REGISTRY_USERNAME")
+        if username:
+            return username
+
+        # Try custom auth secret first (for external registries)
+        custom_secret = self.get_registry_auth_secret()
+        if custom_secret:
+            username, _ = self._get_credentials_from_k8s_secret(custom_secret)
+            if username:
+                return username
+
+        # Fall back to domino-registry secret (for in-cluster registries)
+        username, _ = self._get_credentials_from_k8s_secret()
+        if username:
+            return username
+
+        # For ECR registries, username is always "AWS"
+        registry_url = self.get_registry_url()
+        if "amazonaws.com" in registry_url:
+            return "AWS"
 
         return None
 
@@ -341,10 +420,13 @@ class ConfigManager:
             _, password = token.split(":", 1)
 
             # Run skopeo login with password on stdin (no shell)
+            # Use explicit --authfile to ensure nonroot users can write auth
             subprocess.run(
                 [
                     "skopeo",
                     "login",
+                    "--authfile",
+                    self.auth_file,
                     "--username",
                     "AWS",
                     "--password-stdin",
@@ -859,6 +941,7 @@ class SkopeoClient:
         auth_file = os.path.join(auth_dir, ".registry-auth.json")
         os.environ["REGISTRY_AUTH_FILE"] = auth_file
 
+        self.username = config_manager.get_registry_username()
         self.password = config_manager.get_registry_password()
 
         if self.rate_limit_enabled:
@@ -929,18 +1012,34 @@ class SkopeoClient:
     def _login_to_registry(self):
         """Login to the registry using skopeo login"""
         try:
+            if not self.username:
+                raise RuntimeError(
+                    "Registry username not configured. Set REGISTRY_USERNAME environment variable "
+                    "or ensure the domino-registry Kubernetes secret contains valid credentials."
+                )
+
+            # Get auth file from environment (set by ConfigManager)
+            auth_file = os.environ.get("REGISTRY_AUTH_FILE")
             cmd = [
                 "skopeo",
                 "login",
-                "--username",
-                "domino-registry",
-                "--password",
-                self.password,
-                "--tls-verify=false",
-                self.registry_url,
             ]
+            # Add --authfile if available (for nonroot compatibility)
+            if auth_file:
+                cmd.extend(["--authfile", auth_file])
+            cmd.extend(
+                [
+                    "--username",
+                    self.username,
+                    "--password-stdin",
+                    "--tls-verify=false",
+                    self.registry_url,
+                ]
+            )
 
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            # Pass password via stdin to avoid issues with special characters
+            # and to prevent password from appearing in process listings
+            result = subprocess.run(cmd, input=self.password, capture_output=True, text=True, check=True)
             if "Login Succeeded" not in result.stdout:
                 raise RuntimeError(f"Login failed: {result.stdout}")
 
@@ -949,12 +1048,19 @@ class SkopeoClient:
             raise
 
     def _get_auth_args(self) -> List[str]:
-        """Get authentication arguments for Skopeo commands"""
-        base = ["--tls-verify=false"]
-        # Allow unauthenticated operations when password is not set
-        if self.password:
-            return base + ["--creds", f"domino-registry:{self.password}"]
-        return base
+        """Get authentication arguments for Skopeo commands.
+
+        Authentication is handled via the auth file created during login
+        (pointed to by REGISTRY_AUTH_FILE env var). We no longer pass
+        credentials on the command line to avoid issues with special
+        characters and to prevent passwords from appearing in process listings.
+        """
+        args = ["--tls-verify=false"]
+        # Add explicit --authfile if set in environment
+        auth_file = os.environ.get("REGISTRY_AUTH_FILE")
+        if auth_file:
+            args.extend(["--authfile", auth_file])
+        return args
 
     def _build_skopeo_command(self, subcommand: str, args: List[str]) -> List[str]:
         """Build a complete Skopeo command with authentication"""

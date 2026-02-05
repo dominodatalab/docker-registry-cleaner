@@ -1,6 +1,6 @@
 image:
   repository: quay.io/domino/docker-registry-cleaner
-  tag: v0.3.0
+  tag: v0.3.1
   pullPolicy: Always
 
 # fsGroup makes the PVC at /data/reports writable by nonroot (65532)
@@ -16,9 +16,10 @@ resources:
     cpu: 1000m
     memory: 1Gi
 
-# Optional env overrides (e.g. REGISTRY_URL for ECR)
+# Optional env overrides for external registries (ECR, Quay, GCR, ACR, etc.)
 env:
-  registryUrl: ""  # Set to registry host (e.g. 946429944765.dkr.ecr.eu-west-1.amazonaws.com) to override config
+  registryUrl: ""         # Set to registry host (e.g. 946429944765.dkr.ecr.eu-west-1.amazonaws.com)
+  registryAuthSecret: ""  # Name of a K8s secret with .dockerconfigjson for secure credential storage
 
 imagePullSecrets:
   - name: domino-quay-repos

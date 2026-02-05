@@ -45,6 +45,10 @@ spec:
             - name: REGISTRY_URL
               value: {{ .Values.env.registryUrl | quote }}
             {{- end }}
+            {{- if and .Values.env .Values.env.registryAuthSecret }}
+            - name: REGISTRY_AUTH_SECRET
+              value: {{ .Values.env.registryAuthSecret | quote }}
+            {{- end }}
             - name: KEYCLOAK_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -55,6 +59,9 @@ spec:
                 secretKeyRef:
                   name: mongodb-replicaset-admin
                   key: password
+            {{- if .Values.extraEnv }}
+            {{- toYaml .Values.extraEnv | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

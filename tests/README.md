@@ -7,7 +7,7 @@ This directory contains unit and integration tests for the docker-registry-clean
 Install development dependencies:
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -e ".[dev]"
 ```
 
 ## Running Tests

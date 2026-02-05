@@ -1,233 +1,140 @@
 # Docker Registry Cleaner
 
-An intelligent Docker registry cleanup tool that analyzes MongoDB usage patterns and safely removes unused images while preserving actively used ones.
+Cleans up unused Docker images from Domino's registry by analyzing MongoDB to see what's actually in use.
 
-## 🎯 Overview
+## What It Does
 
-This project provides a comprehensive solution for cleaning up Docker registries by:
+- Maps image layers, sizes, and tags (understands shared layers between images)
+- Checks MongoDB collections (runs, workspaces, models, projects, scheduler_jobs, etc.) to identify actively used images
+- Deletes unused images with optional S3 backup
+- Resumes after failures using checkpoint files
+- Can optionally clean up MongoDB records for deleted images
 
-1. **Analyzing registry contents** - Maps image layers, sizes, and tags with shared layer awareness
-2. **Domino-integrated intelligent detection** - Identifies which images are actively used by MongoDB collections (runs, workspaces, models, projects, scheduler_jobs, organizations, app_versions)
-3. **Safe deletion with backups** - Optionally backs up Docker images to S3 before deletion
-4. **Transaction safety** - Only deletes MongoDB records for successfully deleted Docker images
-5. **Unused reference detection** - Identifies and removes MongoDB records referencing non-existent Docker images
+> **Warning:** MongoDB cleanup is risky. Environments and models link to many other Domino assets (projects, runs, workspaces, scheduler jobs, app versions, user preferences, etc.). Start with Docker-only cleanup first. Use `--mongo-cleanup` flags only when you understand the impact.
 
-## 🚀 Quick Start
+## Installation
 
-### Installation Options
+### Using Helm (Recommended for Production)
 
-**Option 1: Using Helm (Recommended for Production)**
 ```bash
-# Install from local chart
 helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
   --namespace domino-platform
+```
 
-# Verify installation
-kubectl get statefulset -n domino-platform docker-registry-cleaner
-kubectl get pods -n domino-platform -l app.kubernetes.io/name=docker-registry-cleaner
-
-# Run commands
+Run commands in the pod:
+```bash
 kubectl exec -it docker-registry-cleaner-0 -n domino-platform -- docker-registry-cleaner --help
 ```
 
-**Common Helm Configuration Options:**
-```bash
-# Customize image and resources
-helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
-  --namespace domino-platform \
-  --set image.tag=v0.3.0 \
-  --set resources.requests.memory=512Mi \
-  --set persistence.size=20Gi
-
-# Override registry URL (e.g., for AWS ECR)
-helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
-  --namespace domino-platform \
-  --set env.registryUrl="946429944765.dkr.ecr.eu-west-1.amazonaws.com"
-
-# Use custom values file
-helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
-  --namespace domino-platform \
-  --values custom-values.yaml
-
-# Upgrade existing installation
-helm upgrade docker-registry-cleaner ./charts/docker-registry-cleaner \
-  --namespace domino-platform \
-  --set image.tag=v0.3.1
-
-# Uninstall
-helm uninstall docker-registry-cleaner --namespace domino-platform
-```
+See the [Helm Chart README](charts/docker-registry-cleaner/README.md) for configuration options, upgrades, and advanced usage.
 
 **Option 2: Local Installation (Development/Testing)**
 ```bash
-# Install as a package
 pip install -e .
-
-# Or install dependencies only
-pip install -r requirements.txt
 ```
 
-**Note:** Local installation requires access to cluster-internal services (MongoDB, Docker registry, Keycloak). This option is primarily for:
-- Development and testing with local services
-- Running inside the cluster (e.g., debug pod)
-- Port-forwarding setup (see below)
+Local installation requires access to cluster-internal services (MongoDB, Docker registry, Keycloak). You'll need to set up port-forwarding:
 
-**Required port-forwarding for local development:**
 ```bash
-# Forward MongoDB (default port 27017)
 kubectl port-forward -n domino-platform svc/mongodb-replicaset 27017:27017 &
-
-# Forward Docker registry (default port 5000)
 kubectl port-forward -n domino-platform svc/docker-registry 5000:5000 &
-
-# Forward Keycloak (if using deactivated user cleanup)
 kubectl port-forward -n domino-platform svc/keycloak-http 8080:80 &
-
-# Update config.yaml to use localhost
-# registry.url: "localhost:5000"
-# mongo.host: "localhost"
-# keycloak.host: "http://localhost:8080/auth/"
 ```
 
-### Basic Workflow
+Update `config.yaml` to use localhost for registry, MongoDB, and Keycloak endpoints.
 
-**Using Helm-deployed container:**
+### Command Conventions
+
+Commands shown below assume you're running in the Helm-deployed pod. For local development, use `python python/main.py` instead of `docker-registry-cleaner`.
+
+## Basic Workflow
+
 ```bash
-# 0. Check system health (recommended first step)
-kubectl exec -it docker-registry-cleaner-0 -n domino-platform -- docker-registry-cleaner health_check
-
-# 1. Analyze what would be deleted (dry-run is default)
-kubectl exec -it docker-registry-cleaner-0 -n domino-platform -- docker-registry-cleaner delete_archived_tags --environment
-
-# 2. Delete with confirmation
-kubectl exec -it docker-registry-cleaner-0 -n domino-platform -- docker-registry-cleaner delete_archived_tags --environment --apply
-
-# 3. Delete with S3 backup (recommended)
-kubectl exec -it docker-registry-cleaner-0 -n domino-platform -- docker-registry-cleaner delete_archived_tags --environment --apply --backup --s3-bucket my-bucket
-
-# 4. Comprehensive cleanup
-kubectl exec -it docker-registry-cleaner-0 -n domino-platform -- docker-registry-cleaner delete_all_unused_environments --apply --backup --s3-bucket my-bucket
-```
-
-**Using local installation (requires port-forwarding):**
-```bash
-# Set up port-forwarding first (see Option 2 for details)
-kubectl port-forward -n domino-platform svc/mongodb-replicaset 27017:27017 &
-kubectl port-forward -n domino-platform svc/docker-registry 5000:5000 &
-
-# Then run commands
+# Check system health
 docker-registry-cleaner health_check
-# or
-python python/main.py health_check
+
+# Analyze what would be deleted (dry-run)
+docker-registry-cleaner delete_archived_tags --environment
+
+# Delete with confirmation
+docker-registry-cleaner delete_archived_tags --environment --apply
+
+# Delete with S3 backup (recommended)
+docker-registry-cleaner delete_archived_tags --environment --apply --backup --s3-bucket my-bucket
 ```
 
-> **Important:** This tool can **optionally** delete MongoDB records that reference images (environments, revisions, models, versions, and related links).  
-> While the project now performs much more thorough Mongo usage analysis than earlier versions, **MongoDB deletions remain inherently risky** because environments and models are linked to many other assets in Domino (projects, runs, workspaces, scheduler jobs, app versions, user preferences, etc.).  
-> In general, prefer **Docker‑only cleanup first** and enable Mongo cleanup (`--mongo-cleanup` flags or `delete_unused_references`) only when you fully understand the impact.
+## Health Checks
 
-## 🏥 Health Checks
-
-Before running deletion operations, it's recommended to verify system connectivity:
+Verify connectivity before running deletions:
 
 ```bash
-# From Helm-deployed container (recommended)
-kubectl exec -it docker-registry-cleaner-0 -n domino-platform -- docker-registry-cleaner health_check
-
-# From local installation (requires port-forwarding setup - see Option 2)
 docker-registry-cleaner health_check
-# or
-python python/main.py health_check
 ```
 
-This will verify:
-- ✅ Configuration validity
-- ✅ Docker registry connectivity
-- ✅ MongoDB connectivity
-- ✅ Kubernetes API access
-- ✅ S3 access (if configured)
+Checks connectivity to registry, MongoDB, Kubernetes, and S3 (if configured). Deletion scripts automatically run health checks before operations.
 
-Health checks are also automatically run by deletion scripts that inherit from `BaseDeletionScript` before performing operations.
+## Common Tasks
 
----
+### Reclaim Space from Archived Environments
 
-**Note:** For brevity, the rest of this documentation uses `docker-registry-cleaner` for commands.
-- **From Kubernetes pod:** Prefix with `kubectl exec -it <pod-name> -n <namespace> --`
-- **Local installation:** Use `python python/main.py` instead (requires port-forwarding to cluster services)
+Run health checks, then do a dry-run to see what would be deleted:
 
-## 📚 Playbooks
+```bash
+docker-registry-cleaner health_check
+docker-registry-cleaner delete_archived_tags --environment
+```
 
-This section gives end-to-end workflows you can follow, instead of stitching together individual commands.
+Review the output to verify no actively-used images are included. When ready, delete with S3 backup:
 
-### 1. Safely reclaim space from archived environments
+```bash
+docker-registry-cleaner delete_archived_tags --environment --apply --backup --s3-bucket my-backup-bucket
+```
 
-1. **Run health checks**
-   ```bash
-   docker-registry-cleaner health_check
-   ```
-2. **(Optional) Generate size/ownership reports**
-   ```bash
-   docker-registry-cleaner image_size_report --generate-reports
-   docker-registry-cleaner user_size_report --generate-reports
-   ```
-3. **Dry‑run archived environment deletion and review report**
-   ```bash
-   docker-registry-cleaner delete_archived_tags --environment --output archived-env-tags.json
-   ```
-4. **Delete archived environment tags with S3 backup**
-   ```bash
-   docker-registry-cleaner delete_archived_tags --environment \
-     --apply --backup --s3-bucket my-backup-bucket
-   ```
+### Periodic Cleanup of Unused Environments
 
-### 2. Periodic cleanup of unused environments
+Analyze unused environments:
 
-1. **Analyze unused environments (dry‑run)**
-   ```bash
-   docker-registry-cleaner delete_unused_environments --unused-since-days 30
-   ```
-2. **Archive rather than delete (Mongo‑only)**
-   ```bash
-   docker-registry-cleaner archive_unused_environments --unused-since-days 30 --apply
-   ```
-3. **Comprehensive deletion with backup**
-   ```bash
-   docker-registry-cleaner delete_all_unused_environments \
-     --apply --backup --s3-bucket my-backup-bucket
-   ```
+```bash
+docker-registry-cleaner delete_unused_environments --unused-since-days 30
+```
 
-### 3. Investigate where an environment is used
+Archive rather than delete (MongoDB-only):
 
-1. **Run the usage finder**
-   ```bash
-   docker-registry-cleaner find_environment_usage --environment-id <environmentObjectId>
-   ```
-2. **Review all references** in:
-   - Runs
-   - Workspaces
-   - Models / model versions
-   - Projects / scheduler jobs / organizations / app versions
-   - User preferences (`defaultEnvironmentId`)
+```bash
+docker-registry-cleaner archive_unused_environments --unused-since-days 30 --apply
+```
 
-### 4. Cleanup only MongoDB references to missing images
+Comprehensive deletion with backup:
 
-1. **Dry‑run unused reference detection**
-   ```bash
-   docker-registry-cleaner delete_unused_references
-   ```
-2. **Apply Mongo‑only cleanup**
-   ```bash
-   docker-registry-cleaner delete_unused_references --apply
-   ```
+```bash
+docker-registry-cleaner delete_all_unused_environments --apply --backup --s3-bucket my-backup-bucket
+```
 
-For more specialized scenarios (e.g. targeted deletion by ObjectID, backup+restore flows), see the sections below.
+### Find Where an Environment Is Used
 
-## 🎛️ Common Options
+```bash
+docker-registry-cleaner find_environment_usage --environment-id <environmentObjectId>
+```
 
-All Docker deletion scripts share a standardized interface with these common options:
+Shows all references in runs, workspaces, models, projects, scheduler jobs, organizations, app versions, and user preferences.
+
+### Clean Up MongoDB References to Missing Images
+
+```bash
+# Dry-run
+docker-registry-cleaner delete_unused_references
+
+# Apply
+docker-registry-cleaner delete_unused_references --apply
+```
+
+## Common Options
+
+All deletion scripts support these options:
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--apply` | Actually perform deletions (without this, it's dry-run only) | `false` |
+| `--apply` | Actually perform deletions (dry-run without this) | `false` |
 | `--force` | Skip confirmation prompts | `false` |
 | `--backup` | Back up images to S3 before deletion | `false` |
 | `--s3-bucket BUCKET` | S3 bucket for backups (required with `--backup`) | From config |
@@ -238,94 +145,77 @@ All Docker deletion scripts share a standardized interface with these common opt
 
 ### Rate Limiting
 
-The tool includes built-in rate limiting for registry operations to prevent overwhelming the registry:
+Registry operations are automatically rate-limited (default: 10 requests/second, burst of 20). Configure in `config.yaml` under `skopeo.rate_limit`.
 
-- **Enabled by default** - Rate limiting is automatically enabled
-- **Configurable** - Adjust in `config.yaml` under `skopeo.rate_limit`:
-  - `requests_per_second`: Maximum requests per second (default: 10.0)
-  - `burst_size`: Allow burst of up to N requests (default: 20)
-- **Automatic** - Applies to all registry operations (list, inspect, delete)
-- **Smart** - Detects rate limit errors (HTTP 429) and provides actionable guidance
+### Safety Defaults
 
-### Safety by Default
+- Dry-run mode unless `--apply` is specified
+- Confirmation prompts when using `--apply` (use `--force` to skip)
+- S3 backups with `--backup`
+- MongoDB records only deleted after successful Docker deletion
 
-- **Dry-run mode** - No changes are made to Docker or MongoDB unless `--apply` is specified.
-- **Confirmation prompts** - User must confirm deletions when using `--apply`. Use `--force` to skip the confirmation prompt.
-- **S3 backups** - Use `--backup` to back up images before deletion.
-- **Transaction safety** - MongoDB records are only deleted after successful Docker deletion.
+## Available Commands
 
-## 📊 Available Commands
-
-### Analysis Commands
+### Analysis
 
 ```bash
-# Generate usage reports (automatically generates required metadata and image analysis if needed)
-docker-registry-cleaner reports [--generate-reports]
+# Generate usage reports
+docker-registry-cleaner reports
 
-# Generate per-image size report (largest images by total size and potential freed space)
-docker-registry-cleaner image_size_report [--generate-reports] [--output image-size-report.json]
+# Per-image size report (largest images by total size and potential freed space)
+docker-registry-cleaner image_size_report
 
-# Generate per-user size report (who is using the most registry space)
-docker-registry-cleaner user_size_report [--generate-reports] [--output user-size-report.json]
+# Per-user size report (who uses the most registry space)
+docker-registry-cleaner user_size_report
 ```
 
-### Deletion Commands
-
-All deletion commands support the common options listed above.
+### Deletion
 
 #### Delete Archived Tags
 
 ```bash
-# Analyze archived environments (dry-run)
+# Analyze archived environments
 docker-registry-cleaner delete_archived_tags --environment
 
-# Analyze archived models (dry-run)
+# Analyze archived models
 docker-registry-cleaner delete_archived_tags --model
 
-# Delete both archived environments and models
-docker-registry-cleaner delete_archived_tags --environment --model --apply
-
-# Delete archived environments with S3 backup
-docker-registry-cleaner delete_archived_tags --environment --apply --backup --s3-bucket my-bucket
+# Delete both with S3 backup
+docker-registry-cleaner delete_archived_tags --environment --model --apply --backup --s3-bucket my-bucket
 ```
 
 #### Delete Unused Environments
 
 ```bash
-# Find unused environments (dry-run)
+# Find unused environments
 docker-registry-cleaner delete_unused_environments
 
-# Delete with S3 backup and confirmation
+# Delete with backup
 docker-registry-cleaner delete_unused_environments --apply --backup --s3-bucket my-bucket
 
-# Only consider environments unused if last execution was >30 days ago
+# Only consider environments unused if no execution in 30+ days
 docker-registry-cleaner delete_unused_environments --unused-since-days 30 --apply
-
-# Force regenerate reports and delete
-docker-registry-cleaner delete_unused_environments --generate-reports --apply --force
 ```
 
-**Date Range Filtering:** Use `--unused-since-days N` to only consider environments as unused if their last execution was more than N days ago. This filters based on the `last_used`, `completed`, or `started` timestamp from runs. If omitted, any historical run marks the environment as in-use.
+**Date filtering:** `--unused-since-days N` considers environments unused only if their last execution was more than N days ago (based on `last_used`, `completed`, or `started` timestamp). Without this flag, any historical run marks the environment as in-use.
 
-#### Archive Unused Environments (Mongo-only)
+#### Archive Unused Environments (MongoDB-Only)
 
-Marks unused environments as archived in MongoDB by setting `isArchived = true` on `environments_v2` documents, without touching Docker images:
+Marks unused environments as archived by setting `isArchived = true` on `environments_v2` documents, without touching Docker images:
 
 ```bash
-# Dry-run: list environments that would be archived
+# Dry-run
 docker-registry-cleaner archive_unused_environments
 
-# Only consider environments unused if last execution was >30 days ago
+# Only consider environments unused if no execution in 30+ days
 docker-registry-cleaner archive_unused_environments --unused-since-days 30
 
-# Actually mark unused environments as archived (with confirmation)
+# Apply with confirmation
 docker-registry-cleaner archive_unused_environments --apply
 
-# Archive environments unused for >60 days without confirmation
+# Archive environments unused for 60+ days without confirmation
 docker-registry-cleaner archive_unused_environments --unused-since-days 60 --apply --force
 ```
-
-**Date Range Filtering:** Use `--unused-since-days N` to only consider environments as unused if their last execution was more than N days ago. This filters based on the `last_used`, `completed`, or `started` timestamp from runs. If omitted, any historical run marks the environment as in-use.
 
 #### Delete Deactivated User Private Environments
 
@@ -339,20 +229,20 @@ docker-registry-cleaner delete_unused_private_environments --apply --backup --s3
 
 #### Comprehensive Cleanup
 
-Run multiple cleanup operations in sequence:
+Runs multiple cleanup operations in sequence:
 
 ```bash
-# Analyze all unused environments (dry-run)
+# Dry-run all unused environments
 docker-registry-cleaner delete_all_unused_environments
 
-# Delete all unused environments with backup
+# Delete all with backup
 docker-registry-cleaner delete_all_unused_environments --apply --backup --s3-bucket my-bucket
 ```
 
-This command runs:
+This runs:
 1. Delete unused environments (not used in workspaces, models, or project defaults)
 2. Delete deactivated user private environments
-3. (Optional) Run Docker registry garbage collection to reclaim space in the registry:
+3. (Optional) Run Docker registry garbage collection:
 
 ```bash
 docker-registry-cleaner run_registry_gc
@@ -360,18 +250,17 @@ docker-registry-cleaner run_registry_gc
 
 #### Delete Unused MongoDB References
 
-**Advanced / high‑risk operation.**  
-Cleans up MongoDB records referencing non-existent Docker images. Even though this command targets records for images that no longer exist in the registry, **it still modifies primary Domino metadata collections**, so it should only be used by administrators who are comfortable with the schema and have recent backups.
+Cleans up MongoDB records referencing non-existent Docker images. This modifies primary Domino metadata collections, so only use it if you're comfortable with the schema and have recent backups.
 
 ```bash
-# Find unused references (dry-run)
+# Dry-run
 docker-registry-cleaner delete_unused_references
 
-# Delete unused references
+# Apply
 docker-registry-cleaner delete_unused_references --apply
 ```
 
-**Note:** This command only modifies MongoDB, not Docker images, so `--backup` is not applicable.
+This command only modifies MongoDB, not Docker images, so `--backup` doesn't apply.
 
 #### Intelligent Image Deletion
 
@@ -382,33 +271,27 @@ docker-registry-cleaner delete_image environment:abc-123 --apply
 # Delete using analysis reports
 docker-registry-cleaner delete_image --apply --backup --s3-bucket my-bucket
 
-# Filter by ObjectIDs from file (prefixes required; see ObjectID Filtering)
+# Filter by ObjectIDs from file
 docker-registry-cleaner delete_image --input environments --apply
 
 # Clean up MongoDB references (opt-in)
 docker-registry-cleaner delete_image --apply --mongo-cleanup
 ```
 
-## 🔍 ObjectID Filtering
+## ObjectID Filtering
 
-Target specific models or compute environments by ObjectID. Prefixes are required to avoid ambiguity:
+Target specific models or environments by ObjectID. Prefixes are required:
 - `environment:<id>`
 - `environmentRevision:<id>`
 - `model:<id>`
 - `modelVersion:<id>`
 
 ```bash
-# Create a file with ObjectIDs (one per line, prefixes required)
+# Create file with ObjectIDs (one per line, prefixes required)
 cat > environments <<EOF
 environment:6286a3c76d4fd0362f8ba3ec
-
-# Explicitly environment revision
 environmentRevision:6286a3c76d4fd0362f8ba3ed
-
-# Explicitly model
 model:627d94043035a63be6140e93
-
-# Explicitly model version
 modelVersion:627d94043035a63be6140e94
 EOF
 
@@ -416,11 +299,11 @@ EOF
 docker-registry-cleaner delete_image --input environments --apply
 ```
 
-## 📦 Backup and Restore
+## Backup and Restore
 
-### Backup Images to S3
+### Backup to S3
 
-All Docker deletion commands support `--backup`:
+All deletion commands support `--backup`:
 
 ```bash
 # Backup and delete
@@ -430,56 +313,43 @@ docker-registry-cleaner delete_archived_tags --environment --apply --backup --s3
 docker-registry-cleaner delete_archived_tags --environment --backup --s3-bucket my-bucket --force
 ```
 
-### Restore Images from S3
+### Restore from S3
 
 ```bash
-# Restore specific tags from S3 backup
+# Restore specific tags
 docker-registry-cleaner backup_restore restore --tags tag1 tag2
 
 # Restore with explicit S3 bucket override
 docker-registry-cleaner backup_restore restore --s3-bucket my-backup-bucket --tags tag1 tag2
 ```
 
-**Behavior:**
-- Images are backed up to S3 **before** deletion
-- If backup fails, deletion is **aborted** to prevent data loss
-- Images can be restored to any compatible registry
-- Restoration of Docker images does not restore their records in Mongo
-- However, once an image has been restored, its URL can be used as the base image for a new Domino Compute Environment
+Images are backed up before deletion. If backup fails, deletion is aborted. Restoration of Docker images doesn't restore their MongoDB records, but restored images can be used as base images for new Domino environments.
 
-## 🔄 Resume Capability
+## Resume Capability
 
-Long-running deletion operations can be interrupted (network issues, timeouts, etc.). The tool now supports resuming from checkpoints:
+Long-running operations can be interrupted and resumed:
 
 ```bash
-# If an operation is interrupted, resume from checkpoint
+# Resume from checkpoint
 docker-registry-cleaner delete_archived_tags --environment --apply --resume
 
-# Use a specific operation ID to resume a particular run
+# Resume specific operation
 docker-registry-cleaner delete_archived_tags --environment --apply --resume --operation-id 2026-01-15-14-30-00
 ```
 
-**How it works:**
-- Checkpoints are automatically saved every 10 items during deletion
-- If interrupted, progress is preserved in `reports/checkpoints/`
-- Use `--resume` to continue from the last checkpoint
-- Checkpoints are automatically cleaned up when operations complete successfully
-- Use `--operation-id` to manage multiple concurrent operations
+Checkpoints are saved every 10 items in `reports/checkpoints/`. Use `--resume` to continue from the last checkpoint. Supported scripts: `delete_archived_tags`, `delete_unused_environments`, `delete_unused_private_environments`.
 
-**Supported scripts:**
-- `delete_archived_tags`
-- `delete_unused_environments`
-- `delete_unused_private_environments`
+### Understanding the Numbers
 
-### Understanding the numbers (delete_archived_tags)
+**Tag references vs unique images:** Dry-run reports can show many "matching tags" (e.g., 1232). The same Docker image `(image_type, tag)` can match multiple archived MongoDB IDs. Deletion is done per unique `(image_type, tag)`, so "1232 tag references" might mean only "600 unique Docker images" are actually deleted.
 
-- **Tag references vs unique images:** The dry-run report can show a large number of "matching tags" (e.g. 1232). The same Docker image `(image_type, tag)` can match multiple archived MongoDB IDs (e.g. an environment and its revision). Deletion is done per **unique** `(image_type, tag)`; the confirmation and checkpoint use that unique count. So "1232 tag references" might mean e.g. "600 unique Docker images" — only 600 images are actually deleted.
-- **Checkpoint file:** The checkpoint stores `completed_items`, `failed_items`, and `skipped_items` as **unique image identifiers** (`image_type:tag`). `total_items` in the file is the number of unique images in that run. A "102-line" checkpoint usually means 102 entries across those lists (e.g. 50 completed, 30 failed, 22 skipped), not 102 lines of text.
-- **Why dry-run after --apply shows different numbers:** Re-running dry-run re-queries MongoDB and re-scans the registry. Numbers can differ because: (1) **Scope** — first run with `--environment --model` (1232 refs), second with `--environment` only (183 tags); (2) **Actual deletions** — if many unique images were deleted, the registry now has fewer tags; (3) **MongoDB changes** — records unarchived or removed so the archived set is smaller. Use the same flags (`--environment` / `--model`) when comparing runs, or use `--input <report.json>` to delete from a saved report without re-running analysis.
+**Checkpoint files:** Store `completed_items`, `failed_items`, and `skipped_items` as unique image identifiers (`image_type:tag`). `total_items` is the number of unique images in that run.
 
-## 📅 Timestamped Reports
+**Why dry-run after --apply shows different numbers:** Re-running dry-run re-queries MongoDB and re-scans the registry. Numbers differ due to: (1) different scope (`--environment --model` vs `--environment` only), (2) actual deletions reducing registry tags, (3) MongoDB changes (records unarchived or removed). Use the same flags when comparing runs, or use `--input <report.json>` to delete from a saved report.
 
-All auto-generated reports now include timestamps in their filenames, allowing you to compare results across multiple runs:
+## Timestamped Reports
+
+Auto-generated reports include timestamps:
 
 ```
 reports/mongodb_usage_report-2026-01-15-14-30-00.json
@@ -487,38 +357,28 @@ reports/tag-sums-2026-01-15-14-35-12.json
 reports/final-report-2026-01-15-14-40-25.json
 ```
 
-**Benefits:**
-- Compare reports from different time periods
-- Track changes over time
-- Keep historical data for analysis
-- Reports are automatically found by freshness checks (finds latest timestamped version)
+This lets you compare results across runs and track changes over time. User-specified output files (via `--output`) don't include timestamps.
 
-**Note:** User-specified output files (via `--output`) do not include timestamps to preserve exact filenames.
+## Safety Features
 
-## 🛡️ Safety Features
+**Transaction safety:**
+- Deletes Docker images before MongoDB records
+- Only deletes MongoDB records for successfully deleted Docker images
+- Preserves MongoDB records if Docker deletion fails
 
-### Transaction Safety
-- **Docker-first deletion** - Always deletes Docker images before MongoDB records
-- **Success tracking** - Tracks which Docker deletions succeeded
-- **Conditional cleanup** - Only deletes MongoDB records for successfully deleted images
-- **Failure preservation** - Preserves MongoDB records if Docker deletion fails
+**Smart analysis:**
+- Only deletes images not referenced in MongoDB (checks runs, workspaces, models, projects, scheduler_jobs, organizations, app_versions)
+- Calculates freed space accounting for shared layers between images
+- Only counts layers that would have zero references after deletion
 
-### Intelligent Analysis
-- **MongoDB-aware** - Only deletes images not referenced in MongoDB (runs, workspaces, models, projects, scheduler_jobs, organizations, app_versions)
-- **Shared layer analysis** - Properly calculates freed space accounting for shared layers
-- **Reference counting** - Only counts layers that would have zero references after deletion
+**Registry management:**
+- Automatically disables registry deletion mode after operations
+- Waits for registry pods to restart and become ready
+- Cleanup happens even if errors occur
 
-### Registry Deletion Cleanup
+## Configuration
 
-All delete scripts ensure that registry deletion is properly disabled after operations:
-
-- **Automatic cleanup** - Registry deletion (`REGISTRY_STORAGE_DELETE_ENABLED`) is always disabled after script completion
-- **Error handling** - Cleanup occurs even if errors occur during deletion
-- **Pod readiness checks** - Scripts wait for registry pods to restart and become ready after configuration changes
-
-## 🔧 Configuration
-
-### Priority Order
+### Configuration Priority
 
 Configuration is loaded in this order (later values override earlier):
 
@@ -526,73 +386,18 @@ Configuration is loaded in this order (later values override earlier):
 2. Environment variables
 3. Command-line arguments
 
-### Helm Values Configuration
+### Helm Configuration
 
-When using Helm, configuration is managed through the [values.yaml](charts/docker-registry-cleaner/values.yaml) file:
+Configuration is managed through [values.yaml](charts/docker-registry-cleaner/values.yaml). Key parameters:
 
-```yaml
-# Image configuration
-image:
-  repository: quay.io/domino/docker-registry-cleaner
-  tag: v0.3.0
-  pullPolicy: Always
+- Image repository and tag
+- Resource requests and limits
+- Persistent storage size and storage class
+- Registry URL overrides (e.g., for AWS ECR)
+- Additional environment variables
+- Application configuration (registry, MongoDB, Kubernetes settings)
 
-# Resource limits
-resources:
-  requests:
-    cpu: 100m
-    memory: 256Mi
-  limits:
-    cpu: 1000m
-    memory: 1Gi
-
-# Persistent storage for reports
-persistence:
-  enabled: true
-  size: 10Gi
-  storageClass: ""  # Use default if empty
-
-# Override registry URL (e.g., for AWS ECR)
-env:
-  registryUrl: ""  # Set to override config
-
-# Configuration content (maps to config.yaml in container)
-config:
-  registry:
-    url: "docker-registry:5000"
-    repository: "dominodatalab"
-  mongo:
-    host: "mongodb-replicaset"
-    port: 27017
-    db: "domino"
-  # ... see values.yaml for full configuration options
-```
-
-To customize the Helm installation, either use `--set` flags or create a custom values file:
-
-```bash
-# Using --set flags
-helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
-  --namespace domino-platform \
-  --set image.tag=v0.3.0 \
-  --set config.registry.url="my-registry:5000"
-
-# Using custom values file
-cat > custom-values.yaml <<EOF
-image:
-  tag: v0.3.0
-resources:
-  requests:
-    memory: 512Mi
-config:
-  registry:
-    url: "my-registry:5000"
-EOF
-
-helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
-  --namespace domino-platform \
-  --values custom-values.yaml
-```
+See the [Helm Chart README](charts/docker-registry-cleaner/README.md) for complete configuration reference and examples.
 
 ### config.yaml
 
@@ -600,22 +405,24 @@ For non-Helm deployments, copy `config-example.yaml` to `config.yaml` and modify
 
 ### Environment Variables
 
-Alternatively, export environment variables to allow quickly overriding values during testing.
+For local installations, export environment variables to override configuration values. (For Helm deployments, see the [Helm Chart README](charts/docker-registry-cleaner/README.md) for `extraEnv`.)
 
 ```bash
 # Docker Registry
 export REGISTRY_URL="registry.example.com"
 export REPOSITORY="my-repo"
-export REGISTRY_PASSWORD="your_password"  # Optional - see authentication notes below
+export REGISTRY_USERNAME="your_username"    # Required for external registries (Quay, GCR, ACR)
+export REGISTRY_PASSWORD="your_password"
+export REGISTRY_AUTH_SECRET="secret-name"   # Optional: K8s secret with .dockerconfigjson
 
 # Kubernetes
 export DOMINO_PLATFORM_NAMESPACE="domino-platform"
 
 # MongoDB
-export MONGODB_USERNAME="admin"  # Optional
-export MONGODB_PASSWORD="mongo_password"  # Optional - uses K8s secrets if not set
+export MONGODB_USERNAME="admin"
+export MONGODB_PASSWORD="mongo_password"
 
-# Keycloak (for deactivated user cleanup)
+# Keycloak
 export KEYCLOAK_HOST="https://keycloak.example.com/auth/"
 export KEYCLOAK_USERNAME="admin"
 export KEYCLOAK_PASSWORD="keycloak_password"
@@ -625,75 +432,24 @@ export S3_BUCKET="my-backup-bucket"
 export S3_REGION="us-west-2"
 ```
 
-#### Docker Registry Authentication
+### Docker Registry Authentication
 
-The tool uses the following priority order for Docker registry authentication:
+**Username & Password priority:**
 
-1. **`REGISTRY_PASSWORD` environment variable** - Explicit override for manual authentication
-2. **Kubernetes secret auto-discovery** - Automatically reads credentials from the `domino-registry` secret in the configured namespace (when running in-cluster)
-3. **AWS ECR authentication** - Automatic authentication for AWS ECR registries (*.amazonaws.com)
+1. `REGISTRY_USERNAME`|`REGISTRY_PASSWORD` environment variable (explicit override)
+2. Custom Kubernetes secret via `REGISTRY_AUTH_SECRET` (for external registries)
+3. Kubernetes secret auto-discovery (reads `domino-registry` secret)
+4. AWS ECR authentication (automatic for `*.amazonaws.com` registries)
 
-For most in-cluster deployments with Domino, no explicit password configuration is needed as credentials are automatically discovered from the `domino-registry` Kubernetes secret containing the `.dockerconfigjson` data.
+For most in-cluster Domino deployments, no explicit configuration is needed.
 
-### View Current Configuration
+For external registries (Quay, GCR, ACR, etc.), you have two options:
 
-```bash
-docker-registry-cleaner --config
-```
+1. **Kubernetes secret (recommended for production):** Set `REGISTRY_AUTH_SECRET` to the name of a secret containing `.dockerconfigjson` with your registry credentials. See the [Helm Chart README](charts/docker-registry-cleaner/README.md) for examples.
 
-## 🏗️ Architecture
+2. **Environment variables:** Set both `REGISTRY_USERNAME` and `REGISTRY_PASSWORD` environment variables.
 
-The Python codebase is organized into two main directories:
-- **`python/scripts/`** - User-facing scripts that can be run via `main.py`
-- **`python/utils/`** - Utility modules used by the scripts
-
-### Core Entrypoint
-
-- **`python/main.py`** - Unified entrypoint for all operations
-
-### User-Facing Scripts (`python/scripts/`)
-
-#### Deletion Scripts
-All deletion scripts follow the same pattern and support common options:
-
-- **`python/scripts/delete_image.py`** - Intelligent deletion based on MongoDB usage analysis
-- **`python/scripts/delete_archived_tags.py`** - Delete archived environments and/or models
-- **`python/scripts/delete_unused_environments.py`** - Delete environments not used anywhere
-- **`python/scripts/archive_unused_environments.py`** - Mark unused environments as archived in MongoDB (`isArchived = true` on `environments_v2`)
-- **`python/scripts/delete_unused_private_environments.py`** - Delete private environments owned by deactivated users
-- **`python/scripts/delete_unused_references.py`** - Delete MongoDB references to non-existent images
-
-#### Analysis Scripts
-
-- **`python/scripts/reports.py`** - Generate tag usage reports (automatically generates required metadata and image analysis if needed)
-- **`python/scripts/image_size_report.py`** - Generate per-image size report (total size and space freed if deleted, accounting for shared layers)
-- **`python/scripts/user_size_report.py`** - Generate per-user size report (aggregate image sizes and potential freed space; user = revision author for environments, version creator for models; Login ID = loginId.id from users)
-- **`python/scripts/find_environment_usage.py`** - Find where a specific environment ID is used
-
-#### Other Scripts
-
-- **`python/scripts/backup_restore.py`** - S3 backup and restore functionality
-- **`python/scripts/mongo_cleanup.py`** - MongoDB record cleanup
-
-### Utility Modules (`python/utils/`)
-
-- **`python/utils/config_manager.py`** - Centralized configuration and Skopeo client management
-- **`python/utils/mongo_utils.py`** - MongoDB connection utilities
-- **`python/utils/object_id_utils.py`** - ObjectID handling
-- **`python/utils/logging_utils.py`** - Logging configuration
-- **`python/utils/extract_metadata.py`** - Extract MongoDB metadata using aggregation pipelines (generates consolidated `mongodb_usage_report.json`)
-- **`python/utils/image_data_analysis.py`** - Analyze registry contents with shared layer detection
-- **`python/utils/image_usage.py`** - Image usage analysis from MongoDB
-- **`python/utils/deletion_base.py`** - Base class for deletion scripts
-- **`python/utils/error_utils.py`** - Actionable error message utilities
-- **`python/utils/health_checks.py`** - System health check functionality
-- **`python/utils/report_utils.py`** - Report saving, freshness checking, automatic generation, and timestamp utilities
-- **`python/utils/checkpoint.py`** - Checkpoint and resume functionality for long-running operations
-- **`python/utils/retry_utils.py`** - Retry logic with exponential backoff
-- **`python/utils/cache_utils.py`** - Caching utilities for registry operations
-- **`python/utils/security_scanning.py`** - Security scanning utilities
-
-## 📊 How It Works
+## How It Works
 
 ### Image Analysis
 
@@ -705,49 +461,30 @@ All deletion scripts follow the same pattern and support common options:
 
 ### Intelligent Deletion
 
-1. Cross-references MongoDB usage data (from consolidated `mongodb_usage_report.json`) and image analysis
-2. Identifies unused images not referenced in MongoDB collections:
-   - **Runs** - Execution history
-   - **Workspaces** - Active workspace sessions
-   - **Models** - Deployed model versions
-   - **Projects** - Project default environments (`overrideV2EnvironmentId`)
-   - **Scheduler Jobs** - Scheduled job overrides (`jobDataPlain.overrideEnvironmentId`)
-   - **Organizations** - Organization defaults (`defaultV2EnvironmentId`)
-   - **App Versions** - Application versions (`environmentId`)
+1. Cross-references MongoDB usage data with image analysis
+2. Identifies unused images not referenced in MongoDB collections (runs, workspaces, models, projects, scheduler_jobs, organizations, app_versions)
 3. Calculates freed space with shared layer awareness
 4. Optionally backs up to S3 before deletion
 5. Deletes Docker images first, then MongoDB records
 6. Ensures registry deletion is disabled after completion
 
-## 🚨 Troubleshooting
+## Troubleshooting
 
 ### Registry Auto-Detection Fails
 
-If your Docker registry URL doesn't contain enough information for auto-detection:
+If your registry URL doesn't contain enough information for auto-detection:
 
 ```bash
-# Enable registry deletion with default "docker-registry" statefulset
+# Enable with default "docker-registry" statefulset
 docker-registry-cleaner delete_archived_tags --environment --apply --enable-docker-deletion
 
-# Or specify custom statefulset/deployment name
+# Or specify custom statefulset
 docker-registry-cleaner delete_unused_environments --apply \
   --enable-docker-deletion \
   --registry-statefulset my-custom-registry
 ```
 
-Programmatic usage:
-
-```python
-from python.config_manager import config_manager, SkopeoClient
-
-skopeo_client = SkopeoClient(
-    config_manager,
-    enable_docker_deletion=True,
-    registry_statefulset="my-custom-registry",
-)
-```
-
-This is useful when:
+Useful when:
 - Registry URL is an IP address or external DNS name
 - Registry service has non-standard naming
 - You want explicit control over which StatefulSet/Deployment is modified
@@ -773,36 +510,15 @@ python -c "from python.mongo_utils import get_mongo_client; print('Connected')"
 # Invalid: 62798b9bee0eb12322fc97e (23 chars)
 ```
 
-### Debug Mode
+## System Requirements
 
-```bash
-export PYTHONPATH=python
-```
+- Python 3.11+
+- kubectl access for Kubernetes operations
+- Registry access for image inspection and deletion
+- MongoDB access for metadata and cleanup
+- Keycloak access for deactivated user detection (optional)
 
-## 📝 Requirements
-
-### Python Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-- `boto3` - AWS SDK for S3 operations
-- `kubernetes` - Kubernetes API client
-- `pymongo` - MongoDB client
-- `python-keycloak` - Keycloak admin client
-- `PyYAML` - Configuration parsing
-- `requests` - HTTP client
-
-### System Requirements
-
-- **Python 3.8+**
-- **kubectl access** - For Kubernetes operations
-- **Registry access** - For image inspection and deletion
-- **MongoDB access** - For metadata and cleanup
-- **Keycloak access** - For deactivated user detection (optional)
-
-## 🤝 Contributing
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch
@@ -810,6 +526,6 @@ pip install -r requirements.txt
 4. Add tests if applicable
 5. Submit a pull request
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
