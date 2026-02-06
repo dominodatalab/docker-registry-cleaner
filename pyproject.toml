@@ -115,6 +115,10 @@ ignore_missing_imports = true
 module = "azure.*"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = "azure.*"
+ignore_missing_imports = true
+
 # Note: pytest config is in pytest.ini
 
 [tool.coverage.run]
