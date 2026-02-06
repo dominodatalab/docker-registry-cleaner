@@ -7,19 +7,12 @@ and environment variables.
 """
 
 import base64
-import json
 import logging
 import os
 import re
-import subprocess
-import time
-from threading import Lock
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import yaml
-
-from utils.cache_utils import cached_image_inspect, cached_tag_list
-from utils.retry_utils import is_retryable_error, retry_with_backoff
 
 
 class ConfigValidationError(Exception):
@@ -30,12 +23,6 @@ def _load_kubernetes_config():
     """Helper function to load Kubernetes configuration.
 
     Tries in-cluster config first, then falls back to local kubeconfig.
-
-    Returns:
-        None
-
-    Raises:
-        Exception if both methods fail
     """
     try:
         from kubernetes.config import load_incluster_config
@@ -47,74 +34,12 @@ def _load_kubernetes_config():
         load_kube_config()
 
 
-def _get_kubernetes_clients() -> Tuple[Any, Any]:
-    """Helper function to get Kubernetes API clients.
-
-    Returns:
-        Tuple of (CoreV1Api, AppsV1Api)
-
-    Raises:
-        ImportError if kubernetes package is not available
-    """
+def _get_kubernetes_core_client():
+    """Helper function to get Kubernetes CoreV1Api client."""
     from kubernetes import client as k8s_client
 
     _load_kubernetes_config()
-
-    return k8s_client.CoreV1Api(), k8s_client.AppsV1Api()
-
-
-def is_registry_in_cluster(registry_url: str, namespace: str) -> bool:
-    """Check if the registry service exists in the Kubernetes cluster.
-
-    Parses the registry URL to extract the service name and checks if it exists
-    as a Service or StatefulSet in the cluster. Use this when you need to know
-    if Docker/registry is running in-cluster without creating a SkopeoClient.
-
-    Args:
-        registry_url: Registry URL (e.g. "docker-registry:5000", "registry.namespace.svc:5000").
-        namespace: Kubernetes namespace to check when URL has no namespace segment.
-
-    Returns:
-        True if registry Service or StatefulSet is found in the cluster, False otherwise.
-    """
-    try:
-        from kubernetes.client.rest import ApiException
-
-        url = registry_url.split(":")[0]
-        parts = url.split(".")
-        service_name = parts[0]
-        check_namespace = parts[1] if len(parts) > 1 and parts[1] != "svc" else namespace
-
-        try:
-            core_v1, apps_v1 = _get_kubernetes_clients()
-        except Exception as e:
-            logging.debug(f"Could not load Kubernetes config: {e}")
-            return False
-
-        try:
-            core_v1.read_namespaced_service(name=service_name, namespace=check_namespace)
-            logging.debug(f"Found {service_name} Service in namespace {check_namespace}")
-            return True
-        except ApiException as e:
-            if e.status != 404:
-                logging.debug(f"Error checking for Service: {e}")
-
-        try:
-            apps_v1.read_namespaced_stateful_set(name=service_name, namespace=check_namespace)
-            logging.debug(f"Found {service_name} StatefulSet in namespace {check_namespace}")
-            return True
-        except ApiException as e:
-            if e.status != 404:
-                logging.debug(f"Error checking for StatefulSet: {e}")
-
-        logging.debug(f"Registry '{service_name}' not found in namespace {check_namespace}")
-        return False
-    except ImportError:
-        logging.debug("Kubernetes client not available")
-        return False
-    except Exception as e:
-        logging.debug(f"Unexpected error checking registry in cluster: {e}")
-        return False
+    return k8s_client.CoreV1Api()
 
 
 class ConfigManager:
@@ -127,14 +52,12 @@ class ConfigManager:
             config_file: Path to configuration YAML file (defaults to ../config.yaml or CONFIG_FILE env var)
             validate: If True, validate configuration on initialization
         """
-        # Allow override via environment variable for containerized deployments
         if config_file is None:
             config_file = os.environ.get("CONFIG_FILE", "../config.yaml")
         self.config_file = config_file
         self.config = self._load_config()
 
         # Set up skopeo auth file early (before any skopeo commands run)
-        # This ensures nonroot users can authenticate (can't write to /run/containers)
         auth_dir = self.get_output_dir()
         os.makedirs(auth_dir, exist_ok=True)
         self.auth_file = os.path.join(auth_dir, ".registry-auth.json")
@@ -156,14 +79,14 @@ class ConfigManager:
                 "max_delay": 60.0,
                 "exponential_base": 2.0,
                 "jitter": True,
-                "timeout": 300,  # Timeout for subprocess calls in seconds
+                "timeout": 300,
             },
             "s3": {"bucket": "", "region": "us-west-2"},
             "skopeo": {
                 "rate_limit": {
                     "enabled": True,
-                    "requests_per_second": 10.0,  # Max requests per second
-                    "burst_size": 20,  # Allow burst of up to N requests
+                    "requests_per_second": 10.0,
+                    "burst_size": 20,
                 },
             },
             "reports": {
@@ -176,7 +99,7 @@ class ConfigManager:
                 "tags_per_layer": "tags-per-layer.json",
                 "tag_sums": "tag-sums.json",
                 "unused_references": "unused-references.json",
-                "mongodb_usage": "mongodb_usage_report.json",  # Consolidated report for all MongoDB usage data
+                "mongodb_usage": "mongodb_usage_report.json",
             },
             "security": {"dry_run_by_default": True, "require_confirmation": True},
             "cache": {
@@ -220,233 +143,12 @@ class ConfigManager:
         return os.environ.get("REGISTRY_URL") or self.config["registry"]["url"]
 
     def get_repository(self) -> str:
-        """Get canonical repository value.
-        Priority: env REPOSITORY -> config.registry.repository -> config.registry.repository_name
-        """
+        """Get canonical repository value."""
         return os.environ.get("REPOSITORY") or self.config["registry"]["repository"]
 
     def get_registry_auth_secret(self) -> Optional[str]:
-        """Get the name of a custom Kubernetes secret for registry authentication.
-
-        This allows users to specify a secret containing .dockerconfigjson for
-        external registries (Quay, GCR, ACR, etc.) instead of using environment
-        variables for credentials.
-
-        Returns:
-            Secret name if configured via REGISTRY_AUTH_SECRET env var, None otherwise
-        """
+        """Get the name of a custom Kubernetes secret for registry authentication."""
         return os.environ.get("REGISTRY_AUTH_SECRET")
-
-    def _get_credentials_from_k8s_secret(
-        self, secret_name: Optional[str] = None
-    ) -> tuple[Optional[str], Optional[str]]:
-        """Get Docker registry username and password from Kubernetes secret.
-
-        Attempts to read credentials from a Kubernetes secret containing
-        .dockerconfigjson with Docker registry credentials.
-
-        Args:
-            secret_name: Name of the secret to read. If None, defaults to 'domino-registry'.
-
-        Returns:
-            Tuple of (username, password) - either or both may be None if not found
-        """
-        try:
-            from kubernetes.client.rest import ApiException
-
-            core_v1, _ = _get_kubernetes_clients()
-            namespace = self.get_domino_platform_namespace()
-            secret_name = secret_name or "domino-registry"
-
-            logging.debug(f"Attempting to read {secret_name} secret from namespace {namespace}")
-
-            try:
-                secret = core_v1.read_namespaced_secret(name=secret_name, namespace=namespace)
-            except ApiException as e:
-                if e.status == 404:
-                    logging.debug(f"Secret {secret_name} not found in namespace {namespace}")
-                else:
-                    logging.debug(f"Error reading secret {secret_name}: {e}")
-                return None, None
-
-            # Read .dockerconfigjson from the secret
-            if not secret.data or ".dockerconfigjson" not in secret.data:
-                logging.debug(f"Secret {secret_name} does not contain .dockerconfigjson")
-                return None, None
-
-            # Decode the dockerconfigjson
-            dockerconfig_b64 = secret.data[".dockerconfigjson"]
-            dockerconfig_json = base64.b64decode(dockerconfig_b64).decode("utf-8")
-            dockerconfig = json.loads(dockerconfig_json)
-
-            # Extract credentials for our registry
-            registry_url = self.get_registry_url()
-            # Normalize registry URL for matching (remove port, protocol, etc.)
-            registry_host = registry_url.split(":")[0].split("/")[0]
-
-            if "auths" not in dockerconfig:
-                logging.debug("No 'auths' section in dockerconfigjson")
-                return None, None
-
-            # Try to find matching registry in auths
-            for auth_url, auth_data in dockerconfig["auths"].items():
-                # Check if this auth entry matches our registry
-                auth_host = auth_url.split(":")[0].split("/")[0]
-                if auth_host == registry_host or registry_host in auth_host:
-                    username = auth_data.get("username")
-                    password = auth_data.get("password")
-
-                    # If username/password not directly available, decode from 'auth' field
-                    if (not username or not password) and "auth" in auth_data:
-                        auth_decoded = base64.b64decode(auth_data["auth"]).decode("utf-8")
-                        if ":" in auth_decoded:
-                            decoded_user, decoded_pass = auth_decoded.split(":", 1)
-                            username = username or decoded_user
-                            password = password or decoded_pass
-
-                    if username or password:
-                        logging.info(f"Found registry credentials in {secret_name} secret")
-                        return username, password
-
-            logging.debug(f"No matching registry credentials found in {secret_name} secret for {registry_url}")
-            return None, None
-
-        except Exception as e:
-            # Log but don't fail - fall back to other auth methods
-            logging.debug(f"Could not read credentials from Kubernetes secret: {e}")
-            return None, None
-
-    def _get_password_from_k8s_secret(self, secret_name: Optional[str] = None) -> Optional[str]:
-        """Get Docker registry password from Kubernetes secret.
-
-        Args:
-            secret_name: Name of the secret to read. If None, defaults to 'domino-registry'.
-
-        Returns:
-            Password string if found, None otherwise
-        """
-        _, password = self._get_credentials_from_k8s_secret(secret_name)
-        return password
-
-    def get_registry_password(self) -> Optional[str]:
-        """Get registry password from environment, Kubernetes secret, or handle ECR authentication.
-
-        Priority order:
-        1. REGISTRY_PASSWORD environment variable (explicit override)
-        2. Custom Kubernetes secret (REGISTRY_AUTH_SECRET, for external registries)
-        3. domino-registry Kubernetes secret (for in-cluster registries)
-        4. ECR authentication (for AWS ECR registries)
-        """
-        # First check explicit password from environment
-        password = os.environ.get("REGISTRY_PASSWORD")
-        if password:
-            return password
-
-        # Try custom auth secret first (for external registries)
-        custom_secret = self.get_registry_auth_secret()
-        if custom_secret:
-            password = self._get_password_from_k8s_secret(custom_secret)
-            if password:
-                return password
-
-        # Fall back to domino-registry secret (for in-cluster registries)
-        password = self._get_password_from_k8s_secret()
-        if password:
-            return password
-
-        # If no password and registry is ECR, handle authentication
-        registry_url = self.get_registry_url()
-        if "amazonaws.com" in registry_url:
-            self._authenticate_ecr(registry_url)
-            # After authentication, we don't need to return a password
-            # as skopeo will use the authenticated session
-            return None
-
-        return None
-
-    def get_registry_username(self) -> Optional[str]:
-        """Get registry username from environment or Kubernetes secret.
-
-        Priority order:
-        1. REGISTRY_USERNAME environment variable (explicit override)
-        2. Custom Kubernetes secret (REGISTRY_AUTH_SECRET, for external registries)
-        3. domino-registry Kubernetes secret (for in-cluster registries)
-        4. For ECR registries, always returns "AWS"
-        """
-        # First check explicit username from environment
-        username = os.environ.get("REGISTRY_USERNAME")
-        if username:
-            return username
-
-        # Try custom auth secret first (for external registries)
-        custom_secret = self.get_registry_auth_secret()
-        if custom_secret:
-            username, _ = self._get_credentials_from_k8s_secret(custom_secret)
-            if username:
-                return username
-
-        # Fall back to domino-registry secret (for in-cluster registries)
-        username, _ = self._get_credentials_from_k8s_secret()
-        if username:
-            return username
-
-        # For ECR registries, username is always "AWS"
-        registry_url = self.get_registry_url()
-        if "amazonaws.com" in registry_url:
-            return "AWS"
-
-        return None
-
-    def _authenticate_ecr(self, registry_url: str) -> None:
-        """Authenticate with ECR using boto3 (no shell required)."""
-        try:
-            # Extract region from registry URL
-            # ECR URLs are typically: account.dkr.ecr.region.amazonaws.com
-            parts = registry_url.split(".")
-            if len(parts) >= 4 and parts[-2] == "amazonaws" and parts[-1] == "com":
-                region = parts[-3]  # Extract region from URL
-            else:
-                region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-
-            logging.info(f"Authenticating with ECR in region: {region}")
-
-            # Get ECR login password via boto3 (no aws CLI or shell needed)
-            import boto3
-
-            client = boto3.client("ecr", region_name=region)
-            response = client.get_authorization_token()
-            token_b64 = response["authorizationData"][0]["authorizationToken"]
-            token = base64.b64decode(token_b64).decode("utf-8")
-            _, password = token.split(":", 1)
-
-            # Run skopeo login with password on stdin (no shell)
-            # Use explicit --authfile to ensure nonroot users can write auth
-            subprocess.run(
-                [
-                    "skopeo",
-                    "login",
-                    "--authfile",
-                    self.auth_file,
-                    "--username",
-                    "AWS",
-                    "--password-stdin",
-                    registry_url,
-                ],
-                input=password,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            logging.info("ECR authentication successful")
-
-        except subprocess.CalledProcessError as e:
-            logging.error(f"ECR authentication failed: {e}")
-            if e.stderr:
-                logging.error(f"  stderr: {e.stderr}")
-            raise
-        except Exception as e:
-            logging.error(f"Unexpected error during ECR authentication: {e}")
-            raise
 
     # Kubernetes configuration
     def get_domino_platform_namespace(self) -> str:
@@ -558,10 +260,7 @@ class ConfigManager:
 
     # S3 Configuration
     def get_s3_bucket(self) -> Optional[str]:
-        """Get S3 bucket from environment or config
-
-        Returns empty string if not configured, which evaluates to falsy
-        """
+        """Get S3 bucket from environment or config"""
         bucket = os.environ.get("S3_BUCKET") or self.config.get("s3", {}).get("bucket", "")
         return bucket if bucket else None
 
@@ -569,6 +268,7 @@ class ConfigManager:
         """Get S3 region from environment or config"""
         return os.environ.get("S3_REGION") or self.config.get("s3", {}).get("region", "us-west-2")
 
+    # Skopeo rate limiting configuration
     def get_skopeo_rate_limit_enabled(self) -> bool:
         """Get whether rate limiting is enabled for Skopeo operations"""
         return self.config.get("skopeo", {}).get("rate_limit", {}).get("enabled", True)
@@ -583,10 +283,7 @@ class ConfigManager:
 
     # Report configuration
     def _resolve_report_path(self, path: str) -> str:
-        """Resolve report file path under the configured output_dir unless absolute or already a path.
-        If the value is just a filename, prefix it with output_dir.
-        """
-        # If absolute or contains a directory component, return as is
+        """Resolve report file path under the configured output_dir unless absolute."""
         if os.path.isabs(path) or os.path.basename(path) != path:
             return path
         return os.path.join(self.get_output_dir(), path)
@@ -621,9 +318,7 @@ class ConfigManager:
 
     def get_images_report_path(self) -> str:
         """Get images report path from config"""
-        # images_report is a base name used to save both .txt and .json
         base = self.config["reports"]["images_report"]
-        # If it's just a filename, prefix with output_dir
         if os.path.isabs(base) or os.path.basename(base) != base:
             return base
         return os.path.join(self.get_output_dir(), base)
@@ -676,7 +371,7 @@ class ConfigManager:
 
         # Fallback: read credentials from Kubernetes secret mongodb-replicaset-admin
         try:
-            core_v1, _ = _get_kubernetes_clients()
+            core_v1 = _get_kubernetes_core_client()
             namespace = self.get_domino_platform_namespace()
             secret = core_v1.read_namespaced_secret(name="mongodb-replicaset-admin", namespace=namespace)
             data = secret.data or {}
@@ -717,26 +412,20 @@ class ConfigManager:
         if not registry_url or not registry_url.strip():
             errors.append("Registry URL is required and cannot be empty")
         elif not self._is_valid_registry_url(registry_url):
-            warnings.append(
-                f"Registry URL '{registry_url}' may be invalid (expected format: hostname[:port] or hostname.namespace[:port])"
-            )
+            warnings.append(f"Registry URL '{registry_url}' may be invalid (expected format: hostname[:port])")
 
         repository = self.get_repository()
         if not repository or not repository.strip():
             errors.append("Repository name is required and cannot be empty")
         elif not self._is_valid_repository_name(repository):
-            errors.append(
-                f"Repository name '{repository}' contains invalid characters (alphanumeric, hyphens, underscores, and slashes only)"
-            )
+            errors.append(f"Repository name '{repository}' contains invalid characters")
 
         # Validate Kubernetes configuration
         namespace = self.get_domino_platform_namespace()
         if not namespace or not namespace.strip():
             errors.append("Domino platform namespace is required and cannot be empty")
         elif not self._is_valid_k8s_name(namespace):
-            errors.append(
-                f"Namespace '{namespace}' is not a valid Kubernetes name (lowercase alphanumeric and hyphens only)"
-            )
+            errors.append(f"Namespace '{namespace}' is not a valid Kubernetes name")
 
         # Validate MongoDB configuration
         mongo_host = self.get_mongo_host()
@@ -812,7 +501,7 @@ class ConfigManager:
         if s3_bucket:
             if not self._is_valid_s3_bucket_name(s3_bucket):
                 errors.append(
-                    f"S3 bucket name '{s3_bucket}' is invalid (must be 3-63 characters, lowercase alphanumeric and hyphens only)"
+                    f"S3 bucket name '{s3_bucket}' is invalid (must be 3-63 characters, lowercase alphanumeric)"
                 )
 
             s3_region = self.get_s3_region()
@@ -833,12 +522,7 @@ class ConfigManager:
         """Validate registry URL format"""
         if not url:
             return False
-
-        # Remove protocol if present
         url = url.replace("http://", "").replace("https://", "")
-
-        # Basic validation: should contain hostname and optional port
-        # Formats: "hostname:port", "hostname.namespace:port", "hostname.namespace.svc.cluster.local:port"
         pattern = r"^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?(:[0-9]{1,5})?$"
         return bool(re.match(pattern, url))
 
@@ -846,7 +530,6 @@ class ConfigManager:
         """Validate repository name format"""
         if not name:
             return False
-        # Allow alphanumeric, hyphens, underscores, and slashes
         pattern = r"^[a-zA-Z0-9_\-/]+$"
         return bool(re.match(pattern, name))
 
@@ -854,7 +537,6 @@ class ConfigManager:
         """Validate Kubernetes resource name format"""
         if not name:
             return False
-        # Kubernetes names: lowercase alphanumeric and hyphens, max 253 chars
         pattern = r"^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$"
         return bool(re.match(pattern, name)) and len(name) <= 253
 
@@ -862,13 +544,11 @@ class ConfigManager:
         """Validate S3 bucket name format"""
         if not name:
             return False
-        # S3 bucket names: 3-63 characters, lowercase alphanumeric and hyphens, not IP address format
         if len(name) < 3 or len(name) > 63:
             return False
         pattern = r"^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$"
         if not re.match(pattern, name):
             return False
-        # Cannot be formatted as IP address
         if re.match(r"^\d+\.\d+\.\d+\.\d+$", name):
             return False
         return True
@@ -885,513 +565,29 @@ class ConfigManager:
         print(f"  Dry Run Default: {self.is_dry_run_by_default()}")
         print(f"  Require Confirmation: {self.requires_confirmation()}")
 
-        # S3 Configuration
         s3_bucket = self.get_s3_bucket()
         s3_region = self.get_s3_region()
         print(f"  S3 Bucket: {s3_bucket or 'Not configured'}")
         print(f"  S3 Region: {s3_region}")
 
-        password = self.get_registry_password()
-        if password:
-            print(f"  Registry Password: {'*' * len(password)}")
-        else:
-            print("  Registry Password: Not set")
-
-
-class SkopeoClient:
-    """Standardized Skopeo client for registry operations"""
-
-    def __init__(
-        self,
-        config_manager: ConfigManager,
-        namespace: str = None,
-        enable_docker_deletion: bool = False,
-        registry_statefulset: str = None,
-    ):
-        """Initialize SkopeoClient.
-
-        Args:
-            config_manager: ConfigManager instance for accessing configuration
-            namespace: Kubernetes namespace (defaults to platform namespace from config)
-            enable_docker_deletion: If True, enable registry deletion by treating registry as in-cluster
-            registry_statefulset: Name of the registry StatefulSet to modify for deletion.
-                                  Defaults to "docker-registry" if enable_docker_deletion is True.
-                                  Only used when enable_docker_deletion is True.
-        """
-        self.config_manager = config_manager
-        self.namespace = namespace or config_manager.get_domino_platform_namespace()
-        self.registry_url = config_manager.get_registry_url()
-        self.repository = config_manager.get_repository()
-        self._logged_in = False
-
-        # Registry deletion override settings
-        self.enable_docker_deletion = enable_docker_deletion
-        self.registry_statefulset = registry_statefulset or "docker-registry"
-
-        # Rate limiting
-        self.rate_limit_enabled = config_manager.get_skopeo_rate_limit_enabled()
-        self.rate_limit_rps = config_manager.get_skopeo_rate_limit_rps()
-        self.rate_limit_burst = config_manager.get_skopeo_rate_limit_burst()
-        self._rate_limiter = None
-        self._rate_limiter_lock = Lock()
-
-        # Point skopeo at a writable auth file before any skopeo call
-        # (nonroot can't write /run/containers; must be set before get_registry_password() which may run ECR login)
-        auth_dir = config_manager.get_output_dir()
-        auth_file = os.path.join(auth_dir, ".registry-auth.json")
-        os.environ["REGISTRY_AUTH_FILE"] = auth_file
-
-        self.username = config_manager.get_registry_username()
-        self.password = config_manager.get_registry_password()
-
-        if self.rate_limit_enabled:
-            self._init_rate_limiter()
-
-        self._ensure_logged_in()
-
-    def _init_rate_limiter(self):
-        """Initialize token bucket rate limiter"""
-        # Simple token bucket implementation
-        self._tokens = float(self.rate_limit_burst)
-        self._last_update = time.time()
-        self._token_refill_rate = self.rate_limit_rps  # tokens per second
-
-    def _acquire_rate_limit_token(self):
-        """Acquire a token from the rate limiter, waiting if necessary"""
-        if not self.rate_limit_enabled:
-            return
-
-        with self._rate_limiter_lock:
-            now = time.time()
-            elapsed = now - self._last_update
-
-            # Refill tokens based on elapsed time
-            self._tokens = min(self.rate_limit_burst, self._tokens + elapsed * self._token_refill_rate)
-            self._last_update = now
-
-            # If we have tokens, use one
-            if self._tokens >= 1.0:
-                self._tokens -= 1.0
-                return
-
-            # Otherwise, calculate wait time
-            wait_time = (1.0 - self._tokens) / self._token_refill_rate
-
-            if wait_time > 0:
-                logging.debug(f"Rate limiting: waiting {wait_time:.2f}s (tokens: {self._tokens:.2f})")
-                time.sleep(wait_time)
-                self._tokens = 0.0
-                self._last_update = time.time()
-
-    def _ensure_logged_in(self):
-        """Ensure skopeo is logged in to the registry before operations.
-
-        Raises:
-            RuntimeError: If authentication fails or is required but credentials are missing
-        """
-        if self._logged_in:
-            return
-
-        try:
-            # For ECR, authentication is handled by get_registry_password()
-            # For other registries, we'll try to login if we have credentials
-            if self.password and "amazonaws.com" not in self.registry_url:
-                logging.info(f"Logging in to registry: {self.registry_url}")
-                self._login_to_registry()
-
-            self._logged_in = True
-            logging.info("Skopeo authentication ready")
-
-        except Exception as e:
-            logging.error(f"Failed to authenticate with registry: {self.registry_url}")
-            logging.error(f"Authentication error: {e}")
-            from utils.error_utils import create_registry_auth_error
-
-            raise create_registry_auth_error(self.registry_url, e)
-
-    def _login_to_registry(self):
-        """Login to the registry using skopeo login"""
-        try:
-            if not self.username:
-                raise RuntimeError(
-                    "Registry username not configured. Set REGISTRY_USERNAME environment variable "
-                    "or ensure the domino-registry Kubernetes secret contains valid credentials."
-                )
-
-            # Get auth file from environment (set by ConfigManager)
-            auth_file = os.environ.get("REGISTRY_AUTH_FILE")
-            cmd = [
-                "skopeo",
-                "login",
-            ]
-            # Add --authfile if available (for nonroot compatibility)
-            if auth_file:
-                cmd.extend(["--authfile", auth_file])
-            cmd.extend(
-                [
-                    "--username",
-                    self.username,
-                    "--password-stdin",
-                    "--tls-verify=false",
-                    self.registry_url,
-                ]
-            )
-
-            # Pass password via stdin to avoid issues with special characters
-            # and to prevent password from appearing in process listings
-            result = subprocess.run(cmd, input=self.password, capture_output=True, text=True, check=True)
-            if "Login Succeeded" not in result.stdout:
-                raise RuntimeError(f"Login failed: {result.stdout}")
-
-        except Exception as e:
-            logging.error(f"Registry login failed: {e}")
-            raise
-
-    def _get_auth_args(self) -> List[str]:
-        """Get authentication arguments for Skopeo commands.
-
-        Authentication is handled via the auth file created during login
-        (pointed to by REGISTRY_AUTH_FILE env var). We no longer pass
-        credentials on the command line to avoid issues with special
-        characters and to prevent passwords from appearing in process listings.
-        """
-        args = ["--tls-verify=false"]
-        # Add explicit --authfile if set in environment
-        auth_file = os.environ.get("REGISTRY_AUTH_FILE")
-        if auth_file:
-            args.extend(["--authfile", auth_file])
-        return args
-
-    def _build_skopeo_command(self, subcommand: str, args: List[str]) -> List[str]:
-        """Build a complete Skopeo command with authentication"""
-        return ["skopeo", subcommand] + self._get_auth_args() + args
-
-    @staticmethod
-    def _redact_command_for_logging(cmd: List[str]) -> List[str]:
-        """Return a copy of the command with any credentials redacted.
-
-        This prevents secrets such as registry passwords from being written
-        to logs when we include the command for debugging.
-        """
-        redacted = list(cmd)
-
-        # Redact --creds user:password style arguments
-        for i, token in enumerate(redacted):
-            if token == "--creds" and i + 1 < len(redacted):
-                value = redacted[i + 1]
-                if isinstance(value, str) and ":" in value:
-                    user, _ = value.split(":", 1)
-                    redacted[i + 1] = f"{user}:****"
-            # Redact explicit --password arguments if ever used
-            if token == "--password" and i + 1 < len(redacted):
-                redacted[i + 1] = "****"
-
-        return redacted
-
-    def run_skopeo_command(self, subcommand: str, args: List[str]) -> Optional[str]:
-        """Run a Skopeo command with standardized configuration."""
-        self._ensure_logged_in()
-        self._acquire_rate_limit_token()
-
-        timeout = self.config_manager.get_retry_timeout()
-        cmd = self._build_skopeo_command(subcommand, args)
-        log_cmd = " ".join(self._redact_command_for_logging(cmd))
-
-        @retry_with_backoff(
-            max_retries=self.config_manager.get_max_retries(),
-            initial_delay=self.config_manager.get_retry_initial_delay(),
-            max_delay=self.config_manager.get_retry_max_delay(),
-            exponential_base=self.config_manager.get_retry_exponential_base(),
-            jitter=self.config_manager.get_retry_jitter(),
-        )
-        def _execute():
-            try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                    timeout=timeout,
-                )
-                return result.stdout
-            except subprocess.TimeoutExpired as e:
-                logging.error(f"Skopeo command timed out after {timeout}s: {log_cmd}")
-                from utils.error_utils import create_registry_connection_error
-
-                raise create_registry_connection_error(self.registry_url, e)
-            except subprocess.CalledProcessError as e:
-                error_str = (e.stderr or "").lower()
-                if "429" in error_str or "rate limit" in error_str or "too many requests" in error_str:
-                    from utils.error_utils import create_rate_limit_error
-
-                    raise create_rate_limit_error(f"skopeo {subcommand}", retry_after=1.0)
-                logging.error(f"Skopeo command failed: {log_cmd}")
-                logging.error(f"Error: {e.stderr}")
-                from utils.error_utils import create_registry_connection_error
-
-                raise create_registry_connection_error(self.registry_url, e)
-            except Exception as e:
-                logging.error(f"Unexpected error running Skopeo: {e}")
-                from utils.error_utils import create_registry_connection_error
-
-                raise create_registry_connection_error(self.registry_url, e)
-
-        try:
-            return _execute()
-        except Exception as e:
-            # Check if error is retryable - if not, return None immediately
-            is_retryable, error_type = is_retryable_error(e)
-            if not is_retryable:
-                logging.error(f"Non-retryable error in Skopeo command: {e}")
-            return None
-
-    @cached_tag_list(ttl_seconds=1800)  # Cache for 30 minutes
-    def list_tags(self, repository: Optional[str] = None) -> List[str]:
-        """List all tags for a repository.
-        If repository is provided, it should be the full path under the registry
-        (e.g., "dominodatalab/environment"). Otherwise uses the default from config.
-        """
-        repo_path = repository or self.repository
-        args = [f"docker://{self.registry_url}/{repo_path}"]
-
-        output = self.run_skopeo_command("list-tags", args)
-        if output:
-            try:
-                tags_data = json.loads(output)
-                return tags_data.get("Tags", [])
-            except json.JSONDecodeError:
-                logging.error(f"Failed to parse tags for {self.repository}")
-                return []
-        return []
-
-    @cached_image_inspect(ttl_seconds=3600)  # Cache for 1 hour
-    def inspect_image(self, repository: Optional[str], tag: str) -> Optional[Dict]:
-        """Inspect a specific image tag.
-        repository should be the full path under the registry (e.g., "dominodatalab/environment").
-        If None, falls back to the default repository from config.
-        """
-        repo_path = repository or self.repository
-        args = [f"docker://{self.registry_url}/{repo_path}:{tag}"]
-
-        output = self.run_skopeo_command("inspect", args)
-        if output:
-            try:
-                return json.loads(output)
-            except json.JSONDecodeError:
-                logging.error(f"Failed to parse image inspection for {self.repository}:{tag}")
-                return None
-        return None
-
-    def delete_image(self, repository: Optional[str], tag: str) -> bool:
-        """Delete a specific image tag.
-        repository should be the full path under the registry (e.g., "dominodatalab/environment").
-        If None, falls back to the default repository from config.
-        """
-        repo_path = repository or self.repository
-        args = [f"docker://{self.registry_url}/{repo_path}:{tag}"]
-
-        output = self.run_skopeo_command("delete", args)
-        return output is not None
-
-    def is_registry_in_cluster(self) -> bool:
-        """Check if the registry service exists in the Kubernetes cluster.
-
-        First checks if enable_docker_deletion override is enabled. If so, returns True.
-        Otherwise uses the shared is_registry_in_cluster(registry_url, namespace) helper.
-
-        Returns:
-            True if registry service/workload is found in the cluster (or forced), False otherwise.
-        """
-        if self.enable_docker_deletion:
-            logging.info(f"Registry deletion enabled (using statefulset: {self.registry_statefulset})")
-            return True
-        return is_registry_in_cluster(self.registry_url, self.namespace)
-
-    def _parse_registry_name(self) -> Tuple[str, str]:
-        """Parse registry URL to extract service name and namespace.
-
-        If enable_docker_deletion is enabled, uses the override statefulset name instead.
-
-        Returns:
-            Tuple of (service_name, namespace)
-        """
-        # Use override statefulset name if deletion is enabled
-        if self.enable_docker_deletion:
-            return self.registry_statefulset, self.namespace
-
-        url = self.registry_url.split(":")[0]  # Remove port
-        parts = url.split(".")
-
-        service_name = parts[0]
-        # If URL has namespace in it (service.namespace), use that; otherwise use config namespace
-        check_namespace = parts[1] if len(parts) > 1 and parts[1] != "svc" else self.namespace
-
-        return service_name, check_namespace
-
-    def _wait_for_pod_ready(self, label_selector: str, namespace: str, timeout: int = 300) -> bool:
-        """Wait for pod to be ready after a configuration change.
-
-        Args:
-            label_selector: Kubernetes label selector to find the pod (e.g., "app.kubernetes.io/name=docker-registry")
-            namespace: Kubernetes namespace
-            timeout: Maximum time to wait in seconds (default: 300)
-
-        Returns:
-            True if pod becomes ready, False if timeout or error
-        """
-        import time
-
-        from kubernetes.client.rest import ApiException
-
-        try:
-            core_v1, _ = _get_kubernetes_clients()
-
-            logging.info(f"Waiting for pod with selector '{label_selector}' to be ready in namespace '{namespace}'...")
-            start_time = time.time()
-
-            while time.time() - start_time < timeout:
-                try:
-                    # List pods matching the label selector
-                    pods = core_v1.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
-
-                    if not pods.items:
-                        logging.debug(f"No pods found with selector '{label_selector}', waiting...")
-                        time.sleep(5)
-                        continue
-
-                    # Check if at least one pod is ready
-                    for pod in pods.items:
-                        if pod.status.conditions:
-                            for condition in pod.status.conditions:
-                                if condition.type == "Ready" and condition.status == "True":
-                                    elapsed = int(time.time() - start_time)
-                                    logging.info(f"✓ Pod {pod.metadata.name} is ready (waited {elapsed}s)")
-                                    return True
-
-                    # No ready pods yet, wait and retry
-                    time.sleep(5)
-
-                except ApiException as e:
-                    logging.debug(f"Error checking pod status: {e}")
-                    time.sleep(5)
-
-            # Timeout reached
-            logging.error(f"Timeout waiting for pod to be ready after {timeout}s")
-            return False
-
-        except Exception as e:
-            logging.error(f"Error waiting for pod readiness: {e}")
-            return False
-
-    def enable_registry_deletion(self, namespace: str = None) -> bool:
-        """Enable deletion of Docker images in the registry by setting REGISTRY_STORAGE_DELETE_ENABLED=true
-
-        Args:
-            namespace: Kubernetes namespace where registry workload is located
-                      (defaults to parsed namespace from URL or config namespace)
-
-        Returns:
-            True if successful, False otherwise
-        """
-        service_name, parsed_ns = self._parse_registry_name()
-        ns = namespace or parsed_ns
-
-        try:
-            from kubernetes import client as k8s_client
-
-            # Initialize Kubernetes clients
-            try:
-                _, apps_v1 = _get_kubernetes_clients()
-            except Exception as e:
-                logging.error(f"Failed to load Kubernetes config: {e}")
-                return False
-
-            # Find and update the StatefulSet
-            sts_data = apps_v1.read_namespaced_stateful_set(name=service_name, namespace=ns)
-
-            # Check if the environment variable already exists
-            env_exists = False
-            for env in sts_data.spec.template.spec.containers[0].env or []:
-                if env.name == "REGISTRY_STORAGE_DELETE_ENABLED":
-                    env.value = "true"
-                    env_exists = True
-                    break
-
-            # Add the environment variable if it doesn't exist
-            if not env_exists:
-                new_env = k8s_client.V1EnvVar(name="REGISTRY_STORAGE_DELETE_ENABLED", value="true")
-                if sts_data.spec.template.spec.containers[0].env is None:
-                    sts_data.spec.template.spec.containers[0].env = []
-                sts_data.spec.template.spec.containers[0].env.append(new_env)
-
-            # Update the StatefulSet
-            apps_v1.patch_namespaced_stateful_set(name=service_name, namespace=ns, body=sts_data)
-            logging.info(f"✓ Deletion enabled in {service_name} StatefulSet")
-
-            # Wait for pod to restart and become ready
-            label_selector = f"app.kubernetes.io/name={service_name}"
-            if not self._wait_for_pod_ready(label_selector, ns):
-                logging.warning("Pod may not be ready yet, but continuing anyway")
-
-            return True
-
-        except Exception as e:
-            logging.error(f"Failed to enable registry deletion: {e}")
-            return False
-
-    def disable_registry_deletion(self, namespace: str = None) -> bool:
-        """Disable deletion of Docker images in the registry by removing REGISTRY_STORAGE_DELETE_ENABLED
-
-        Args:
-            namespace: Kubernetes namespace where registry workload is located
-                      (defaults to parsed namespace from URL or config namespace)
-
-        Returns:
-            True if successful, False otherwise
-        """
-        service_name, parsed_ns = self._parse_registry_name()
-        ns = namespace or parsed_ns
-
-        try:
-            pass
-
-            # Initialize Kubernetes clients
-            try:
-                _, apps_v1 = _get_kubernetes_clients()
-            except Exception as e:
-                logging.error(f"Failed to load Kubernetes config: {e}")
-                return False
-
-            # Find and update the StatefulSet
-            sts_data = apps_v1.read_namespaced_stateful_set(name=service_name, namespace=ns)
-
-            # Remove the environment variable if it exists
-            if sts_data.spec.template.spec.containers[0].env:
-                sts_data.spec.template.spec.containers[0].env = [
-                    env
-                    for env in sts_data.spec.template.spec.containers[0].env
-                    if env.name != "REGISTRY_STORAGE_DELETE_ENABLED"
-                ]
-
-            # Update the StatefulSet
-            apps_v1.patch_namespaced_stateful_set(name=service_name, namespace=ns, body=sts_data)
-            logging.info(f"✓ Deletion disabled in {service_name} StatefulSet")
-
-            # Wait for pod to restart and become ready
-            label_selector = f"app.kubernetes.io/name={service_name}"
-            if not self._wait_for_pod_ready(label_selector, ns):
-                logging.warning("Pod may not be ready yet, but continuing anyway")
-
-            return True
-
-        except Exception as e:
-            logging.error(f"Failed to disable registry deletion: {e}")
-            return False
-
 
 # Global config manager instance
 # Validation can be disabled by setting SKIP_CONFIG_VALIDATION=true environment variable
-# This is useful for testing or when you know the config is valid
 config_manager = ConfigManager(
     validate=os.environ.get("SKIP_CONFIG_VALIDATION", "").lower() not in ("true", "1", "yes")
 )
+
+
+# Re-export SkopeoClient and is_registry_in_cluster for backwards compatibility
+# These are now defined in utils.skopeo_client but we expose them here to avoid
+# breaking existing imports
+from utils.skopeo_client import SkopeoClient, _get_kubernetes_clients, is_registry_in_cluster
+
+__all__ = [
+    "ConfigManager",
+    "ConfigValidationError",
+    "config_manager",
+    "SkopeoClient",
+    "is_registry_in_cluster",
+    "_get_kubernetes_clients",
+]

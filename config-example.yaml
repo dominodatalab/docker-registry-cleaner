@@ -72,4 +72,4 @@ reports:
 # Security Configuration
 security:
   dry_run_by_default: true
-  require_confirmation: true 
+  require_confirmation: true

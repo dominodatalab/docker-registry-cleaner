@@ -80,10 +80,10 @@ def test_function_name_behavior(self):
     """Test description"""
     # Arrange
     input_data = "test"
-    
+
     # Act
     result = function_under_test(input_data)
-    
+
     # Assert
     assert result == expected_output
 ```

@@ -108,6 +108,12 @@ def create_registry_auth_error(registry_url: str, error: Exception) -> Actionabl
         suggestions.insert(1, "Verify AWS credentials are configured (aws configure)")
         suggestions.insert(2, "Check AWS IAM permissions for ECR access")
 
+    if "azurecr.io" in registry_url:
+        suggestions.insert(0, "Run 'az acr login' to test ACR authentication")
+        suggestions.insert(1, "Verify managed identity is enabled on the AKS cluster")
+        suggestions.insert(2, "Check that the managed identity has AcrPull role on the ACR")
+        suggestions.insert(3, "Ensure AZURE_CLIENT_ID is set if multiple identities exist")
+
     return ActionableError(
         message=f"Failed to authenticate with Docker registry at {registry_url}",
         category=ErrorCategory.AUTHENTICATION,

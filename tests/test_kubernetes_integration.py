@@ -22,7 +22,7 @@ def mock_k8s_clients(mocker):
     """Fixture providing mocked Kubernetes clients."""
     mock_core_v1 = MagicMock()
     mock_apps_v1 = MagicMock()
-    mocker.patch("utils.config_manager._get_kubernetes_clients", return_value=(mock_core_v1, mock_apps_v1))
+    mocker.patch("utils.skopeo_client._get_kubernetes_clients", return_value=(mock_core_v1, mock_apps_v1))
     return mock_core_v1, mock_apps_v1
 
 
@@ -68,7 +68,7 @@ class TestIsRegistryInCluster:
         from utils.config_manager import is_registry_in_cluster
 
         # Mock the K8s API call to avoid actual cluster access
-        mocker.patch("utils.config_manager._get_kubernetes_clients", side_effect=Exception("No cluster"))
+        mocker.patch("utils.skopeo_client._get_kubernetes_clients", side_effect=Exception("No cluster"))
 
         # ECR URLs should return False without even checking K8s
         result = is_registry_in_cluster("123456789.dkr.ecr.us-east-1.amazonaws.com", "domino-platform")
@@ -78,7 +78,7 @@ class TestIsRegistryInCluster:
         """GCR registries should be detected as external."""
         from utils.config_manager import is_registry_in_cluster
 
-        mocker.patch("utils.config_manager._get_kubernetes_clients", side_effect=Exception("No cluster"))
+        mocker.patch("utils.skopeo_client._get_kubernetes_clients", side_effect=Exception("No cluster"))
 
         result = is_registry_in_cluster("gcr.io/my-project/my-repo", "domino-platform")
         assert result is False
@@ -87,7 +87,7 @@ class TestIsRegistryInCluster:
         """Azure Container Registry should be detected as external."""
         from utils.config_manager import is_registry_in_cluster
 
-        mocker.patch("utils.config_manager._get_kubernetes_clients", side_effect=Exception("No cluster"))
+        mocker.patch("utils.skopeo_client._get_kubernetes_clients", side_effect=Exception("No cluster"))
 
         result = is_registry_in_cluster("myregistry.azurecr.io", "domino-platform")
         assert result is False
@@ -98,7 +98,7 @@ class TestIsRegistryInCluster:
 
         mock_core_v1 = MagicMock()
         mock_apps_v1 = MagicMock()
-        mocker.patch("utils.config_manager._get_kubernetes_clients", return_value=(mock_core_v1, mock_apps_v1))
+        mocker.patch("utils.skopeo_client._get_kubernetes_clients", return_value=(mock_core_v1, mock_apps_v1))
 
         # Mock successful StatefulSet read
         mock_apps_v1.read_namespaced_stateful_set.return_value = Mock()
@@ -114,7 +114,7 @@ class TestIsRegistryInCluster:
 
         mock_core_v1 = MagicMock()
         mock_apps_v1 = MagicMock()
-        mocker.patch("utils.config_manager._get_kubernetes_clients", return_value=(mock_core_v1, mock_apps_v1))
+        mocker.patch("utils.skopeo_client._get_kubernetes_clients", return_value=(mock_core_v1, mock_apps_v1))
 
         # Mock 404 - Service not found (checked first)
         mock_core_v1.read_namespaced_service.side_effect = ApiException(status=404)
