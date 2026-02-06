@@ -11,6 +11,7 @@ import logging
 import os
 import re
 from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional
 
 import yaml
 
@@ -36,9 +37,12 @@ def _load_kubernetes_config():
 
 def _get_kubernetes_core_client():
     """Helper function to get Kubernetes CoreV1Api client."""
+def _get_kubernetes_core_client():
+    """Helper function to get Kubernetes CoreV1Api client."""
     from kubernetes import client as k8s_client
 
     _load_kubernetes_config()
+    return k8s_client.CoreV1Api()
     return k8s_client.CoreV1Api()
 
 
@@ -80,11 +84,14 @@ class ConfigManager:
                 "exponential_base": 2.0,
                 "jitter": True,
                 "timeout": 300,
+                "timeout": 300,
             },
             "s3": {"bucket": "", "region": "us-west-2"},
             "skopeo": {
                 "rate_limit": {
                     "enabled": True,
+                    "requests_per_second": 10.0,
+                    "burst_size": 20,
                     "requests_per_second": 10.0,
                     "burst_size": 20,
                 },
@@ -99,6 +106,7 @@ class ConfigManager:
                 "tags_per_layer": "tags-per-layer.json",
                 "tag_sums": "tag-sums.json",
                 "unused_references": "unused-references.json",
+                "mongodb_usage": "mongodb_usage_report.json",
                 "mongodb_usage": "mongodb_usage_report.json",
             },
             "security": {"dry_run_by_default": True, "require_confirmation": True},
@@ -144,312 +152,13 @@ class ConfigManager:
 
     def get_repository(self) -> str:
         """Get canonical repository value."""
+        """Get canonical repository value."""
         return os.environ.get("REPOSITORY") or self.config["registry"]["repository"]
 
     def get_registry_auth_secret(self) -> Optional[str]:
         """Get the name of a custom Kubernetes secret for registry authentication."""
+        """Get the name of a custom Kubernetes secret for registry authentication."""
         return os.environ.get("REGISTRY_AUTH_SECRET")
-
-    def _get_credentials_from_k8s_secret(
-        self, secret_name: Optional[str] = None
-    ) -> tuple[Optional[str], Optional[str]]:
-        """Get Docker registry username and password from Kubernetes secret.
-
-        Attempts to read credentials from a Kubernetes secret containing
-        .dockerconfigjson with Docker registry credentials.
-
-        Args:
-            secret_name: Name of the secret to read. If None, defaults to 'domino-registry'.
-
-        Returns:
-            Tuple of (username, password) - either or both may be None if not found
-        """
-        try:
-            from kubernetes.client.rest import ApiException
-
-            core_v1, _ = _get_kubernetes_clients()
-            namespace = self.get_domino_platform_namespace()
-            secret_name = secret_name or "domino-registry"
-
-            logging.debug(f"Attempting to read {secret_name} secret from namespace {namespace}")
-
-            try:
-                secret = core_v1.read_namespaced_secret(name=secret_name, namespace=namespace)
-            except ApiException as e:
-                if e.status == 404:
-                    logging.debug(f"Secret {secret_name} not found in namespace {namespace}")
-                else:
-                    logging.debug(f"Error reading secret {secret_name}: {e}")
-                return None, None
-
-            # Read .dockerconfigjson from the secret
-            if not secret.data or ".dockerconfigjson" not in secret.data:
-                logging.debug(f"Secret {secret_name} does not contain .dockerconfigjson")
-                return None, None
-
-            # Decode the dockerconfigjson
-            dockerconfig_b64 = secret.data[".dockerconfigjson"]
-            dockerconfig_json = base64.b64decode(dockerconfig_b64).decode("utf-8")
-            dockerconfig = json.loads(dockerconfig_json)
-
-            # Extract credentials for our registry
-            registry_url = self.get_registry_url()
-            # Normalize registry URL for matching (remove port, protocol, etc.)
-            registry_host = registry_url.split(":")[0].split("/")[0]
-
-            if "auths" not in dockerconfig:
-                logging.debug("No 'auths' section in dockerconfigjson")
-                return None, None
-
-            # Try to find matching registry in auths
-            for auth_url, auth_data in dockerconfig["auths"].items():
-                # Check if this auth entry matches our registry
-                auth_host = auth_url.split(":")[0].split("/")[0]
-                if auth_host == registry_host or registry_host in auth_host:
-                    username = auth_data.get("username")
-                    password = auth_data.get("password")
-
-                    # If username/password not directly available, decode from 'auth' field
-                    if (not username or not password) and "auth" in auth_data:
-                        auth_decoded = base64.b64decode(auth_data["auth"]).decode("utf-8")
-                        if ":" in auth_decoded:
-                            decoded_user, decoded_pass = auth_decoded.split(":", 1)
-                            username = username or decoded_user
-                            password = password or decoded_pass
-
-                    if username or password:
-                        logging.info(f"Found registry credentials in {secret_name} secret")
-                        return username, password
-
-            logging.debug(f"No matching registry credentials found in {secret_name} secret for {registry_url}")
-            return None, None
-
-        except Exception as e:
-            # Log but don't fail - fall back to other auth methods
-            logging.debug(f"Could not read credentials from Kubernetes secret: {e}")
-            return None, None
-
-    def _get_password_from_k8s_secret(self, secret_name: Optional[str] = None) -> Optional[str]:
-        """Get Docker registry password from Kubernetes secret.
-
-        Args:
-            secret_name: Name of the secret to read. If None, defaults to 'domino-registry'.
-
-        Returns:
-            Password string if found, None otherwise
-        """
-        _, password = self._get_credentials_from_k8s_secret(secret_name)
-        return password
-
-    def get_registry_password(self) -> Optional[str]:
-        """Get registry password from environment, Kubernetes secret, or handle cloud registry authentication.
-
-        Priority order:
-        1. REGISTRY_PASSWORD environment variable (explicit override)
-        2. Custom Kubernetes secret (REGISTRY_AUTH_SECRET, for external registries)
-        3. domino-registry Kubernetes secret (for in-cluster registries)
-        4. ECR authentication (for AWS ECR registries)
-        5. ACR authentication (for Azure ACR registries)
-        """
-        # First check explicit password from environment
-        password = os.environ.get("REGISTRY_PASSWORD")
-        if password:
-            return password
-
-        # Try custom auth secret first (for external registries)
-        custom_secret = self.get_registry_auth_secret()
-        if custom_secret:
-            password = self._get_password_from_k8s_secret(custom_secret)
-            if password:
-                return password
-
-        # Fall back to domino-registry secret (for in-cluster registries)
-        password = self._get_password_from_k8s_secret()
-        if password:
-            return password
-
-        # If no password and registry is ECR, handle authentication
-        registry_url = self.get_registry_url()
-        if "amazonaws.com" in registry_url:
-            self._authenticate_ecr(registry_url)
-            # After authentication, we don't need to return a password
-            # as skopeo will use the authenticated session
-            return None
-
-        # If no password and registry is ACR, handle authentication
-        if "azurecr.io" in registry_url:
-            self._authenticate_acr(registry_url)
-            # After authentication, we don't need to return a password
-            # as skopeo will use the authenticated session
-            return None
-
-        return None
-
-    def get_registry_username(self) -> Optional[str]:
-        """Get registry username from environment or Kubernetes secret.
-
-        Priority order:
-        1. REGISTRY_USERNAME environment variable (explicit override)
-        2. Custom Kubernetes secret (REGISTRY_AUTH_SECRET, for external registries)
-        3. domino-registry Kubernetes secret (for in-cluster registries)
-        4. For ECR registries, always returns "AWS"
-        5. For ACR registries, always returns a placeholder GUID
-        """
-        # First check explicit username from environment
-        username = os.environ.get("REGISTRY_USERNAME")
-        if username:
-            return username
-
-        # Try custom auth secret first (for external registries)
-        custom_secret = self.get_registry_auth_secret()
-        if custom_secret:
-            username, _ = self._get_credentials_from_k8s_secret(custom_secret)
-            if username:
-                return username
-
-        # Fall back to domino-registry secret (for in-cluster registries)
-        username, _ = self._get_credentials_from_k8s_secret()
-        if username:
-            return username
-
-        # For ECR registries, username is always "AWS"
-        registry_url = self.get_registry_url()
-        if "amazonaws.com" in registry_url:
-            return "AWS"
-
-        # For ACR registries with AAD auth, username is a placeholder GUID
-        if "azurecr.io" in registry_url:
-            return "00000000-0000-0000-0000-000000000000"
-
-        return None
-
-    def _authenticate_ecr(self, registry_url: str) -> None:
-        """Authenticate with ECR using boto3 (no shell required)."""
-        try:
-            # Extract region from registry URL
-            # ECR URLs are typically: account.dkr.ecr.region.amazonaws.com
-            parts = registry_url.split(".")
-            if len(parts) >= 4 and parts[-2] == "amazonaws" and parts[-1] == "com":
-                region = parts[-3]  # Extract region from URL
-            else:
-                region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-
-            logging.info(f"Authenticating with ECR in region: {region}")
-
-            # Get ECR login password via boto3 (no aws CLI or shell needed)
-            import boto3
-
-            client = boto3.client("ecr", region_name=region)
-            response = client.get_authorization_token()
-            token_b64 = response["authorizationData"][0]["authorizationToken"]
-            token = base64.b64decode(token_b64).decode("utf-8")
-            _, password = token.split(":", 1)
-
-            # Run skopeo login with password on stdin (no shell)
-            # Use explicit --authfile to ensure nonroot users can write auth
-            subprocess.run(
-                [
-                    "skopeo",
-                    "login",
-                    "--authfile",
-                    self.auth_file,
-                    "--username",
-                    "AWS",
-                    "--password-stdin",
-                    registry_url,
-                ],
-                input=password,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            logging.info("ECR authentication successful")
-
-        except subprocess.CalledProcessError as e:
-            logging.error(f"ECR authentication failed: {e}")
-            if e.stderr:
-                logging.error(f"  stderr: {e.stderr}")
-            raise
-        except Exception as e:
-            logging.error(f"Unexpected error during ECR authentication: {e}")
-            raise
-
-    def _authenticate_acr(self, registry_url: str) -> None:
-        """Authenticate with Azure Container Registry using managed identity (no shell required)."""
-        try:
-            import urllib.parse
-            import urllib.request
-
-            logging.info(f"Authenticating with ACR: {registry_url}")
-
-            # Get Azure AD access token using managed identity
-            # If AZURE_CLIENT_ID is set, use ManagedIdentityCredential directly
-            # (required when multiple user-assigned identities exist on the AKS cluster)
-            client_id = os.environ.get("AZURE_CLIENT_ID")
-            if client_id:
-                from azure.identity import ManagedIdentityCredential
-
-                logging.info(f"Using managed identity with client ID: {client_id}")
-                credential = ManagedIdentityCredential(client_id=client_id)
-            else:
-                from azure.identity import DefaultAzureCredential
-
-                credential = DefaultAzureCredential()
-            # Scope for ACR is the registry URL itself
-            token = credential.get_token("https://management.azure.com/.default")
-            access_token = token.token
-
-            # Exchange the AAD token for an ACR refresh token
-            # POST to https://<registry>/oauth2/exchange
-            exchange_url = f"https://{registry_url}/oauth2/exchange"
-            data = urllib.parse.urlencode(
-                {
-                    "grant_type": "access_token",
-                    "service": registry_url,
-                    "access_token": access_token,
-                }
-            ).encode("utf-8")
-
-            req = urllib.request.Request(exchange_url, data=data, method="POST")
-            req.add_header("Content-Type", "application/x-www-form-urlencoded")
-
-            with urllib.request.urlopen(req, timeout=30) as response:
-                import json
-
-                result = json.loads(response.read().decode("utf-8"))
-                refresh_token = result["refresh_token"]
-
-            # Run skopeo login with the refresh token as password
-            # Username for AAD auth is a placeholder GUID
-            subprocess.run(
-                [
-                    "skopeo",
-                    "login",
-                    "--authfile",
-                    self.auth_file,
-                    "--username",
-                    "00000000-0000-0000-0000-000000000000",
-                    "--password-stdin",
-                    registry_url,
-                ],
-                input=refresh_token,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            logging.info("ACR authentication successful")
-
-        except subprocess.CalledProcessError as e:
-            logging.error(f"ACR authentication failed during skopeo login: {e}")
-            if e.stderr:
-                logging.error(f"  stderr: {e.stderr}")
-            raise
-        except urllib.error.HTTPError as e:
-            logging.error(f"ACR token exchange failed: HTTP {e.code} - {e.reason}")
-            raise
-        except Exception as e:
-            logging.error(f"Unexpected error during ACR authentication: {e}")
-            raise
 
     # Kubernetes configuration
     def get_domino_platform_namespace(self) -> str:
@@ -562,6 +271,7 @@ class ConfigManager:
     # S3 Configuration
     def get_s3_bucket(self) -> Optional[str]:
         """Get S3 bucket from environment or config"""
+        """Get S3 bucket from environment or config"""
         bucket = os.environ.get("S3_BUCKET") or self.config.get("s3", {}).get("bucket", "")
         return bucket if bucket else None
 
@@ -569,6 +279,7 @@ class ConfigManager:
         """Get S3 region from environment or config"""
         return os.environ.get("S3_REGION") or self.config.get("s3", {}).get("region", "us-west-2")
 
+    # Skopeo rate limiting configuration
     # Skopeo rate limiting configuration
     def get_skopeo_rate_limit_enabled(self) -> bool:
         """Get whether rate limiting is enabled for Skopeo operations"""
@@ -584,6 +295,7 @@ class ConfigManager:
 
     # Report configuration
     def _resolve_report_path(self, path: str) -> str:
+        """Resolve report file path under the configured output_dir unless absolute."""
         """Resolve report file path under the configured output_dir unless absolute."""
         if os.path.isabs(path) or os.path.basename(path) != path:
             return path
@@ -673,6 +385,7 @@ class ConfigManager:
         # Fallback: read credentials from Kubernetes secret mongodb-replicaset-admin
         try:
             core_v1 = _get_kubernetes_core_client()
+            core_v1 = _get_kubernetes_core_client()
             namespace = self.get_domino_platform_namespace()
             secret = core_v1.read_namespaced_secret(name="mongodb-replicaset-admin", namespace=namespace)
             data = secret.data or {}
@@ -714,11 +427,13 @@ class ConfigManager:
             errors.append("Registry URL is required and cannot be empty")
         elif not self._is_valid_registry_url(registry_url):
             warnings.append(f"Registry URL '{registry_url}' may be invalid (expected format: hostname[:port])")
+            warnings.append(f"Registry URL '{registry_url}' may be invalid (expected format: hostname[:port])")
 
         repository = self.get_repository()
         if not repository or not repository.strip():
             errors.append("Repository name is required and cannot be empty")
         elif not self._is_valid_repository_name(repository):
+            errors.append(f"Repository name '{repository}' contains invalid characters")
             errors.append(f"Repository name '{repository}' contains invalid characters")
 
         # Validate Kubernetes configuration
@@ -726,6 +441,7 @@ class ConfigManager:
         if not namespace or not namespace.strip():
             errors.append("Domino platform namespace is required and cannot be empty")
         elif not self._is_valid_k8s_name(namespace):
+            errors.append(f"Namespace '{namespace}' is not a valid Kubernetes name")
             errors.append(f"Namespace '{namespace}' is not a valid Kubernetes name")
 
         # Validate MongoDB configuration
@@ -803,6 +519,7 @@ class ConfigManager:
             if not self._is_valid_s3_bucket_name(s3_bucket):
                 errors.append(
                     f"S3 bucket name '{s3_bucket}' is invalid (must be 3-63 characters, lowercase alphanumeric)"
+                    f"S3 bucket name '{s3_bucket}' is invalid (must be 3-63 characters, lowercase alphanumeric)"
                 )
 
             s3_region = self.get_s3_region()
@@ -877,6 +594,21 @@ class ConfigManager:
 config_manager = ConfigManager(
     validate=os.environ.get("SKIP_CONFIG_VALIDATION", "").lower() not in ("true", "1", "yes")
 )
+
+
+# Re-export SkopeoClient and is_registry_in_cluster for backwards compatibility
+# These are now defined in utils.skopeo_client but we expose them here to avoid
+# breaking existing imports
+from utils.skopeo_client import SkopeoClient, _get_kubernetes_clients, is_registry_in_cluster
+
+__all__ = [
+    "ConfigManager",
+    "ConfigValidationError",
+    "config_manager",
+    "SkopeoClient",
+    "is_registry_in_cluster",
+    "_get_kubernetes_clients",
+]
 
 
 # Re-export SkopeoClient and is_registry_in_cluster for backwards compatibility
