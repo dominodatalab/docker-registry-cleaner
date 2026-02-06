@@ -1,0 +1,35 @@
+# Pre-commit hooks for automatic linting and formatting
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        exclude: ^charts/  # Helm templates use Go templating
+      - id: check-added-large-files
+
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        args: ["--config", "pyproject.toml"]
+        files: ^(python|tests)/
+
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: ["--settings-path", "pyproject.toml"]
+        files: ^(python|tests)/
+
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.1.1
+    hooks:
+      - id: flake8
+        additional_dependencies:
+          - flake8-bugbear>=24.0.0
+        files: ^(python|tests)/
