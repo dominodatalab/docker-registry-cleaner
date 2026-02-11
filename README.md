@@ -128,6 +128,23 @@ docker-registry-cleaner delete_unused_references
 docker-registry-cleaner delete_unused_references --apply
 ```
 
+### Migrate Images to Another Registry
+
+Bulk-copy Docker images from Domino's internal registry to a managed registry (ECR, GCR/GAR, ACR, etc.):
+
+```bash
+# Discover what would be migrated (dry-run)
+docker-registry-cleaner migrate_registry --dest-registry-url ecr.example.com/my-repo
+
+# Copy all images with basic auth
+docker-registry-cleaner migrate_registry --dest-registry-url ecr.example.com/my-repo --dest-creds user:pass --apply
+
+# Copy and update MongoDB to point to the new registry
+docker-registry-cleaner migrate_registry --dest-registry-url ecr.example.com/my-repo --dest-creds user:pass --update-mongodb --apply
+```
+
+See [Migration](#migration) under Available Commands for full options.
+
 ## Common Options
 
 All deletion scripts support these options:
@@ -278,6 +295,69 @@ docker-registry-cleaner delete_image --input environments --apply
 docker-registry-cleaner delete_image --apply --mongo-cleanup
 ```
 
+### Migration
+
+#### Migrate Images Between Registries
+
+Copy Docker images from the source registry to a destination registry. Supports ECR, GCR/GAR, ACR, and any Docker v2-compatible registry. Dry-run by default.
+
+```bash
+# Discover images to migrate (dry-run)
+docker-registry-cleaner migrate_registry --dest-registry-url ecr.example.com/my-repo
+
+# Migrate with basic auth (user:password)
+docker-registry-cleaner migrate_registry --dest-registry-url ecr.example.com/my-repo \
+  --dest-creds user:pass --apply
+
+# Migrate with token auth (e.g. GCR/GAR)
+docker-registry-cleaner migrate_registry \
+  --dest-registry-url europe-west1-docker.pkg.dev/project/repo \
+  --dest-registry-token "$(gcloud auth print-access-token)" --apply
+
+# Migrate specific repositories only
+docker-registry-cleaner migrate_registry --dest-registry-url ecr.example.com/my-repo \
+  --repos domino-abc123,domino-def456 --apply
+
+# Only migrate images belonging to non-archived environments and models
+docker-registry-cleaner migrate_registry --dest-registry-url ecr.example.com/my-repo \
+  --dest-creds user:pass --unarchived --apply
+
+# Migrate only archived images to cold storage (reversible alternative to deletion)
+docker-registry-cleaner migrate_registry --dest-registry-url cold-storage.example.com/archive \
+  --dest-creds user:pass --archived --apply
+
+# Migrate and update MongoDB metadata to reference the new registry
+docker-registry-cleaner migrate_registry --dest-registry-url ecr.example.com/my-repo \
+  --dest-creds user:pass --update-mongodb --apply
+
+# Resume an interrupted migration
+docker-registry-cleaner migrate_registry --dest-registry-url ecr.example.com/my-repo \
+  --dest-creds user:pass --apply --resume
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--dest-registry-url` | Destination registry URL (required) | - |
+| `--dest-creds` | Destination credentials (`user:password`) | None |
+| `--dest-registry-token` | Destination registry token (for GCR/GAR) | None |
+| `--dest-tls-verify` | Verify TLS for destination registry | `false` |
+| `--repos` | Comma-separated list of repos to migrate | All |
+| `--unarchived` | Only migrate images for non-archived envs/models | `false` |
+| `--archived` | Only migrate images for archived envs/models (mutually exclusive with `--unarchived`) | `false` |
+| `--update-mongodb` | Update MongoDB metadata to reference new registry | `false` |
+| `--old-prefix` | Old repo prefix for MongoDB updates | Auto-detected |
+| `--new-prefix` | New repo prefix for MongoDB updates | From `--dest-registry-url` |
+| `--apply` | Actually copy images (dry-run without this) | `false` |
+| `--force` | Skip confirmation prompt | `false` |
+| `--resume` | Resume from checkpoint if interrupted | `false` |
+| `--output` | Output file for migration report | `reports/migration-report.json` |
+
+**`--unarchived` flag:** Queries MongoDB for environments and models where `isArchived` is not `true`, resolves their Docker tags via `environment_revisions` and `model_versions`, and only migrates those tags. Requires MongoDB connectivity.
+
+**`--archived` flag:** The inverse of `--unarchived` — only migrates images belonging to archived environments and models. This is useful as a reversible alternative to deleting archived images: copy them to cheaper/cold storage first, verify the copy, then delete from the primary registry. Requires MongoDB connectivity.
+
+**`--update-mongodb` flag:** After copying, updates repository paths in three MongoDB collections: `builds` (`image.repository`), `environment_revisions` (`metadata.dockerImageName.repository`), and `model_versions` (`metadata.builds[].slug.image.repository`). This is safe to re-run (idempotent).
+
 ## ObjectID Filtering
 
 Target specific models or environments by ObjectID. Prefixes are required:
@@ -337,7 +417,7 @@ docker-registry-cleaner delete_archived_tags --environment --apply --resume
 docker-registry-cleaner delete_archived_tags --environment --apply --resume --operation-id 2026-01-15-14-30-00
 ```
 
-Checkpoints are saved every 10 items in `reports/checkpoints/`. Use `--resume` to continue from the last checkpoint. Supported scripts: `delete_archived_tags`, `delete_unused_environments`, `delete_unused_private_environments`.
+Checkpoints are saved every 10 items in `reports/checkpoints/`. Use `--resume` to continue from the last checkpoint. Supported scripts: `delete_archived_tags`, `delete_unused_environments`, `delete_unused_private_environments`, `migrate_registry`.
 
 ### Understanding the Numbers
 

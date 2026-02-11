@@ -26,6 +26,7 @@ def load_script_paths() -> Dict[str, Optional[str]]:
         "delete_all_unused_environments": None,  # Special: runs multiple scripts
         "delete_unused_references": "scripts/delete_unused_references.py",
         "find_environment_usage": "scripts/find_environment_usage.py",
+        "migrate_registry": "scripts/migrate_registry.py",
         "health_check": None,  # Special: runs health checks
         "image_size_report": "scripts/image_size_report.py",
         "mongo_cleanup": "scripts/mongo_cleanup.py",
@@ -46,6 +47,7 @@ def get_script_descriptions() -> Dict[str, str]:
         "delete_all_unused_environments": "Run comprehensive unused environment cleanup (unused environments + deactivated user private environments)",
         "delete_unused_references": "Find and optionally delete MongoDB references to non-existent Docker images",
         "find_environment_usage": "Find where a specific environment ID is used (projects, jobs, workspaces, runs, workloads)",
+        "migrate_registry": "Migrate Docker images from one registry to another using skopeo copy, with optional MongoDB metadata update",
         "health_check": "Run health checks and verify system connectivity (registry, MongoDB, Kubernetes, S3)",
         "image_size_report": "Generate a report of the largest images sorted by total size, showing space that would be freed if deleted",
         "mongo_cleanup": "Simple tag/ObjectID-based Mongo cleanup (consider using delete_unused_references for advanced features)",
@@ -195,6 +197,7 @@ Available scripts:
   delete_unused_private_environments - Find and optionally delete private environments owned by deactivated Keycloak users
   delete_all_unused_environments     - Run comprehensive unused environment cleanup (unused environments + deactivated user private environments)
   delete_unused_references           - Find and optionally delete MongoDB references to non-existent Docker images
+  migrate_registry                   - Migrate Docker images from one registry to another using skopeo copy
 
 Configuration:
   The tool uses config.yaml for default settings. You can also use environment variables:
@@ -357,6 +360,24 @@ Backup Examples (all delete scripts support backup to S3 before deletion):
   # Backup only for unused Docker images (no deletion)
   python main.py delete_image --backup --s3-bucket my-backup-bucket --force
 
+  # Discover images to migrate (dry-run)
+  python main.py migrate_registry --dest-registry-url ecr.example.com/my-repo
+
+  # Migrate images with basic auth to destination
+  python main.py migrate_registry --dest-registry-url ecr.example.com/my-repo --dest-creds user:pass --apply
+
+  # Migrate images with token auth (e.g. GCR/GAR)
+  python main.py migrate_registry --dest-registry-url europe-west1-docker.pkg.dev/project/repo --dest-registry-token TOKEN --apply
+
+  # Migrate specific repositories only
+  python main.py migrate_registry --dest-registry-url ecr.example.com/my-repo --repos domino-abc,domino-def --apply
+
+  # Migrate and update MongoDB metadata
+  python main.py migrate_registry --dest-registry-url ecr.example.com/my-repo --dest-creds user:pass --update-mongodb --apply
+
+  # Resume an interrupted migration
+  python main.py migrate_registry --dest-registry-url ecr.example.com/my-repo --dest-creds user:pass --apply --resume
+
 Safety Notes:
   - delete_image runs in dry-run mode by default for safety
   - Use --apply to actually delete images
@@ -481,13 +502,13 @@ Safety Notes:
         if args.unused_since_days is not None and "--unused-since-days" not in args.additional_args:
             args.additional_args.extend(["--unused-since-days", str(args.unused_since_days)])
 
-    if args.script_keyword == "delete_image":
-        # Forward top-level flags to the delete_image.py script
+    if args.script_keyword in ("delete_image", "migrate_registry"):
+        # Forward top-level flags to scripts that support them
         if args.apply and "--apply" not in args.additional_args:
             args.additional_args.append("--apply")
         if args.force and "--force" not in args.additional_args:
             args.additional_args.append("--force")
-        if args.file and "--file" not in args.additional_args:
+        if args.script_keyword == "delete_image" and args.file and "--file" not in args.additional_args:
             args.additional_args.extend(["--file", args.file])
 
         if args.apply:

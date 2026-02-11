@@ -301,13 +301,16 @@ class SkopeoClient:
         """Return a copy of the command with any credentials redacted."""
         redacted = list(cmd)
 
+        creds_flags = ("--creds", "--src-creds", "--dest-creds")
+        token_flags = ("--password", "--src-registry-token", "--dest-registry-token")
+
         for i, token in enumerate(redacted):
-            if token == "--creds" and i + 1 < len(redacted):
+            if token in creds_flags and i + 1 < len(redacted):
                 value = redacted[i + 1]
                 if isinstance(value, str) and ":" in value:
                     user, _ = value.split(":", 1)
                     redacted[i + 1] = f"{user}:****"
-            if token == "--password" and i + 1 < len(redacted):
+            if token in token_flags and i + 1 < len(redacted):
                 redacted[i + 1] = "****"
 
         return redacted
@@ -406,6 +409,85 @@ class SkopeoClient:
 
         output = self.run_skopeo_command("delete", args)
         return output is not None
+
+    def copy_image(
+        self,
+        src_ref: str,
+        dest_ref: str,
+        dest_creds: Optional[str] = None,
+        dest_registry_token: Optional[str] = None,
+        dest_tls_verify: bool = False,
+    ) -> bool:
+        """Copy an image from source to destination registry.
+
+        Uses the SkopeoClient's existing auth for the source side and accepts
+        separate destination auth parameters.
+
+        Args:
+            src_ref: Full source image reference (e.g. "docker://registry:5000/repo:tag")
+            dest_ref: Full destination image reference (e.g. "docker://ecr.example.com/repo:tag")
+            dest_creds: Destination credentials in "user:password" format
+            dest_registry_token: Destination registry token (e.g. for GCR/GAR)
+            dest_tls_verify: Whether to verify TLS for the destination registry
+
+        Returns:
+            True if copy succeeded, False otherwise
+        """
+        self._ensure_logged_in()
+        self._acquire_rate_limit_token()
+
+        timeout = self.config_manager.get_retry_timeout()
+
+        # Build copy command with separate src/dest auth
+        cmd = ["skopeo", "copy", "--src-tls-verify=false"]
+        if self.auth_file:
+            cmd.extend(["--src-authfile", self.auth_file])
+
+        cmd.append(f"--dest-tls-verify={'true' if dest_tls_verify else 'false'}")
+        if dest_creds:
+            cmd.extend(["--dest-creds", dest_creds])
+        if dest_registry_token:
+            cmd.extend(["--dest-registry-token", dest_registry_token])
+
+        cmd.extend([src_ref, dest_ref])
+
+        log_cmd = " ".join(self._redact_command_for_logging(cmd))
+
+        @retry_with_backoff(
+            max_retries=self.config_manager.get_max_retries(),
+            initial_delay=self.config_manager.get_retry_initial_delay(),
+            max_delay=self.config_manager.get_retry_max_delay(),
+            exponential_base=self.config_manager.get_retry_exponential_base(),
+            jitter=self.config_manager.get_retry_jitter(),
+        )
+        def _execute():
+            try:
+                subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=timeout)
+                return True
+            except subprocess.TimeoutExpired as e:
+                logging.error(f"Skopeo copy timed out after {timeout}s: {log_cmd}")
+                from utils.error_utils import create_registry_connection_error
+
+                raise create_registry_connection_error(self.registry_url, e)
+            except subprocess.CalledProcessError as e:
+                error_str = (e.stderr or "").lower()
+                if "429" in error_str or "rate limit" in error_str or "too many requests" in error_str:
+                    from utils.error_utils import create_rate_limit_error
+
+                    raise create_rate_limit_error("skopeo copy", retry_after=1.0)
+                logging.error(f"Skopeo copy failed: {log_cmd}")
+                logging.error(f"Error: {e.stderr}")
+                from utils.error_utils import create_registry_connection_error
+
+                raise create_registry_connection_error(self.registry_url, e)
+
+        try:
+            return _execute()
+        except Exception as e:
+            is_retryable, error_type = is_retryable_error(e)
+            if not is_retryable:
+                logging.error(f"Non-retryable error in Skopeo copy: {e}")
+            return False
 
     def is_registry_in_cluster(self) -> bool:
         """Check if the registry service exists in the Kubernetes cluster."""
