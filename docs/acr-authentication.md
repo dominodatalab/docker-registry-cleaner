@@ -71,7 +71,7 @@ In Azure Portal:
 1. Search for **Managed Identities** and click **Create**.
 2. Fill in **Subscription**, **Resource group**, **Region**, and a **Name** (e.g. `docker-registry-cleaner-identity`).
 3. Click **Review + create**, then **Create**.
-4. Once created, open the identity and note the **Client ID** from the **Overview** page — you will need this later. 97cfbcb9-e3c1-4724-97a3-0b4250de8e4c
+4. Once created, open the identity and note the **Client ID** from the **Overview** page — you will need this later.
 
 Via CLI:
 ```bash
