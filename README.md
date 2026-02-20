@@ -525,7 +525,7 @@ export S3_REGION="us-west-2"
 
 For most in-cluster Domino deployments, no explicit configuration is needed.
 
-For AWS ECR and Azure ACR, authentication is automatic via managed identity when running in EKS or AKS respectively. For Azure ACR, set `AZURE_CLIENT_ID` and `AZURE_TENANT_ID` to configure the managed identity.
+For AWS ECR and Azure ACR, authentication is automatic via managed identity when running in EKS or AKS respectively. For Azure ACR, set `AZURE_CLIENT_ID` and `AZURE_TENANT_ID` to configure the managed identity. See [docs/acr-authentication.md](docs/acr-authentication.md) for step-by-step instructions on setting up a managed identity in Azure Portal and configuring the Helm chart.
 
 For other external registries (Quay, GCR, etc.), you have two options:
 

@@ -11,7 +11,6 @@ import logging
 import os
 import re
 from typing import Any, Dict, Optional
-from typing import Any, Dict, Optional
 
 import yaml
 
@@ -37,12 +36,9 @@ def _load_kubernetes_config():
 
 def _get_kubernetes_core_client():
     """Helper function to get Kubernetes CoreV1Api client."""
-def _get_kubernetes_core_client():
-    """Helper function to get Kubernetes CoreV1Api client."""
     from kubernetes import client as k8s_client
 
     _load_kubernetes_config()
-    return k8s_client.CoreV1Api()
     return k8s_client.CoreV1Api()
 
 
@@ -84,14 +80,11 @@ class ConfigManager:
                 "exponential_base": 2.0,
                 "jitter": True,
                 "timeout": 300,
-                "timeout": 300,
             },
             "s3": {"bucket": "", "region": "us-west-2"},
             "skopeo": {
                 "rate_limit": {
                     "enabled": True,
-                    "requests_per_second": 10.0,
-                    "burst_size": 20,
                     "requests_per_second": 10.0,
                     "burst_size": 20,
                 },
@@ -106,7 +99,6 @@ class ConfigManager:
                 "tags_per_layer": "tags-per-layer.json",
                 "tag_sums": "tag-sums.json",
                 "unused_references": "unused-references.json",
-                "mongodb_usage": "mongodb_usage_report.json",
                 "mongodb_usage": "mongodb_usage_report.json",
             },
             "security": {"dry_run_by_default": True, "require_confirmation": True},
@@ -152,11 +144,9 @@ class ConfigManager:
 
     def get_repository(self) -> str:
         """Get canonical repository value."""
-        """Get canonical repository value."""
         return os.environ.get("REPOSITORY") or self.config["registry"]["repository"]
 
     def get_registry_auth_secret(self) -> Optional[str]:
-        """Get the name of a custom Kubernetes secret for registry authentication."""
         """Get the name of a custom Kubernetes secret for registry authentication."""
         return os.environ.get("REGISTRY_AUTH_SECRET")
 
@@ -271,7 +261,6 @@ class ConfigManager:
     # S3 Configuration
     def get_s3_bucket(self) -> Optional[str]:
         """Get S3 bucket from environment or config"""
-        """Get S3 bucket from environment or config"""
         bucket = os.environ.get("S3_BUCKET") or self.config.get("s3", {}).get("bucket", "")
         return bucket if bucket else None
 
@@ -279,7 +268,6 @@ class ConfigManager:
         """Get S3 region from environment or config"""
         return os.environ.get("S3_REGION") or self.config.get("s3", {}).get("region", "us-west-2")
 
-    # Skopeo rate limiting configuration
     # Skopeo rate limiting configuration
     def get_skopeo_rate_limit_enabled(self) -> bool:
         """Get whether rate limiting is enabled for Skopeo operations"""
@@ -295,7 +283,6 @@ class ConfigManager:
 
     # Report configuration
     def _resolve_report_path(self, path: str) -> str:
-        """Resolve report file path under the configured output_dir unless absolute."""
         """Resolve report file path under the configured output_dir unless absolute."""
         if os.path.isabs(path) or os.path.basename(path) != path:
             return path
@@ -385,7 +372,6 @@ class ConfigManager:
         # Fallback: read credentials from Kubernetes secret mongodb-replicaset-admin
         try:
             core_v1 = _get_kubernetes_core_client()
-            core_v1 = _get_kubernetes_core_client()
             namespace = self.get_domino_platform_namespace()
             secret = core_v1.read_namespaced_secret(name="mongodb-replicaset-admin", namespace=namespace)
             data = secret.data or {}
@@ -427,13 +413,11 @@ class ConfigManager:
             errors.append("Registry URL is required and cannot be empty")
         elif not self._is_valid_registry_url(registry_url):
             warnings.append(f"Registry URL '{registry_url}' may be invalid (expected format: hostname[:port])")
-            warnings.append(f"Registry URL '{registry_url}' may be invalid (expected format: hostname[:port])")
 
         repository = self.get_repository()
         if not repository or not repository.strip():
             errors.append("Repository name is required and cannot be empty")
         elif not self._is_valid_repository_name(repository):
-            errors.append(f"Repository name '{repository}' contains invalid characters")
             errors.append(f"Repository name '{repository}' contains invalid characters")
 
         # Validate Kubernetes configuration
@@ -441,7 +425,6 @@ class ConfigManager:
         if not namespace or not namespace.strip():
             errors.append("Domino platform namespace is required and cannot be empty")
         elif not self._is_valid_k8s_name(namespace):
-            errors.append(f"Namespace '{namespace}' is not a valid Kubernetes name")
             errors.append(f"Namespace '{namespace}' is not a valid Kubernetes name")
 
         # Validate MongoDB configuration
@@ -519,7 +502,6 @@ class ConfigManager:
             if not self._is_valid_s3_bucket_name(s3_bucket):
                 errors.append(
                     f"S3 bucket name '{s3_bucket}' is invalid (must be 3-63 characters, lowercase alphanumeric)"
-                    f"S3 bucket name '{s3_bucket}' is invalid (must be 3-63 characters, lowercase alphanumeric)"
                 )
 
             s3_region = self.get_s3_region()
@@ -594,21 +576,6 @@ class ConfigManager:
 config_manager = ConfigManager(
     validate=os.environ.get("SKIP_CONFIG_VALIDATION", "").lower() not in ("true", "1", "yes")
 )
-
-
-# Re-export SkopeoClient and is_registry_in_cluster for backwards compatibility
-# These are now defined in utils.skopeo_client but we expose them here to avoid
-# breaking existing imports
-from utils.skopeo_client import SkopeoClient, _get_kubernetes_clients, is_registry_in_cluster
-
-__all__ = [
-    "ConfigManager",
-    "ConfigValidationError",
-    "config_manager",
-    "SkopeoClient",
-    "is_registry_in_cluster",
-    "_get_kubernetes_clients",
-]
 
 
 # Re-export SkopeoClient and is_registry_in_cluster for backwards compatibility
