@@ -1,0 +1,450 @@
+{% extends "base.html" %}
+
+{% block title %}Operations - Docker Registry Cleaner{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Run Operations</h2>
+    <p class="subtitle">Trigger analysis and cleanup operations against the Docker registry</p>
+</div>
+
+<!-- Operation launcher -->
+<div class="card op-launcher">
+    <div class="card-header">
+        <h3>Select Operation</h3>
+    </div>
+    <div class="card-body">
+        <div id="backend-unavailable" class="alert alert-error" style="display:none;">
+            Backend API is unavailable. The backend container may still be starting up.
+        </div>
+
+        <div class="form-group">
+            <label for="operation-select" class="form-label">Operation</label>
+            <select id="operation-select" class="form-control">
+                <option value="">— loading operations… —</option>
+            </select>
+        </div>
+
+        <div id="operation-description" class="op-description" style="display:none;"></div>
+
+        <div id="params-form" class="params-form" style="display:none;">
+            <h4 class="params-title">Parameters</h4>
+            <div id="params-fields"></div>
+        </div>
+
+        <div id="destructive-warning" class="alert alert-warning" style="display:none;">
+            <strong>Warning:</strong> This operation can permanently delete images or records.
+            It will run in <strong>dry-run mode</strong> by default — no changes will be made
+            unless you enable <em>Apply changes</em> in the parameters above.
+        </div>
+    </div>
+    <div class="card-footer op-footer">
+        <button id="run-btn" class="btn btn-primary" disabled onclick="launchJob()">
+            Run Operation
+        </button>
+        <span id="run-status" class="run-status"></span>
+    </div>
+</div>
+
+<!-- Active job output -->
+<div id="active-job-section" class="card mt-3" style="display:none;">
+    <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+        <h3>
+            <span id="active-job-spinner" class="spinner" style="display:none;"></span>
+            Running: <span id="active-job-name"></span>
+        </h3>
+        <div style="display:flex; gap:0.75rem; align-items:center;">
+            <span id="active-job-badge" class="job-status-badge"></span>
+            <button id="cancel-btn" class="btn btn-danger-outline btn-sm" onclick="cancelActiveJob()" style="display:none;">
+                Cancel
+            </button>
+        </div>
+    </div>
+    <div class="card-body" style="padding:0;">
+        <pre id="active-job-logs" class="log-output">Waiting for output…</pre>
+    </div>
+</div>
+
+<!-- Job history -->
+<div class="card mt-3">
+    <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+        <h3>Job History</h3>
+        <button class="btn btn-secondary btn-sm" onclick="loadJobHistory()">Refresh</button>
+    </div>
+    <div class="card-body" style="padding:0;">
+        <div id="job-history-list">
+            <div class="loading">Loading job history…</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+let _operations = {};
+let _activeJobId = null;
+let _pollInterval = null;
+
+// ── Bootstrap ─────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', async () => {
+    await loadOperations();
+    await loadJobHistory();
+});
+
+// ── Load operation catalogue ───────────────────────────────────────────────────
+async function loadOperations() {
+    try {
+        const resp = await fetch('/api/operations');
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        _operations = await resp.json();
+
+        const select = document.getElementById('operation-select');
+        select.innerHTML = '<option value="">— select an operation —</option>';
+
+        // Group into safe and destructive
+        const safe = [], destructive = [];
+        Object.entries(_operations).forEach(([name, op]) => {
+            (op.destructive ? destructive : safe).push([name, op]);
+        });
+
+        const addGroup = (label, items) => {
+            if (!items.length) return;
+            const group = document.createElement('optgroup');
+            group.label = label;
+            items.forEach(([name, op]) => {
+                const opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name.replaceAll('_', ' ');
+                group.appendChild(opt);
+            });
+            select.appendChild(group);
+        };
+
+        addGroup('Analysis & Reporting', safe);
+        addGroup('Destructive Operations', destructive);
+
+        select.disabled = false;
+        select.addEventListener('change', onOperationChange);
+        document.getElementById('run-btn').disabled = false;
+    } catch (e) {
+        document.getElementById('backend-unavailable').style.display = 'block';
+        console.error('Failed to load operations:', e);
+    }
+}
+
+// ── Operation selection ────────────────────────────────────────────────────────
+function onOperationChange() {
+    const name = document.getElementById('operation-select').value;
+    const descEl = document.getElementById('operation-description');
+    const paramsSection = document.getElementById('params-form');
+    const paramsFields = document.getElementById('params-fields');
+    const warning = document.getElementById('destructive-warning');
+    const runBtn = document.getElementById('run-btn');
+
+    if (!name) {
+        descEl.style.display = 'none';
+        paramsSection.style.display = 'none';
+        warning.style.display = 'none';
+        runBtn.disabled = true;
+        return;
+    }
+
+    const op = _operations[name];
+
+    // Description
+    descEl.textContent = op.description;
+    descEl.style.display = 'block';
+
+    // Params
+    paramsFields.innerHTML = '';
+    if (op.params && op.params.length > 0) {
+        op.params.forEach(param => {
+            paramsFields.appendChild(buildParamField(param));
+        });
+        paramsSection.style.display = 'block';
+    } else {
+        paramsSection.style.display = 'none';
+    }
+
+    // Destructive warning
+    warning.style.display = op.destructive ? 'block' : 'none';
+
+    runBtn.disabled = false;
+    runBtn.textContent = op.destructive ? 'Run Operation (dry-run)' : 'Run Operation';
+    runBtn.className = 'btn btn-primary';
+}
+
+// ── Param field builder ────────────────────────────────────────────────────────
+function buildParamField(param) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'param-field';
+
+    const label = document.createElement('label');
+    label.className = 'form-label';
+    label.textContent = param.name.replaceAll('_', ' ');
+    if (param.required) {
+        const req = document.createElement('span');
+        req.className = 'required-star';
+        req.textContent = ' *';
+        label.appendChild(req);
+    }
+    wrapper.appendChild(label);
+
+    if (param.name === 'apply') {
+        // Special: apply toggle — show an explicit danger toggle
+        const toggle = buildApplyToggle();
+        wrapper.appendChild(toggle);
+    } else if (param.type === 'bool') {
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.id = `param-${param.name}`;
+        cb.name = param.name;
+        cb.checked = param.default || false;
+        cb.className = 'param-checkbox';
+        wrapper.appendChild(cb);
+    } else {
+        const input = document.createElement('input');
+        input.type = param.type === 'int' ? 'number' : 'text';
+        input.id = `param-${param.name}`;
+        input.name = param.name;
+        input.className = 'form-control';
+        input.placeholder = param.help || '';
+        if (param.default !== null && param.default !== undefined) {
+            input.value = param.default;
+        }
+        if (param.required) input.required = true;
+        wrapper.appendChild(input);
+    }
+
+    const hint = document.createElement('small');
+    hint.className = 'param-hint';
+    hint.textContent = param.help || '';
+    wrapper.appendChild(hint);
+
+    return wrapper;
+}
+
+function buildApplyToggle() {
+    const container = document.createElement('div');
+    container.className = 'apply-toggle-container';
+
+    const label = document.createElement('label');
+    label.className = 'apply-toggle';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.id = 'param-apply';
+    cb.name = 'apply';
+
+    const slider = document.createElement('span');
+    slider.className = 'toggle-slider';
+
+    const text = document.createElement('span');
+    text.className = 'toggle-label';
+    text.id = 'apply-toggle-label';
+    text.textContent = 'Dry-run only (safe)';
+
+    cb.addEventListener('change', () => {
+        const runBtn = document.getElementById('run-btn');
+        if (cb.checked) {
+            text.textContent = 'Apply changes — THIS WILL DELETE DATA';
+            text.className = 'toggle-label danger-text';
+            runBtn.className = 'btn btn-danger';
+            runBtn.textContent = 'Run Operation (APPLY)';
+        } else {
+            text.textContent = 'Dry-run only (safe)';
+            text.className = 'toggle-label';
+            runBtn.className = 'btn btn-primary';
+            runBtn.textContent = 'Run Operation (dry-run)';
+        }
+    });
+
+    label.appendChild(cb);
+    label.appendChild(slider);
+    container.appendChild(label);
+    container.appendChild(text);
+    return container;
+}
+
+// ── Collect params from form ───────────────────────────────────────────────────
+function collectParams(opName) {
+    const op = _operations[opName];
+    const params = {};
+    op.params.forEach(param => {
+        const el = document.getElementById(`param-${param.name}`);
+        if (!el) return;
+        if (param.type === 'bool' || param.name === 'apply') {
+            params[param.name] = el.checked;
+        } else if (param.type === 'int') {
+            params[param.name] = el.value !== '' ? parseInt(el.value, 10) : null;
+        } else {
+            params[param.name] = el.value !== '' ? el.value : null;
+        }
+    });
+    return params;
+}
+
+// ── Launch job ─────────────────────────────────────────────────────────────────
+async function launchJob() {
+    const opName = document.getElementById('operation-select').value;
+    if (!opName) return;
+
+    const params = collectParams(opName);
+
+    // Confirm if apply=true
+    const isApply = params.apply === true;
+    if (isApply) {
+        const confirmed = confirm(
+            `You are about to run "${opName}" with --apply.\n\n` +
+            `This will PERMANENTLY DELETE data. Are you sure?`
+        );
+        if (!confirmed) return;
+    }
+
+    // Disable button while running
+    const runBtn = document.getElementById('run-btn');
+    runBtn.disabled = true;
+    document.getElementById('run-status').textContent = 'Starting…';
+
+    try {
+        const resp = await fetch('/api/jobs', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({operation: opName, params}),
+        });
+        if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.detail || `HTTP ${resp.status}`);
+        }
+        const {job_id} = await resp.json();
+        showNotification(`Job started: ${opName}`, 'success');
+        document.getElementById('run-status').textContent = '';
+        startActiveJobTracking(job_id, opName);
+    } catch (e) {
+        showNotification(`Failed to start job: ${e.message}`, 'error');
+        document.getElementById('run-status').textContent = '';
+        runBtn.disabled = false;
+    }
+}
+
+// ── Active job tracking ────────────────────────────────────────────────────────
+function startActiveJobTracking(jobId, opName) {
+    _activeJobId = jobId;
+
+    const section = document.getElementById('active-job-section');
+    section.style.display = 'block';
+    section.scrollIntoView({behavior: 'smooth', block: 'start'});
+
+    document.getElementById('active-job-name').textContent = opName.replaceAll('_', ' ');
+    document.getElementById('active-job-logs').textContent = 'Waiting for output…';
+    document.getElementById('active-job-badge').textContent = 'pending';
+    document.getElementById('active-job-badge').className = 'job-status-badge status-pending';
+    document.getElementById('active-job-spinner').style.display = 'inline-block';
+    document.getElementById('cancel-btn').style.display = 'inline-block';
+
+    if (_pollInterval) clearInterval(_pollInterval);
+    _pollInterval = setInterval(() => pollActiveJob(jobId), 2000);
+    pollActiveJob(jobId);  // immediate first poll
+}
+
+async function pollActiveJob(jobId) {
+    try {
+        const resp = await fetch(`/api/jobs/${jobId}`);
+        if (!resp.ok) return;
+        const job = await resp.json();
+
+        // Update badge
+        const badge = document.getElementById('active-job-badge');
+        badge.textContent = job.status;
+        badge.className = `job-status-badge status-${job.status}`;
+
+        // Update logs
+        const logsEl = document.getElementById('active-job-logs');
+        if (job.logs && job.logs.length > 0) {
+            logsEl.textContent = job.logs.join('\n');
+            logsEl.scrollTop = logsEl.scrollHeight;
+        }
+
+        // Done?
+        if (!['pending', 'running'].includes(job.status)) {
+            clearInterval(_pollInterval);
+            _pollInterval = null;
+            document.getElementById('active-job-spinner').style.display = 'none';
+            document.getElementById('cancel-btn').style.display = 'none';
+            document.getElementById('run-btn').disabled = false;
+
+            const msg = job.status === 'completed'
+                ? `Operation completed successfully`
+                : `Operation ${job.status}`;
+            showNotification(msg, job.status === 'completed' ? 'success' : 'error');
+
+            await loadJobHistory();
+        }
+    } catch (e) {
+        console.error('Poll error:', e);
+    }
+}
+
+async function cancelActiveJob() {
+    if (!_activeJobId) return;
+    try {
+        await fetch(`/api/jobs/${_activeJobId}`, {method: 'DELETE'});
+        showNotification('Cancellation requested', 'info');
+    } catch (e) {
+        showNotification(`Cancel failed: ${e.message}`, 'error');
+    }
+}
+
+// ── Job history ────────────────────────────────────────────────────────────────
+async function loadJobHistory() {
+    const container = document.getElementById('job-history-list');
+    try {
+        const resp = await fetch('/api/jobs');
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const jobs = await resp.json();
+
+        if (!jobs.length) {
+            container.innerHTML = '<div class="loading">No jobs yet — run an operation above.</div>';
+            return;
+        }
+
+        container.innerHTML = '';
+        jobs.forEach(job => {
+            container.appendChild(buildJobHistoryRow(job));
+        });
+    } catch (e) {
+        container.innerHTML = `<div class="loading">Could not load job history: ${e.message}</div>`;
+    }
+}
+
+function buildJobHistoryRow(job) {
+    const row = document.createElement('div');
+    row.className = 'job-history-row';
+    row.innerHTML = `
+        <div class="job-row-main">
+            <span class="job-op-name">${job.operation.replaceAll('_', ' ')}</span>
+            <span class="job-status-badge status-${job.status}">${job.status}</span>
+            <span class="job-time">${new Date(job.started_at).toLocaleString()}</span>
+            <button class="btn btn-secondary btn-sm" onclick="toggleJobLogs('${job.job_id}')">Logs</button>
+        </div>
+        <pre id="history-logs-${job.job_id}" class="log-output log-output-collapsed" style="display:none;"></pre>
+    `;
+    return row;
+}
+
+async function toggleJobLogs(jobId) {
+    const logsEl = document.getElementById(`history-logs-${jobId}`);
+    if (logsEl.style.display === 'none') {
+        const resp = await fetch(`/api/jobs/${jobId}`);
+        if (resp.ok) {
+            const job = await resp.json();
+            logsEl.textContent = job.logs.length ? job.logs.join('\n') : '(no output)';
+        }
+        logsEl.style.display = 'block';
+    } else {
+        logsEl.style.display = 'none';
+    }
+}
+</script>
+{% endblock %}

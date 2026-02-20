@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block title %}Reports - Docker Registry Cleaner{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Available Reports</h2>
+    <p class="subtitle">View and analyze Docker registry cleanup reports</p>
+</div>
+
+{% if reports %}
+<div class="reports-grid">
+    {% for report in reports %}
+    <div class="card report-card">
+        <div class="card-header">
+            <h3>{{ report.name }}</h3>
+        </div>
+        <div class="card-body">
+            <div class="report-meta">
+                <div class="meta-item">
+                    <span class="meta-label">Size:</span>
+                    <span class="meta-value">{{ report.size }}</span>
+                </div>
+                <div class="meta-item">
+                    <span class="meta-label">Modified:</span>
+                    <span class="meta-value">{{ report.modified }}</span>
+                </div>
+            </div>
+        </div>
+        <div class="card-footer">
+            <a href="{{ url_for('view_report', filename=report.name) }}" class="btn btn-primary">View Report</a>
+            <a href="{{ url_for('api_report_detail', filename=report.name) }}" class="btn btn-secondary" download>Download JSON</a>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+    <div class="empty-icon">📊</div>
+    <h3>No reports available</h3>
+    <p>Run analysis commands via kubectl to generate reports</p>
+    <div style="margin-top: 20px; text-align: left; max-width: 600px; margin-left: auto; margin-right: auto;">
+        <p style="color: #666; font-size: 0.9em;"><strong>Example:</strong></p>
+        <pre style="background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 0.85em;">kubectl exec -it docker-registry-cleaner-0 -n domino-platform -- \
+  docker-registry-cleaner reports</pre>
+        <p style="color: #666; font-size: 0.9em; margin-top: 10px;">See the <a href="https://github.com/dominodatalab/docker-registry-cleaner" target="_blank" rel="noopener">README</a> for all available commands.</p>
+    </div>
+</div>
+{% endif %}
+
+<div class="info-box">
+    <h3>Report Types</h3>
+    <ul>
+        <li><strong>mongodb_usage_report:</strong> Shows which images are referenced in MongoDB</li>
+        <li><strong>image-size-report:</strong> Largest images by total size</li>
+        <li><strong>user-size-report:</strong> Registry space usage by user</li>
+        <li><strong>archived-tags:</strong> Tags that can be deleted (archived)</li>
+        <li><strong>unused-environments:</strong> Environments not in use</li>
+        <li><strong>deletion-results:</strong> Results from deletion operations</li>
+        <li><strong>final-report:</strong> Complete image analysis with layers and sizes</li>
+    </ul>
+</div>
+
+<div class="info-box" style="border-left-color: #0066cc;">
+    <h3>Running Commands</h3>
+    <p>This web interface is read-only for security. To run cleanup operations:</p>
+    <ol style="margin-top: 10px; line-height: 1.8;">
+        <li>Use <code>kubectl exec</code> to access the main container</li>
+        <li>Commands are documented in the <a href="https://github.com/dominodatalab/docker-registry-cleaner#available-commands" target="_blank" rel="noopener">README</a></li>
+        <li>Always start with dry-run mode (no <code>--apply</code> flag)</li>
+        <li>Review the generated reports before running <code>--apply</code> commands</li>
+    </ol>
+</div>
+{% endblock %}

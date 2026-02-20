@@ -67,6 +67,13 @@ spec:
                 secretKeyRef:
                   name: mongodb-replicaset-admin
                   key: password
+            {{- if and .Values.backendApi .Values.backendApi.apiKeySecret }}
+            - name: BACKEND_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.backendApi.apiKeySecret }}
+                  key: api-key
+            {{- end }}
             {{- if .Values.extraEnv }}
             {{- toYaml .Values.extraEnv | nindent 12 }}
             {{- end }}
@@ -80,6 +87,47 @@ spec:
             - name: reports-storage
               mountPath: /data/reports
             {{- end }}
+        {{- if .Values.frontend.enabled }}
+        - name: frontend
+          image: "{{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag }}"
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          env:
+            - name: BACKEND_API_URL
+              value: "http://localhost:{{ (.Values.backendApi | default dict).port | default 8081 }}"
+            {{- if and .Values.backendApi .Values.backendApi.apiKeySecret }}
+            - name: BACKEND_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.backendApi.apiKeySecret }}
+                  key: api-key
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.frontend.service.targetPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.frontend.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: reports-storage
+              mountPath: /app/reports
+              readOnly: true
+            {{- end }}
+        {{- end }}
       volumes:
         - name: docker-registry-cleaner-config
           configMap:
