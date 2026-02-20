@@ -211,6 +211,10 @@ def authenticate_acr(registry_url: str, auth_file: str) -> None:
     try:
         logging.info(f"Authenticating with ACR: {registry_url}")
 
+        # Suppress verbose HTTP-level logging from the Azure SDK (IMDS request/response
+        # headers, token exchange details, etc.). Errors are still surfaced via exceptions.
+        logging.getLogger("azure").setLevel(logging.WARNING)
+
         # Get Azure AD access token using managed identity
         # If AZURE_CLIENT_ID is set, use ManagedIdentityCredential directly
         # (required when multiple user-assigned identities exist on the AKS cluster)
