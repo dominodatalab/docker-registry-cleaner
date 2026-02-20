@@ -1,0 +1,39 @@
+# Local development / smoke-test compose file.
+# Build both images from the project root, then run them on a shared network
+# so the frontend can reach the backend by service name.
+#
+# Usage:
+#   docker compose up --build
+#
+# Frontend: http://localhost:8899
+# Backend API docs (Swagger): http://localhost:8081/docs  (exposed for local testing only)
+#
+# In production (Kubernetes) the backend port is NOT exposed via any Service.
+# The BACKEND_API_URL below uses the service name "backend" which is only
+# reachable within the compose network — not from outside.
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: docker-registry-cleaner-backend:local
+    environment:
+      # No real config needed for a smoke test; override as needed.
+      CONFIG_FILE: /config.yaml
+      BACKEND_API_KEY: ""
+    ports:
+      - "8081:8081"   # exposed locally so you can hit /docs directly
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: docker-registry-cleaner-frontend:local
+    environment:
+      BACKEND_API_URL: "http://backend:8081"
+      BACKEND_API_KEY: ""
+    ports:
+      - "8899:8080"
+    depends_on:
+      - backend

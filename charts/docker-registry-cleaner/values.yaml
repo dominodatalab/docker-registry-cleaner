@@ -39,6 +39,56 @@ persistence:
   size: 10Gi
   storageClass: "dominodisk"  # Use default storage class if empty
 
+# Backend API configuration
+# The backend container exposes a REST API on port 8081 for the frontend sidecar.
+# This port is NOT exposed by any Kubernetes Service — it is only reachable from
+# within the pod (i.e. by the frontend sidecar via localhost).
+backendApi:
+  port: 8081
+  # Name of a Kubernetes Secret that contains an "api-key" key.
+  # Both the backend and frontend containers mount this as BACKEND_API_KEY,
+  # which authenticates frontend→backend requests.
+  #
+  # Create with:
+  #   kubectl create secret generic registry-cleaner-api-key \
+  #     --from-literal=api-key=$(openssl rand -hex 32) \
+  #     -n <namespace>
+  apiKeySecret: "registry-cleaner-api-key"
+
+# Frontend web UI configuration (runs as sidecar in StatefulSet)
+frontend:
+  enabled: true
+  image:
+    repository: quay.io/domino/docker-registry-cleaner-frontend
+    tag: v0.3.1
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  service:
+    type: ClusterIP
+    port: 8080
+    targetPort: 8080
+  ingress:
+    enabled: false
+    className: nginx
+    annotations: {}
+      # kubernetes.io/ingress.class: nginx
+      # cert-manager.io/cluster-issuer: letsencrypt-prod
+    hosts:
+      - host: registry-cleaner.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+      # - secretName: registry-cleaner-tls
+      #   hosts:
+      #     - registry-cleaner.example.com
+
 config:
   # Inline config.yaml content mounted into the container
   registry:

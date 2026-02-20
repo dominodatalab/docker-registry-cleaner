@@ -47,6 +47,52 @@ Update `config.yaml` to use localhost for registry, MongoDB, and Keycloak endpoi
 
 Commands shown below assume you're running in the Helm-deployed pod. For local development, use `python python/main.py` instead of `docker-registry-cleaner`.
 
+## Web UI
+
+Docker Registry Cleaner includes a web-based user interface for easier report viewing and operation management.
+
+### Features
+
+- **Report Browser**: View and analyze all generated JSON reports with visual summaries
+- **Operations Dashboard**: Run analysis and dry-run cleanup commands from the browser
+- **Real-time Output**: See command execution results in real-time
+- **Safety-First Design**: Only dry-run commands can be executed via the UI
+
+### Accessing the Web UI
+
+**Option 1: Port-forward (Quick Access)**
+```bash
+kubectl port-forward -n domino-platform svc/docker-registry-cleaner-frontend 8080:8080
+```
+Then open [http://localhost:8080](http://localhost:8080) in your browser.
+
+**Option 2: Ingress (Production)**
+
+Enable the ingress in your Helm values:
+```yaml
+frontend:
+  enabled: true
+  ingress:
+    enabled: true
+    className: nginx
+    hosts:
+      - host: registry-cleaner.your-domain.com
+        paths:
+          - path: /
+            pathType: Prefix
+```
+
+Then access at [https://registry-cleaner.your-domain.com](https://registry-cleaner.your-domain.com)
+
+### Web UI Usage
+
+1. **View Reports**: Navigate to the home page to see all available reports
+2. **Analyze Reports**: Click on any report to view formatted summaries and raw JSON
+3. **Run Operations**: Go to the Operations page to execute analysis commands
+4. **Safety**: Destructive operations (with `--apply`) must still be run via `kubectl exec`
+
+See the [Frontend README](frontend/README.md) for more details on the web interface.
+
 ## Basic Workflow
 
 ```bash
