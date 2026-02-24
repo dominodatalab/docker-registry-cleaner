@@ -240,15 +240,25 @@ class ImageUsageService:
         try:
             db = client[self.mongo_db]
             oids = [ObjectId(mv_id) for mv_id in model_version_ids]
-            cursor = db.model_versions.find(
-                {"_id": {"$in": oids}},
-                {"_id": 1, "metadata.builds.slug.image.tag": 1},
-            )
+            # Use an aggregation pipeline so MongoDB resolves the nested path.
+            # Python dict traversal would crash if any intermediate key is stored
+            # as null (None) rather than a missing key.
+            pipeline = [
+                {"$match": {"_id": {"$in": oids}}},
+                {
+                    "$project": {
+                        "_id": 1,
+                        # $ifNull guards against null at any level of the path.
+                        "slug_tag": {"$ifNull": ["$metadata.builds.slug.image.tag", None]},
+                    }
+                },
+            ]
             result: Dict[str, Optional[str]] = {}
-            for doc in cursor:
+            for doc in db.model_versions.aggregate(pipeline):
                 mv_id = str(doc["_id"])
-                tag = doc.get("metadata", {}).get("builds", {}).get("slug", {}).get("image", {}).get("tag")
-                result[mv_id] = tag
+                tag = doc.get("slug_tag")
+                # tag is either a string or None
+                result[mv_id] = tag if isinstance(tag, str) else None
             return result
         finally:
             client.close()
