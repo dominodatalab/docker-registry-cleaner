@@ -447,27 +447,37 @@ class ImageUsageService:
                     }
                     usage_info[tag]["workspaces"].append(workspace_usage)
 
-        # Extract tags from models
+        # Extract tags from models.
+        # The model_env_usage_pipeline groups by model_id and nests per-version data
+        # inside model_active_versions[].  Each version carries model_environment_tag
+        # (the Docker tag for the model slug image) and base_environment_tag (the
+        # underlying compute environment revision).  Both must be treated as in-use.
         for record in mongodb_reports.get("models", []):
-            if "environment_docker_tag" in record and record["environment_docker_tag"]:
-                tag = record["environment_docker_tag"]
-                tags.add(tag)
-                if tag not in usage_info:
-                    usage_info[tag] = {
-                        "runs": [],
-                        "workspaces": [],
-                        "models": [],
-                        "scheduler_jobs": [],
-                        "projects": [],
-                        "organizations": [],
-                        "app_versions": [],
+            model_id = str(record.get("model_id") or record.get("_id", "unknown"))
+            model_name = record.get("model_name", "unknown")
+            for version in record.get("model_active_versions", []):
+                version_id = str(version.get("model_version_id", "unknown"))
+                for tag_field in ("model_environment_tag", "base_environment_tag"):
+                    tag = version.get(tag_field)
+                    if not tag:
+                        continue
+                    tags.add(tag)
+                    if tag not in usage_info:
+                        usage_info[tag] = {
+                            "runs": [],
+                            "workspaces": [],
+                            "models": [],
+                            "scheduler_jobs": [],
+                            "projects": [],
+                            "organizations": [],
+                            "app_versions": [],
+                        }
+                    model_info = {
+                        "model_id": model_id,
+                        "model_name": model_name,
+                        "version_id": version_id,
                     }
-                model_info = {
-                    "model_id": record.get("model_id") or record.get("_id", "unknown"),
-                    "model_name": record.get("model_name", "unknown"),
-                    "version_id": record.get("model_version_id", "unknown"),
-                }
-                usage_info[tag]["models"].append(model_info)
+                    usage_info[tag]["models"].append(model_info)
 
         # Extract tags from projects (from pipeline results)
         for record in mongodb_reports.get("projects", []):

@@ -141,19 +141,23 @@ def validate_script_requirements(script_keyword: str, args: List[str]) -> None:
             sys.exit(1)
 
     elif script_keyword == "delete_image":
-        # Check if password is provided (env var or config)
-        has_password = config_manager.get_registry_password() is not None
+        # Check if auth is configured via env var or a K8s secret reference
+        has_password = (
+            os.environ.get("REGISTRY_PASSWORD") is not None or config_manager.get_registry_auth_secret() is not None
+        )
 
-        # Check if using ECR (which doesn't need a password)
+        # Check if using a cloud registry that handles auth automatically
         registry_url = config_manager.get_registry_url()
-        is_ecr = ".amazonaws.com" in registry_url if registry_url else False
+        is_cloud_registry = any(
+            indicator in (registry_url or "") for indicator in (".amazonaws.com", ".azurecr.io", "gcr.io")
+        )
 
-        if not has_password and not is_ecr:
+        if not has_password and not is_cloud_registry:
             logging.warning("No password provided for delete_image.")
             logging.warning("Options:")
-            logging.warning("  1. Add to config.yaml: registry.password: <password>")
-            logging.warning("  2. Set REGISTRY_PASSWORD environment variable: export REGISTRY_PASSWORD=<password>")
-            logging.warning("  3. For ECR registries, authentication is automatic (no password needed)")
+            logging.warning("  1. Set REGISTRY_PASSWORD environment variable: export REGISTRY_PASSWORD=<password>")
+            logging.warning("  2. Set REGISTRY_AUTH_SECRET to the name of a Kubernetes secret with .dockerconfigjson")
+            logging.warning("  3. For ECR/ACR/GCR registries, authentication is automatic (no password needed)")
 
     # Validate ObjectID file if provided for supported scripts
     if script_keyword == "delete_image":
