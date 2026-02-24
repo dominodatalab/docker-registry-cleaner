@@ -1342,6 +1342,13 @@ def parse_arguments():
         "--skip-analysis", action="store_true", help="Skip workload analysis and use traditional environments file"
     )
     parser.add_argument(
+        "--generate-reports",
+        action="store_true",
+        help="Force regeneration of image analysis and MongoDB usage reports before running analysis, "
+        "even if fresh reports already exist on disk. Use this when the registry has changed since "
+        "the last report was generated.",
+    )
+    parser.add_argument(
         "--input",
         help="File containing ObjectIDs (one per line) to filter images, or pre-generated report file (supports prefixes: environment:, environmentRevision:, model:, modelVersion:, or bare IDs)",
     )
@@ -1620,13 +1627,16 @@ def main():
 
         if not args.skip_analysis:
             logger = get_logger(__name__)
-            # Load analysis reports (auto-generate if missing)
+            # Load analysis reports (auto-generate if missing or if --generate-reports is set)
             logger.info("📊 Loading image analysis report...")
+            if args.generate_reports:
+                logger.info("📊 --generate-reports set: forcing fresh image analysis report...")
+                ensure_image_analysis_reports(max_age_hours=0)
             image_analysis = deleter.load_image_analysis_report(args.image_analysis)
 
-            # Ensure reports are fresh (auto-generate if missing or stale)
+            # Ensure reports are fresh (auto-generate if missing)
             if not image_analysis:
-                logger.info("📊 Image analysis report not found or stale. Generating now...")
+                logger.info("📊 Image analysis report not found. Generating now...")
                 ensure_image_analysis_reports()
                 image_analysis = deleter.load_image_analysis_report(args.image_analysis)
 
@@ -1634,9 +1644,9 @@ def main():
                 logger.error("❌ Missing image analysis report even after regeneration. Aborting.")
                 sys.exit(1)
 
-            # Load MongoDB usage reports (auto-generate if missing or stale)
+            # Load MongoDB usage reports (auto-generate if missing or stale, or forced)
             logger.info("📊 Loading MongoDB usage reports (runs, workspaces, models)...")
-            ensure_mongodb_reports()
+            ensure_mongodb_reports(max_age_hours=0 if args.generate_reports else 24)
             mongodb_reports = deleter.load_mongodb_usage_reports()
 
             if not any(mongodb_reports.values()):
