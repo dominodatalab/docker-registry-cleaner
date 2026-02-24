@@ -248,8 +248,12 @@ class ImageUsageService:
                 {
                     "$project": {
                         "_id": 1,
-                        # $ifNull guards against null at any level of the path.
-                        "slug_tag": {"$ifNull": ["$metadata.builds.slug.image.tag", None]},
+                        # metadata.builds is an array (one entry per build attempt).
+                        # Dot notation through an array returns an array, not a scalar,
+                        # so we must use $last to extract the most recent build's tag.
+                        # $ifNull then handles the case where builds is empty or the
+                        # last build has no slug (e.g. build failed before completion).
+                        "slug_tag": {"$ifNull": [{"$last": "$metadata.builds.slug.image.tag"}, None]},
                     }
                 },
             ]
