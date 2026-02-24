@@ -63,7 +63,7 @@ from utils.deletion_base import BaseDeletionScript
 from utils.image_data_analysis import ImageAnalyzer
 from utils.image_usage import ImageUsageService
 from utils.logging_utils import get_logger, setup_logging
-from utils.object_id_utils import read_typed_object_ids_from_file
+from utils.object_id_utils import normalize_object_id, read_typed_object_ids_from_file
 from utils.report_utils import ensure_image_analysis_reports, ensure_mongodb_reports, save_json, sizeof_fmt
 
 
@@ -1660,16 +1660,62 @@ def main():
                     f"   ✓ Loaded {total_records} MongoDB records (runs: {len(mongodb_reports['runs'])}, workspaces: {len(mongodb_reports['workspaces'])}, models: {len(mongodb_reports['models'])})"
                 )
 
+            # Resolve model_version IDs to their actual Docker tag identifiers.
+            # Model version ObjectIDs do not prefix Docker image tags directly.
+            # Each model version's images are identified by:
+            #   - environment_revision_id  → prefixes base_environment_tag
+            #   - model_environment_tag    → the slug image tag (exact match)
+            if object_ids_map and object_ids_map.get("model_version") and mongodb_reports:
+                mv_ids_set = set(object_ids_map["model_version"])
+                resolved_env_rev_ids: List[str] = []
+                resolved_slug_tags: List[str] = []
+                seen_mv_ids: set = set()
+
+                for model_record in mongodb_reports.get("models", []):
+                    for version in model_record.get("model_active_versions", []):
+                        mv_id = normalize_object_id(version.get("model_version_id", ""))
+                        if mv_id in mv_ids_set:
+                            seen_mv_ids.add(mv_id)
+                            env_rev_id = normalize_object_id(version.get("environment_revision_id", ""))
+                            if env_rev_id:
+                                resolved_env_rev_ids.append(env_rev_id)
+                            slug_tag = version.get("model_environment_tag")
+                            if slug_tag:
+                                resolved_slug_tags.append(slug_tag)
+
+                if resolved_env_rev_ids:
+                    logger.info(
+                        f"   Resolved {len(resolved_env_rev_ids)} modelVersion ID(s) → environment revision ID(s) for base image matching"
+                    )
+                    existing = list(object_ids_map.get("environment_revision", []))
+                    object_ids_map["environment_revision"] = existing + resolved_env_rev_ids
+
+                if resolved_slug_tags:
+                    logger.info(
+                        f"   Resolved {len(resolved_slug_tags)} modelVersion ID(s) → slug image tag(s) for model image matching"
+                    )
+                    existing_model = list(object_ids_map.get("model", []))
+                    object_ids_map["model"] = existing_model + resolved_slug_tags
+
+                unresolved = mv_ids_set - seen_mv_ids
+                if unresolved:
+                    logger.warning(
+                        f"   ⚠️  {len(unresolved)} modelVersion ID(s) not found in MongoDB reports "
+                        f"(they may be stopped/archived and absent from active version data): "
+                        f"{', '.join(sorted(unresolved))}"
+                    )
+
             # Analyze image usage
             logger.info("🔍 Analyzing image usage patterns...")
-            # For deletion, merge all typed IDs to a single set since we evaluate tags after registry prefix removal
+            # For deletion, merge all typed IDs to a single set since we evaluate tags after registry prefix removal.
+            # model_version IDs are intentionally excluded here — they were resolved above to environment_revision
+            # IDs and slug tags, which DO match actual Docker image tags.
             merged_ids = None
             if object_ids_map:
                 merged = set()
                 merged.update(object_ids_map.get("environment", []))
                 merged.update(object_ids_map.get("environment_revision", []))
                 merged.update(object_ids_map.get("model", []))
-                merged.update(object_ids_map.get("model_version", []))
                 merged_ids = sorted(merged)
                 logger.info(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
             analysis = deleter.analyze_image_usage(
