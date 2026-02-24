@@ -219,6 +219,40 @@ class ImageUsageService:
         finally:
             client.close()
 
+    def collect_model_version_slugs(self, model_version_ids: List[str]) -> Dict[str, Optional[str]]:
+        """Look up slug image tags for model versions directly from model_versions collection.
+
+        Unlike model_env_usage_pipeline, this includes both active and stopped/archived versions.
+        Used as a fallback when the pre-generated MongoDB report (which only covers active versions)
+        does not contain the requested model version IDs.
+
+        Args:
+            model_version_ids: List of model version ObjectId hex strings
+
+        Returns:
+            Dict mapping model_version_id (hex str) → slug image tag, or None if the version
+            exists but has no completed slug build.  IDs not found in MongoDB are absent from
+            the returned dict.
+        """
+        from bson import ObjectId
+
+        client = get_mongo_client()
+        try:
+            db = client[self.mongo_db]
+            oids = [ObjectId(mv_id) for mv_id in model_version_ids]
+            cursor = db.model_versions.find(
+                {"_id": {"$in": oids}},
+                {"_id": 1, "metadata.builds.slug.image.tag": 1},
+            )
+            result: Dict[str, Optional[str]] = {}
+            for doc in cursor:
+                mv_id = str(doc["_id"])
+                tag = doc.get("metadata", {}).get("builds", {}).get("slug", {}).get("image", {}).get("tag")
+                result[mv_id] = tag
+            return result
+        finally:
+            client.close()
+
     # ------------------------------------------------------------------
     # High-level operations
     # ------------------------------------------------------------------
