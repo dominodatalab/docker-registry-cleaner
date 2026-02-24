@@ -609,11 +609,20 @@ class IntelligentImageDeleter(BaseDeletionScript):
                             # Determine image type from object_ids_map if available
                             if object_ids_map:
                                 matched_type = oid_to_type.get(obj_id)
+                                # Defensive fallback: non-ObjectId filter keys come exclusively from
+                                # object_ids_map["model"] (resolved slug tags), so if the type lookup
+                                # misses for some reason, we can safely default to "model".
+                                if matched_type is None and not _is_object_id_hex(obj_id):
+                                    matched_type = "model"
                             break
                     # Store tag with type prefix if we know the type
                     if matched and matched_type:
                         all_tags.add(f"{matched_type}:{tag}")
                     elif matched:
+                        self.logger.warning(
+                            f"Tag '{tag}' matched filter '{obj_id}' but type could not be determined; "
+                            "it will be treated as ambiguous (tried as both environment and model)"
+                        )
                         all_tags.add(tag)
                 layer_tags = filtered_tags
                 if len(filtered_tags) < original_tag_count:
