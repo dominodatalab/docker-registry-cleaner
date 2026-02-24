@@ -840,8 +840,15 @@ class IntelligentImageDeleter(BaseDeletionScript):
                 },
             }
 
+        # used_images must be the INTERSECTION of input candidates and deployed slugs.
+        # deployed_slugs contains ALL currently-running model versions across the entire
+        # MongoDB report (not just the ones from the input file).  Any slug in used_images
+        # that wasn't in resolved_slug_tags has no entry in image_usage_stats, which causes
+        # the reporting code to fall back to "Referenced in system (source unknown)".
+        used_images: Set[str] = {slug for slug in resolved_slug_tags if slug in deployed_slugs}
+
         return WorkloadAnalysis(
-            used_images=deployed_slugs,
+            used_images=used_images,
             unused_images=unused_images,
             total_size_saved=total_size_saved,
             image_usage_stats=image_usage_stats,
