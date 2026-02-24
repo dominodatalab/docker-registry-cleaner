@@ -1662,12 +1662,13 @@ def main():
 
             # Resolve model_version IDs to their actual Docker tag identifiers.
             # Model version ObjectIDs do not prefix Docker image tags directly.
-            # Each model version's images are identified by:
-            #   - environment_revision_id  → prefixes base_environment_tag
-            #   - model_environment_tag    → the slug image tag (exact match)
+            # We resolve only to model_environment_tag (the slug image), which is specific
+            # to the model version.  We intentionally do NOT resolve to environment_revision_id
+            # because the base environment image is shared infrastructure — it may be used by
+            # many other model versions, workspaces, and runs not in the input file.  Users who
+            # want to target base environment images should use environmentRevision:<id> explicitly.
             if object_ids_map and object_ids_map.get("model_version") and mongodb_reports:
                 mv_ids_set = set(object_ids_map["model_version"])
-                resolved_env_rev_ids: List[str] = []
                 resolved_slug_tags: List[str] = []
                 seen_mv_ids: set = set()
 
@@ -1676,19 +1677,9 @@ def main():
                         mv_id = normalize_object_id(version.get("model_version_id", ""))
                         if mv_id in mv_ids_set:
                             seen_mv_ids.add(mv_id)
-                            env_rev_id = normalize_object_id(version.get("environment_revision_id", ""))
-                            if env_rev_id:
-                                resolved_env_rev_ids.append(env_rev_id)
                             slug_tag = version.get("model_environment_tag")
                             if slug_tag:
                                 resolved_slug_tags.append(slug_tag)
-
-                if resolved_env_rev_ids:
-                    logger.info(
-                        f"   Resolved {len(resolved_env_rev_ids)} modelVersion ID(s) → environment revision ID(s) for base image matching"
-                    )
-                    existing = list(object_ids_map.get("environment_revision", []))
-                    object_ids_map["environment_revision"] = existing + resolved_env_rev_ids
 
                 if resolved_slug_tags:
                     logger.info(
@@ -1708,8 +1699,8 @@ def main():
             # Analyze image usage
             logger.info("🔍 Analyzing image usage patterns...")
             # For deletion, merge all typed IDs to a single set since we evaluate tags after registry prefix removal.
-            # model_version IDs are intentionally excluded here — they were resolved above to environment_revision
-            # IDs and slug tags, which DO match actual Docker image tags.
+            # model_version IDs are intentionally excluded here — they were resolved above to slug tags
+            # (model_environment_tag), which are added to the "model" bucket above.
             merged_ids = None
             if object_ids_map:
                 merged = set()
