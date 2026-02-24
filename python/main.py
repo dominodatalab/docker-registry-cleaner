@@ -398,6 +398,14 @@ Safety Notes:
         "and workspace_last_change from workspaces.",
     )
 
+    parser.add_argument(
+        "--generate-reports",
+        action="store_true",
+        dest="generate_reports",
+        help="For delete_image, image_size_report, user_size_report: force regeneration of image analysis "
+        "and MongoDB usage reports before running, even if fresh reports already exist on disk.",
+    )
+
     parser.add_argument("--config", action="store_true", help="Show current configuration and exit")
 
     parser.add_argument("additional_args", nargs=argparse.REMAINDER, help="Additional arguments for the script")
@@ -493,6 +501,8 @@ Safety Notes:
             args.additional_args.append("--force")
         if args.file and "--file" not in args.additional_args:
             args.additional_args.extend(["--file", args.file])
+        if args.generate_reports and "--generate-reports" not in args.additional_args:
+            args.additional_args.append("--generate-reports")
 
         if args.apply:
             dry_run = False
