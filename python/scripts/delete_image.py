@@ -88,6 +88,22 @@ class LayerAnalysis:
     is_used: bool
 
 
+def _is_object_id_hex(s: str) -> bool:
+    """Return True if *s* is a MongoDB ObjectId (24-char hex string).
+
+    ObjectIds prefix registry tag names, so prefix matching (startswith) is correct.
+    Non-ObjectId values — e.g., model slug image tags stored verbatim in the registry —
+    are full tag names and require exact equality matching.
+    """
+    if len(s) != 24:
+        return False
+    try:
+        int(s, 16)
+        return True
+    except ValueError:
+        return False
+
+
 class IntelligentImageDeleter(BaseDeletionScript):
     """Main class for intelligent Docker image deletion"""
 
@@ -559,7 +575,11 @@ class IntelligentImageDeleter(BaseDeletionScript):
             filtered_used_images = set()
             for image in used_images:
                 for obj_id in object_ids:
-                    if image.startswith(obj_id):
+                    if _is_object_id_hex(obj_id):
+                        match = image.startswith(obj_id)
+                    else:
+                        match = image == obj_id
+                    if match:
                         filtered_used_images.add(image)
                         break
             used_images = filtered_used_images
@@ -579,7 +599,11 @@ class IntelligentImageDeleter(BaseDeletionScript):
                     matched = False
                     matched_type = None
                     for obj_id in object_ids:
-                        if tag.startswith(obj_id):
+                        if _is_object_id_hex(obj_id):
+                            tag_matches = tag.startswith(obj_id)
+                        else:
+                            tag_matches = tag == obj_id
+                        if tag_matches:
                             filtered_tags.append(tag)
                             matched = True
                             # Determine image type from object_ids_map if available
