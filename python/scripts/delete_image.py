@@ -570,7 +570,7 @@ class IntelligentImageDeleter(BaseDeletionScript):
             )
 
         # Filter by ObjectIDs if provided
-        if object_ids:
+        if object_ids is not None:
             original_used_count = len(used_images)
             filtered_used_images = set()
             for image in used_images:
@@ -592,7 +592,7 @@ class IntelligentImageDeleter(BaseDeletionScript):
             layer_tags = layer_info.get("tags", [])
 
             # Filter tags by ObjectIDs if provided and determine image type
-            if object_ids:
+            if object_ids is not None:
                 original_tag_count = len(layer_tags)
                 filtered_tags = []
                 for tag in layer_tags:
@@ -1700,11 +1700,12 @@ def main():
             # because the base environment image is shared infrastructure — it may be used by
             # many other model versions, workspaces, and runs not in the input file.  Users who
             # want to target base environment images should use environmentRevision:<id> explicitly.
-            if object_ids_map and object_ids_map.get("model_version") and mongodb_reports:
+            if object_ids_map and object_ids_map.get("model_version"):
                 mv_ids_set = set(object_ids_map["model_version"])
                 resolved_slug_tags: List[str] = []
                 seen_mv_ids: set = set()
 
+                # Step 1: try the pre-generated MongoDB report (active/running model versions only)
                 for model_record in mongodb_reports.get("models", []):
                     for version in model_record.get("model_active_versions", []):
                         mv_id = normalize_object_id(version.get("model_version_id", ""))
@@ -1714,6 +1715,34 @@ def main():
                             if slug_tag:
                                 resolved_slug_tags.append(slug_tag)
 
+                # Step 2: for IDs not in the report (stopped/archived versions), query MongoDB directly
+                unresolved = mv_ids_set - seen_mv_ids
+                if unresolved:
+                    logger.info(
+                        f"   {len(unresolved)} modelVersion ID(s) not in active-versions report; "
+                        "querying MongoDB directly for stopped/archived versions..."
+                    )
+                    try:
+                        from utils.image_usage import ImageUsageService
+
+                        service = ImageUsageService()
+                        direct_results = service.collect_model_version_slugs(list(unresolved))
+                        for mv_id, slug_tag in direct_results.items():
+                            seen_mv_ids.add(mv_id)
+                            if slug_tag:
+                                resolved_slug_tags.append(slug_tag)
+                                logger.debug(f"   Directly resolved modelVersion {mv_id} → {slug_tag}")
+                            else:
+                                logger.warning(
+                                    f"   ⚠️  Model version {mv_id} exists in MongoDB but has no slug tag "
+                                    "(the build may not have completed successfully)"
+                                )
+                        unresolved = mv_ids_set - seen_mv_ids
+                    except Exception as e:
+                        logger.warning(
+                            f"   ⚠️  Direct MongoDB lookup failed: {e}; continuing with partially resolved IDs"
+                        )
+
                 if resolved_slug_tags:
                     logger.info(
                         f"   Resolved {len(resolved_slug_tags)} modelVersion ID(s) → slug image tag(s) for model image matching"
@@ -1721,11 +1750,10 @@ def main():
                     existing_model = list(object_ids_map.get("model", []))
                     object_ids_map["model"] = existing_model + resolved_slug_tags
 
-                unresolved = mv_ids_set - seen_mv_ids
                 if unresolved:
                     logger.warning(
-                        f"   ⚠️  {len(unresolved)} modelVersion ID(s) not found in MongoDB reports "
-                        f"(they may be stopped/archived and absent from active version data): "
+                        f"   ⚠️  {len(unresolved)} modelVersion ID(s) not found in MongoDB "
+                        f"(they may not exist or never completed a build): "
                         f"{', '.join(sorted(unresolved))}"
                     )
 
@@ -1740,8 +1768,19 @@ def main():
                 merged.update(object_ids_map.get("environment", []))
                 merged.update(object_ids_map.get("environment_revision", []))
                 merged.update(object_ids_map.get("model", []))
-                merged_ids = sorted(merged)
-                logger.info(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
+                if merged:
+                    merged_ids = sorted(merged)
+                    logger.info(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
+                else:
+                    # object_ids_map was given (user provided typed IDs) but nothing resolved to a
+                    # Docker image tag.  Proceeding without a filter would analyse every image in
+                    # the registry — abort instead to prevent accidental mass-deletion.
+                    logger.error(
+                        "❌ ID filter was provided but no IDs could be resolved to Docker image tags. "
+                        "If you supplied modelVersion IDs, make sure the model builds completed "
+                        "(metadata.builds.slug must be present). Aborting."
+                    )
+                    sys.exit(1)
             analysis = deleter.analyze_image_usage(
                 image_analysis, merged_ids, object_ids_map, mongodb_reports, recent_days=args.days
             )
