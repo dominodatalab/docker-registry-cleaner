@@ -19,6 +19,16 @@ from utils.cache_utils import cached_image_inspect, cached_tag_list
 from utils.retry_utils import is_retryable_error, retry_with_backoff
 
 
+class ImageNotFoundError(Exception):
+    """Raised when an image tag does not exist in the registry.
+
+    This is a non-retryable condition — the tag was never there or was
+    already deleted by a prior operation (e.g. delete_archived_tags).
+    """
+
+    pass
+
+
 def _load_kubernetes_config():
     """Helper function to load Kubernetes configuration."""
     try:
@@ -349,6 +359,15 @@ class SkopeoClient:
                     from utils.error_utils import create_rate_limit_error
 
                     raise create_rate_limit_error(f"skopeo {subcommand}", retry_after=1.0)
+                if (
+                    "manifest unknown" in error_str
+                    or "name unknown" in error_str
+                    or "not found" in error_str
+                    or "404" in error_str
+                ):
+                    raise ImageNotFoundError(
+                        f"Image not found in registry (may have already been deleted): {e.stderr.strip()}"
+                    )
                 logging.error(f"Skopeo command failed: {log_cmd}")
                 logging.error(f"Error: {e.stderr}")
                 from utils.error_utils import create_registry_connection_error
@@ -362,6 +381,9 @@ class SkopeoClient:
 
         try:
             return _execute()
+        except ImageNotFoundError as e:
+            logging.warning(str(e))
+            return None
         except Exception as e:
             is_retryable, error_type = is_retryable_error(e)
             if not is_retryable:
