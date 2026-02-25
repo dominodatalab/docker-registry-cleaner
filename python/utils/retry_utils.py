@@ -62,8 +62,13 @@ def is_retryable_error(error: Exception, error_message: str = "") -> Tuple[bool,
     if "401" in combined or "403" in combined or "unauthorized" in combined or "forbidden" in combined:
         return False, RetryableErrorType.PERMANENT
 
-    # 404 errors - usually not retryable (resource doesn't exist)
-    if "404" in combined or "not found" in combined:
+    # ImageNotFoundError - always non-retryable (tag gone or never existed).
+    # String check avoids a circular import with skopeo_client.
+    if type(error).__name__ == "ImageNotFoundError":
+        return False, RetryableErrorType.PERMANENT
+
+    # 404 / manifest-unknown errors - non-retryable (resource doesn't exist)
+    if "404" in combined or "not found" in combined or "manifest unknown" in combined:
         return False, RetryableErrorType.PERMANENT
 
     # Subprocess errors - check the return code and stderr
