@@ -772,6 +772,7 @@ class IntelligentImageDeleter(BaseDeletionScript):
         resolved_slug_tags: List[str],
         object_ids_map: Dict[str, List[str]],
         mongodb_reports: Dict[str, List[Dict]],
+        image_analysis: Optional[Dict] = None,
     ) -> "WorkloadAnalysis":
         """Analyze model version images directly from resolved slug tags.
 
@@ -784,12 +785,17 @@ class IntelligentImageDeleter(BaseDeletionScript):
         1. Treats the resolved slug tags as the complete set of candidates.
         2. Marks any slug that is currently deployed (found in
            model_active_versions in the MongoDB report) as "in use".
-        3. Delegates size calculation to _calculate_freed_space_correctly.
+        3. Delegates size calculation to _calculate_freed_space_correctly,
+           passing image_analysis so shared layers with environment images
+           are correctly accounted for without additional registry calls.
 
         Args:
             resolved_slug_tags: Docker image tags resolved from model_version IDs.
             object_ids_map: Full typed ID map (used by size calculation).
             mongodb_reports: Pre-loaded MongoDB usage reports.
+            image_analysis: Optional pre-loaded image_analysis report.  When provided,
+                used ONLY for layer-level freed-space calculation (not for determining
+                which images are candidates — that still comes from resolved_slug_tags).
 
         Returns:
             WorkloadAnalysis with used_images, unused_images, sizes, and stats.
@@ -814,8 +820,11 @@ class IntelligentImageDeleter(BaseDeletionScript):
             f"{len(unused_images)} unused (deletion candidates)"
         )
 
-        # Calculate freed space using ImageAnalyzer
-        total_size_saved, individual_tag_sizes = self._calculate_freed_space_correctly(unused_images, object_ids_map)
+        # Calculate freed space.  Pass image_analysis when available so the report-based
+        # path is used (accurate cross-type layer sharing, no extra registry calls).
+        total_size_saved, individual_tag_sizes = self._calculate_freed_space_correctly(
+            unused_images, object_ids_map, image_analysis=image_analysis
+        )
 
         # Build per-tag stats
         image_usage_stats: Dict[str, Dict] = {}
@@ -854,10 +863,95 @@ class IntelligentImageDeleter(BaseDeletionScript):
             image_usage_stats=image_usage_stats,
         )
 
-    def _calculate_freed_space_correctly(
-        self, unused_images: Set[str], object_ids_map: Optional[Dict[str, List[str]]] = None
+    def _calculate_freed_space_from_report(
+        self,
+        unused_images: Set[str],
+        image_analysis: Dict,
     ) -> Tuple[int, Dict[str, int]]:
-        """Calculate freed space correctly using ImageAnalyzer, accounting for shared layers.
+        """Calculate freed space using the pre-generated image_analysis report.
+
+        Preferred over _calculate_freed_space_correctly when image_analysis is available because:
+        - The report was generated with a complete scan of ALL image types (environment + model),
+          so layer ref-counts include every known image — no risk of partial registry-call failures.
+        - Avoids expensive live registry calls (listing + inspecting every tag).
+        - Model images share base layers with environment images; those shared layers appear in the
+          report with ref_count > 1 and will correctly NOT be counted as freed.
+
+        Args:
+            unused_images: Set of deletion candidates in "type:tag" format.
+            image_analysis: Pre-loaded image_analysis report
+                            ({layer_id: {size: int, tags: [str], environments: [str]}}).
+
+        Returns:
+            Tuple of (total_bytes_freed, {full_tag -> individual_bytes_freed}).
+        """
+        from collections import Counter
+
+        # Build reverse mapping: raw_tag -> {layer_id -> size_bytes}
+        # and per-layer total ref_count as seen in the report.
+        tag_to_layers: Dict[str, Dict[str, int]] = {}
+        layer_ref_counts: Dict[str, int] = {}
+
+        for layer_id, layer_info in image_analysis.items():
+            tags = layer_info.get("tags", [])
+            size = layer_info.get("size", 0)
+            layer_ref_counts[layer_id] = len(tags)
+            for tag in tags:
+                if tag not in tag_to_layers:
+                    tag_to_layers[tag] = {}
+                tag_to_layers[tag][layer_id] = size
+
+        # Collect unprefixed tags from the deletion set.
+        deletion_tags: Set[str] = {
+            full_tag.split(":", 1)[1] if ":" in full_tag else full_tag for full_tag in unused_images
+        }
+
+        # Count how many deletion-set images reference each layer.
+        layer_delete_count: Counter = Counter()
+        for raw_tag in deletion_tags:
+            for layer_id in tag_to_layers.get(raw_tag, {}):
+                layer_delete_count[layer_id] += 1
+
+        # Total freed: only layers whose entire reference set is in the deletion batch.
+        total_freed = 0
+        for layer_id, delete_count in layer_delete_count.items():
+            if layer_ref_counts.get(layer_id, 0) == delete_count:
+                total_freed += image_analysis[layer_id].get("size", 0)
+
+        # Individual freed: what would be freed if ONLY this one image is deleted.
+        # A layer is freed individually only if this image is its sole user (ref_count == 1).
+        individual_sizes: Dict[str, int] = {}
+        for full_tag in unused_images:
+            raw_tag = full_tag.split(":", 1)[1] if ":" in full_tag else full_tag
+            freed = sum(
+                size
+                for layer_id, size in tag_to_layers.get(raw_tag, {}).items()
+                if layer_ref_counts.get(layer_id, 0) == 1
+            )
+            individual_sizes[full_tag] = freed
+
+        not_in_report = deletion_tags - set(tag_to_layers.keys())
+        if not_in_report:
+            self.logger.warning(
+                f"   ⚠️  {len(not_in_report)} deletion-candidate tag(s) not found in image_analysis report "
+                "(they may have been added to the registry after the report was generated). "
+                "Their freed space will be under-counted. Run with --generate-reports to refresh."
+            )
+
+        self.logger.info(f"Total space that would be freed (from report): {sizeof_fmt(total_freed)}")
+        return total_freed, individual_sizes
+
+    def _calculate_freed_space_correctly(
+        self,
+        unused_images: Set[str],
+        object_ids_map: Optional[Dict[str, List[str]]] = None,
+        image_analysis: Optional[Dict] = None,
+    ) -> Tuple[int, Dict[str, int]]:
+        """Calculate freed space correctly, accounting for shared layers.
+
+        When image_analysis is provided, delegates to _calculate_freed_space_from_report for a
+        faster and more accurate result (no live registry calls, complete layer data).
+        Otherwise falls back to making fresh registry calls via ImageAnalyzer.
 
         This method analyzes ALL images (not just unused ones) to get accurate reference counts,
         then calculates what would be freed by deleting the unused images. Only layers that would
@@ -873,6 +967,11 @@ class IntelligentImageDeleter(BaseDeletionScript):
         """
         if not unused_images:
             return 0, {}
+
+        # Prefer the pre-generated report when available — it already has complete layer data
+        # for all image types without requiring additional registry calls.
+        if image_analysis:
+            return self._calculate_freed_space_from_report(unused_images, image_analysis)
 
         try:
             self.logger.info("Calculating accurate freed space using ImageAnalyzer (analyzing ALL images)...")
@@ -1929,7 +2028,9 @@ def main():
                     f"   Input is modelVersion-only: using dedicated model-version analysis "
                     f"({len(resolved_slug_tags)} slug tags, bypassing combined image_analysis report)"
                 )
-                analysis = deleter.analyze_model_version_usage(resolved_slug_tags, object_ids_map, mongodb_reports)
+                analysis = deleter.analyze_model_version_usage(
+                    resolved_slug_tags, object_ids_map, mongodb_reports, image_analysis=image_analysis
+                )
 
             elif has_mv_input and has_other_input:
                 # ── Mixed input: modelVersion IDs + environment/environmentRevision IDs ───
@@ -1967,6 +2068,7 @@ def main():
                         resolved_slug_tags,
                         object_ids_map,
                         mongodb_reports,
+                        image_analysis,
                     )
                     env_future = executor.submit(
                         deleter.analyze_image_usage,
