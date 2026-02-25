@@ -219,6 +219,54 @@ class ImageUsageService:
         finally:
             client.close()
 
+    def collect_model_version_slugs(self, model_version_ids: List[str]) -> Dict[str, Optional[str]]:
+        """Look up slug image tags for model versions directly from model_versions collection.
+
+        Unlike model_env_usage_pipeline, this includes both active and stopped/archived versions.
+        Used as a fallback when the pre-generated MongoDB report (which only covers active versions)
+        does not contain the requested model version IDs.
+
+        Args:
+            model_version_ids: List of model version ObjectId hex strings
+
+        Returns:
+            Dict mapping model_version_id (hex str) → slug image tag, or None if the version
+            exists but has no completed slug build.  IDs not found in MongoDB are absent from
+            the returned dict.
+        """
+        from bson import ObjectId
+
+        client = get_mongo_client()
+        try:
+            db = client[self.mongo_db]
+            oids = [ObjectId(mv_id) for mv_id in model_version_ids]
+            # Use an aggregation pipeline so MongoDB resolves the nested path.
+            # Python dict traversal would crash if any intermediate key is stored
+            # as null (None) rather than a missing key.
+            pipeline = [
+                {"$match": {"_id": {"$in": oids}}},
+                {
+                    "$project": {
+                        "_id": 1,
+                        # metadata.builds is an array (one entry per build attempt).
+                        # Dot notation through an array returns an array, not a scalar,
+                        # so we must use $last to extract the most recent build's tag.
+                        # $ifNull then handles the case where builds is empty or the
+                        # last build has no slug (e.g. build failed before completion).
+                        "slug_tag": {"$ifNull": [{"$last": "$metadata.builds.slug.image.tag"}, None]},
+                    }
+                },
+            ]
+            result: Dict[str, Optional[str]] = {}
+            for doc in db.model_versions.aggregate(pipeline):
+                mv_id = str(doc["_id"])
+                tag = doc.get("slug_tag")
+                # tag is either a string or None
+                result[mv_id] = tag if isinstance(tag, str) else None
+            return result
+        finally:
+            client.close()
+
     # ------------------------------------------------------------------
     # High-level operations
     # ------------------------------------------------------------------
@@ -447,27 +495,37 @@ class ImageUsageService:
                     }
                     usage_info[tag]["workspaces"].append(workspace_usage)
 
-        # Extract tags from models
+        # Extract tags from models.
+        # The model_env_usage_pipeline groups by model_id and nests per-version data
+        # inside model_active_versions[].  Each version carries model_environment_tag
+        # (the Docker tag for the model slug image) and base_environment_tag (the
+        # underlying compute environment revision).  Both must be treated as in-use.
         for record in mongodb_reports.get("models", []):
-            if "environment_docker_tag" in record and record["environment_docker_tag"]:
-                tag = record["environment_docker_tag"]
-                tags.add(tag)
-                if tag not in usage_info:
-                    usage_info[tag] = {
-                        "runs": [],
-                        "workspaces": [],
-                        "models": [],
-                        "scheduler_jobs": [],
-                        "projects": [],
-                        "organizations": [],
-                        "app_versions": [],
+            model_id = str(record.get("model_id") or record.get("_id", "unknown"))
+            model_name = record.get("model_name", "unknown")
+            for version in record.get("model_active_versions", []):
+                version_id = str(version.get("model_version_id", "unknown"))
+                for tag_field in ("model_environment_tag", "base_environment_tag"):
+                    tag = version.get(tag_field)
+                    if not tag:
+                        continue
+                    tags.add(tag)
+                    if tag not in usage_info:
+                        usage_info[tag] = {
+                            "runs": [],
+                            "workspaces": [],
+                            "models": [],
+                            "scheduler_jobs": [],
+                            "projects": [],
+                            "organizations": [],
+                            "app_versions": [],
+                        }
+                    model_info = {
+                        "model_id": model_id,
+                        "model_name": model_name,
+                        "version_id": version_id,
                     }
-                model_info = {
-                    "model_id": record.get("model_id") or record.get("_id", "unknown"),
-                    "model_name": record.get("model_name", "unknown"),
-                    "version_id": record.get("model_version_id", "unknown"),
-                }
-                usage_info[tag]["models"].append(model_info)
+                    usage_info[tag]["models"].append(model_info)
 
         # Extract tags from projects (from pipeline results)
         for record in mongodb_reports.get("projects", []):

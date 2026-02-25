@@ -47,6 +47,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -63,7 +64,7 @@ from utils.deletion_base import BaseDeletionScript
 from utils.image_data_analysis import ImageAnalyzer
 from utils.image_usage import ImageUsageService
 from utils.logging_utils import get_logger, setup_logging
-from utils.object_id_utils import read_typed_object_ids_from_file
+from utils.object_id_utils import normalize_object_id, read_typed_object_ids_from_file
 from utils.report_utils import ensure_image_analysis_reports, ensure_mongodb_reports, save_json, sizeof_fmt
 
 
@@ -86,6 +87,38 @@ class LayerAnalysis:
     tags: List[str]
     environments: List[str]
     is_used: bool
+
+
+def merge_workload_analyses(a: WorkloadAnalysis, b: WorkloadAnalysis) -> WorkloadAnalysis:
+    """Merge two WorkloadAnalysis results by unioning their image sets.
+
+    Used when model-version and other image-type analyses are run separately
+    and need to be combined into a single result for reporting and deletion.
+    The total_size_saved is summed (each analysis calculates its own freed space
+    independently via ImageAnalyzer, accounting for shared layers within its scope).
+    """
+    return WorkloadAnalysis(
+        used_images=a.used_images | b.used_images,
+        unused_images=a.unused_images | b.unused_images,
+        total_size_saved=a.total_size_saved + b.total_size_saved,
+        image_usage_stats={**a.image_usage_stats, **b.image_usage_stats},
+    )
+
+
+def _is_object_id_hex(s: str) -> bool:
+    """Return True if *s* is a MongoDB ObjectId (24-char hex string).
+
+    ObjectIds prefix registry tag names, so prefix matching (startswith) is correct.
+    Non-ObjectId values — e.g., model slug image tags stored verbatim in the registry —
+    are full tag names and require exact equality matching.
+    """
+    if len(s) != 24:
+        return False
+    try:
+        int(s, 16)
+        return True
+    except ValueError:
+        return False
 
 
 class IntelligentImageDeleter(BaseDeletionScript):
@@ -554,12 +587,16 @@ class IntelligentImageDeleter(BaseDeletionScript):
             )
 
         # Filter by ObjectIDs if provided
-        if object_ids:
+        if object_ids is not None:
             original_used_count = len(used_images)
             filtered_used_images = set()
             for image in used_images:
                 for obj_id in object_ids:
-                    if image.startswith(obj_id):
+                    if _is_object_id_hex(obj_id):
+                        match = image.startswith(obj_id)
+                    else:
+                        match = image == obj_id
+                    if match:
                         filtered_used_images.add(image)
                         break
             used_images = filtered_used_images
@@ -572,24 +609,37 @@ class IntelligentImageDeleter(BaseDeletionScript):
             layer_tags = layer_info.get("tags", [])
 
             # Filter tags by ObjectIDs if provided and determine image type
-            if object_ids:
+            if object_ids is not None:
                 original_tag_count = len(layer_tags)
                 filtered_tags = []
                 for tag in layer_tags:
                     matched = False
                     matched_type = None
                     for obj_id in object_ids:
-                        if tag.startswith(obj_id):
+                        if _is_object_id_hex(obj_id):
+                            tag_matches = tag.startswith(obj_id)
+                        else:
+                            tag_matches = tag == obj_id
+                        if tag_matches:
                             filtered_tags.append(tag)
                             matched = True
                             # Determine image type from object_ids_map if available
                             if object_ids_map:
                                 matched_type = oid_to_type.get(obj_id)
+                                # Defensive fallback: non-ObjectId filter keys come exclusively from
+                                # object_ids_map["model"] (resolved slug tags), so if the type lookup
+                                # misses for some reason, we can safely default to "model".
+                                if matched_type is None and not _is_object_id_hex(obj_id):
+                                    matched_type = "model"
                             break
                     # Store tag with type prefix if we know the type
                     if matched and matched_type:
                         all_tags.add(f"{matched_type}:{tag}")
                     elif matched:
+                        self.logger.warning(
+                            f"Tag '{tag}' matched filter '{obj_id}' but type could not be determined; "
+                            "it will be treated as ambiguous (tried as both environment and model)"
+                        )
                         all_tags.add(tag)
                 layer_tags = filtered_tags
                 if len(filtered_tags) < original_tag_count:
@@ -717,10 +767,191 @@ class IntelligentImageDeleter(BaseDeletionScript):
             image_usage_stats=image_usage_stats,
         )
 
-    def _calculate_freed_space_correctly(
-        self, unused_images: Set[str], object_ids_map: Optional[Dict[str, List[str]]] = None
+    def analyze_model_version_usage(
+        self,
+        resolved_slug_tags: List[str],
+        object_ids_map: Dict[str, List[str]],
+        mongodb_reports: Dict[str, List[Dict]],
+        image_analysis: Optional[Dict] = None,
+    ) -> "WorkloadAnalysis":
+        """Analyze model version images directly from resolved slug tags.
+
+        This is used when the input contains only modelVersion: IDs.  Unlike
+        analyze_image_usage, this method does NOT consult the combined
+        image_analysis (final-report.json) at all — doing so would pull
+        environment images into scope and produce false positives.
+
+        Instead it:
+        1. Treats the resolved slug tags as the complete set of candidates.
+        2. Marks any slug that is currently deployed (found in
+           model_active_versions in the MongoDB report) as "in use".
+        3. Delegates size calculation to _calculate_freed_space_correctly,
+           passing image_analysis so shared layers with environment images
+           are correctly accounted for without additional registry calls.
+
+        Args:
+            resolved_slug_tags: Docker image tags resolved from model_version IDs.
+            object_ids_map: Full typed ID map (used by size calculation).
+            mongodb_reports: Pre-loaded MongoDB usage reports.
+            image_analysis: Optional pre-loaded image_analysis report.  When provided,
+                used ONLY for layer-level freed-space calculation (not for determining
+                which images are candidates — that still comes from resolved_slug_tags).
+
+        Returns:
+            WorkloadAnalysis with used_images, unused_images, sizes, and stats.
+        """
+        # Build the complete candidate set with type prefix
+        all_tags: Set[str] = {f"model:{slug}" for slug in resolved_slug_tags}
+
+        # Collect the slug tags of CURRENTLY DEPLOYED model versions from the report
+        deployed_slugs: Set[str] = set()
+        for record in mongodb_reports.get("models", []):
+            for version in record.get("model_active_versions", []):
+                tag = version.get("model_environment_tag")
+                if tag:
+                    deployed_slugs.add(tag)
+
+        # Unused = candidates not currently deployed
+        unused_images: Set[str] = {full_tag for full_tag in all_tags if full_tag.split(":", 1)[1] not in deployed_slugs}
+
+        self.logger.info(
+            f"Model version usage: {len(all_tags)} candidates, "
+            f"{len(all_tags) - len(unused_images)} currently deployed (in use), "
+            f"{len(unused_images)} unused (deletion candidates)"
+        )
+
+        # Calculate freed space.  Pass image_analysis when available so the report-based
+        # path is used (accurate cross-type layer sharing, no extra registry calls).
+        total_size_saved, individual_tag_sizes = self._calculate_freed_space_correctly(
+            unused_images, object_ids_map, image_analysis=image_analysis
+        )
+
+        # Build per-tag stats
+        image_usage_stats: Dict[str, Dict] = {}
+        for full_tag in all_tags:
+            slug = full_tag.split(":", 1)[1]
+            is_deployed = slug in deployed_slugs
+            image_usage_stats[full_tag] = {
+                "size": individual_tag_sizes.get(full_tag, 0),
+                "layer_id": "",
+                "status": "used" if is_deployed else "unused",
+                "usage": {
+                    "runs_count": 0,
+                    "runs": [],
+                    "workspaces_count": 0,
+                    "workspaces": [],
+                    "models_count": 1 if is_deployed else 0,
+                    "models": [{"deployed": True}] if is_deployed else [],
+                    "scheduler_jobs": [],
+                    "projects": [],
+                    "organizations": [],
+                    "app_versions": [],
+                },
+            }
+
+        # used_images must be the INTERSECTION of input candidates and deployed slugs.
+        # deployed_slugs contains ALL currently-running model versions across the entire
+        # MongoDB report (not just the ones from the input file).  Any slug in used_images
+        # that wasn't in resolved_slug_tags has no entry in image_usage_stats, which causes
+        # the reporting code to fall back to "Referenced in system (source unknown)".
+        used_images: Set[str] = {slug for slug in resolved_slug_tags if slug in deployed_slugs}
+
+        return WorkloadAnalysis(
+            used_images=used_images,
+            unused_images=unused_images,
+            total_size_saved=total_size_saved,
+            image_usage_stats=image_usage_stats,
+        )
+
+    def _calculate_freed_space_from_report(
+        self,
+        unused_images: Set[str],
+        image_analysis: Dict,
     ) -> Tuple[int, Dict[str, int]]:
-        """Calculate freed space correctly using ImageAnalyzer, accounting for shared layers.
+        """Calculate freed space using the pre-generated image_analysis report.
+
+        Preferred over _calculate_freed_space_correctly when image_analysis is available because:
+        - The report was generated with a complete scan of ALL image types (environment + model),
+          so layer ref-counts include every known image — no risk of partial registry-call failures.
+        - Avoids expensive live registry calls (listing + inspecting every tag).
+        - Model images share base layers with environment images; those shared layers appear in the
+          report with ref_count > 1 and will correctly NOT be counted as freed.
+
+        Args:
+            unused_images: Set of deletion candidates in "type:tag" format.
+            image_analysis: Pre-loaded image_analysis report
+                            ({layer_id: {size: int, tags: [str], environments: [str]}}).
+
+        Returns:
+            Tuple of (total_bytes_freed, {full_tag -> individual_bytes_freed}).
+        """
+        from collections import Counter
+
+        # Build reverse mapping: raw_tag -> {layer_id -> size_bytes}
+        # and per-layer total ref_count as seen in the report.
+        tag_to_layers: Dict[str, Dict[str, int]] = {}
+        layer_ref_counts: Dict[str, int] = {}
+
+        for layer_id, layer_info in image_analysis.items():
+            tags = layer_info.get("tags", [])
+            size = layer_info.get("size", 0)
+            layer_ref_counts[layer_id] = len(tags)
+            for tag in tags:
+                if tag not in tag_to_layers:
+                    tag_to_layers[tag] = {}
+                tag_to_layers[tag][layer_id] = size
+
+        # Collect unprefixed tags from the deletion set.
+        deletion_tags: Set[str] = {
+            full_tag.split(":", 1)[1] if ":" in full_tag else full_tag for full_tag in unused_images
+        }
+
+        # Count how many deletion-set images reference each layer.
+        layer_delete_count: Counter = Counter()
+        for raw_tag in deletion_tags:
+            for layer_id in tag_to_layers.get(raw_tag, {}):
+                layer_delete_count[layer_id] += 1
+
+        # Total freed: only layers whose entire reference set is in the deletion batch.
+        total_freed = 0
+        for layer_id, delete_count in layer_delete_count.items():
+            if layer_ref_counts.get(layer_id, 0) == delete_count:
+                total_freed += image_analysis[layer_id].get("size", 0)
+
+        # Individual freed: what would be freed if ONLY this one image is deleted.
+        # A layer is freed individually only if this image is its sole user (ref_count == 1).
+        individual_sizes: Dict[str, int] = {}
+        for full_tag in unused_images:
+            raw_tag = full_tag.split(":", 1)[1] if ":" in full_tag else full_tag
+            freed = sum(
+                size
+                for layer_id, size in tag_to_layers.get(raw_tag, {}).items()
+                if layer_ref_counts.get(layer_id, 0) == 1
+            )
+            individual_sizes[full_tag] = freed
+
+        not_in_report = deletion_tags - set(tag_to_layers.keys())
+        if not_in_report:
+            self.logger.warning(
+                f"   ⚠️  {len(not_in_report)} deletion-candidate tag(s) not found in image_analysis report "
+                "(they may have been added to the registry after the report was generated). "
+                "Their freed space will be under-counted. Run with --generate-reports to refresh."
+            )
+
+        self.logger.info(f"Total space that would be freed (from report): {sizeof_fmt(total_freed)}")
+        return total_freed, individual_sizes
+
+    def _calculate_freed_space_correctly(
+        self,
+        unused_images: Set[str],
+        object_ids_map: Optional[Dict[str, List[str]]] = None,
+        image_analysis: Optional[Dict] = None,
+    ) -> Tuple[int, Dict[str, int]]:
+        """Calculate freed space correctly, accounting for shared layers.
+
+        When image_analysis is provided, delegates to _calculate_freed_space_from_report for a
+        faster and more accurate result (no live registry calls, complete layer data).
+        Otherwise falls back to making fresh registry calls via ImageAnalyzer.
 
         This method analyzes ALL images (not just unused ones) to get accurate reference counts,
         then calculates what would be freed by deleting the unused images. Only layers that would
@@ -736,6 +967,11 @@ class IntelligentImageDeleter(BaseDeletionScript):
         """
         if not unused_images:
             return 0, {}
+
+        # Prefer the pre-generated report when available — it already has complete layer data
+        # for all image types without requiring additional registry calls.
+        if image_analysis:
+            return self._calculate_freed_space_from_report(unused_images, image_analysis)
 
         try:
             self.logger.info("Calculating accurate freed space using ImageAnalyzer (analyzing ALL images)...")
@@ -1342,6 +1578,13 @@ def parse_arguments():
         "--skip-analysis", action="store_true", help="Skip workload analysis and use traditional environments file"
     )
     parser.add_argument(
+        "--generate-reports",
+        action="store_true",
+        help="Force regeneration of image analysis and MongoDB usage reports before running analysis, "
+        "even if fresh reports already exist on disk. Use this when the registry has changed since "
+        "the last report was generated.",
+    )
+    parser.add_argument(
         "--input",
         help="File containing ObjectIDs (one per line) to filter images, or pre-generated report file (supports prefixes: environment:, environmentRevision:, model:, modelVersion:, or bare IDs)",
     )
@@ -1567,15 +1810,53 @@ def main():
                 total_records = sum(len(v) for v in mongodb_reports.values())
                 logger.info(f"   ✓ Loaded {total_records} MongoDB records")
 
+            # model_version IDs require resolution to slug tags before they can be
+            # used as registry filters — raw 24-hex ObjectIds do NOT match Docker tags.
+            # Re-use the same two-step resolution as the main analysis path.
+            if object_ids_map and object_ids_map.get("model_version"):
+                mv_ids_set = set(object_ids_map["model_version"])
+                backup_slug_tags: List[str] = []
+                backup_seen_mv_ids: set = set()
+                for model_record in mongodb_reports.get("models", []):
+                    for version in model_record.get("model_active_versions", []):
+                        mv_id = normalize_object_id(version.get("model_version_id", ""))
+                        if mv_id in mv_ids_set:
+                            backup_seen_mv_ids.add(mv_id)
+                            slug_tag = version.get("model_environment_tag")
+                            if slug_tag:
+                                backup_slug_tags.append(slug_tag)
+                backup_unresolved = mv_ids_set - backup_seen_mv_ids
+                if backup_unresolved:
+                    try:
+                        from utils.image_usage import ImageUsageService
+
+                        service = ImageUsageService()
+                        direct_results = service.collect_model_version_slugs(list(backup_unresolved))
+                        for mv_id, slug_tag in direct_results.items():
+                            backup_seen_mv_ids.add(mv_id)
+                            if slug_tag:
+                                backup_slug_tags.append(slug_tag)
+                    except Exception as e:
+                        logger.warning(f"   ⚠️  Direct MongoDB lookup failed in backup path: {e}")
+                if backup_slug_tags:
+                    existing_model = list(object_ids_map.get("model", []))
+                    object_ids_map["model"] = existing_model + backup_slug_tags
+
             merged_ids = None
             if object_ids_map:
                 merged = set()
                 merged.update(object_ids_map.get("environment", []))
                 merged.update(object_ids_map.get("environment_revision", []))
                 merged.update(object_ids_map.get("model", []))
-                merged.update(object_ids_map.get("model_version", []))
-                merged_ids = sorted(merged)
-                logger.info(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
+                # model_version IDs are intentionally excluded: they were resolved above
+                if merged:
+                    merged_ids = sorted(merged)
+                    logger.info(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
+                else:
+                    logger.error(
+                        "❌ ID filter was provided but no IDs could be resolved to Docker image tags. Aborting."
+                    )
+                    sys.exit(1)
             analysis = deleter.analyze_image_usage(
                 image_analysis, merged_ids, object_ids_map, mongodb_reports, recent_days=args.days
             )
@@ -1620,13 +1901,16 @@ def main():
 
         if not args.skip_analysis:
             logger = get_logger(__name__)
-            # Load analysis reports (auto-generate if missing)
+            # Load analysis reports (auto-generate if missing or if --generate-reports is set)
             logger.info("📊 Loading image analysis report...")
+            if args.generate_reports:
+                logger.info("📊 --generate-reports set: forcing fresh image analysis report...")
+                ensure_image_analysis_reports(max_age_hours=0)
             image_analysis = deleter.load_image_analysis_report(args.image_analysis)
 
-            # Ensure reports are fresh (auto-generate if missing or stale)
+            # Ensure reports are fresh (auto-generate if missing)
             if not image_analysis:
-                logger.info("📊 Image analysis report not found or stale. Generating now...")
+                logger.info("📊 Image analysis report not found. Generating now...")
                 ensure_image_analysis_reports()
                 image_analysis = deleter.load_image_analysis_report(args.image_analysis)
 
@@ -1634,9 +1918,9 @@ def main():
                 logger.error("❌ Missing image analysis report even after regeneration. Aborting.")
                 sys.exit(1)
 
-            # Load MongoDB usage reports (auto-generate if missing or stale)
+            # Load MongoDB usage reports (auto-generate if missing or stale, or forced)
             logger.info("📊 Loading MongoDB usage reports (runs, workspaces, models)...")
-            ensure_mongodb_reports()
+            ensure_mongodb_reports(max_age_hours=0 if args.generate_reports else 24)
             mongodb_reports = deleter.load_mongodb_usage_reports()
 
             if not any(mongodb_reports.values()):
@@ -1650,21 +1934,180 @@ def main():
                     f"   ✓ Loaded {total_records} MongoDB records (runs: {len(mongodb_reports['runs'])}, workspaces: {len(mongodb_reports['workspaces'])}, models: {len(mongodb_reports['models'])})"
                 )
 
+            # Capture the original input types BEFORE resolution mutates object_ids_map.
+            # This lets us later detect "input was modelVersion-only" even after resolution
+            # has added a synthetic "model" key with the resolved slug tags.
+            original_input_types: set = set(object_ids_map.keys()) if object_ids_map else set()
+            resolved_slug_tags: List[str] = []  # populated below if model_version IDs present
+
+            # Resolve model_version IDs to their actual Docker tag identifiers.
+            # Model version ObjectIDs do not prefix Docker image tags directly.
+            # We resolve only to model_environment_tag (the slug image), which is specific
+            # to the model version.  We intentionally do NOT resolve to environment_revision_id
+            # because the base environment image is shared infrastructure — it may be used by
+            # many other model versions, workspaces, and runs not in the input file.  Users who
+            # want to target base environment images should use environmentRevision:<id> explicitly.
+            if object_ids_map and object_ids_map.get("model_version"):
+                mv_ids_set = set(object_ids_map["model_version"])
+                seen_mv_ids: set = set()
+
+                # Step 1: try the pre-generated MongoDB report (active/running model versions only)
+                for model_record in mongodb_reports.get("models", []):
+                    for version in model_record.get("model_active_versions", []):
+                        mv_id = normalize_object_id(version.get("model_version_id", ""))
+                        if mv_id in mv_ids_set:
+                            seen_mv_ids.add(mv_id)
+                            slug_tag = version.get("model_environment_tag")
+                            if slug_tag:
+                                resolved_slug_tags.append(slug_tag)
+
+                # Step 2: for IDs not in the report (stopped/archived versions), query MongoDB directly
+                unresolved = mv_ids_set - seen_mv_ids
+                if unresolved:
+                    logger.info(
+                        f"   {len(unresolved)} modelVersion ID(s) not in active-versions report; "
+                        "querying MongoDB directly for stopped/archived versions..."
+                    )
+                    try:
+                        from utils.image_usage import ImageUsageService
+
+                        service = ImageUsageService()
+                        direct_results = service.collect_model_version_slugs(list(unresolved))
+                        for mv_id, slug_tag in direct_results.items():
+                            seen_mv_ids.add(mv_id)
+                            if slug_tag:
+                                resolved_slug_tags.append(slug_tag)
+                                logger.debug(f"   Directly resolved modelVersion {mv_id} → {slug_tag}")
+                            else:
+                                logger.warning(
+                                    f"   ⚠️  Model version {mv_id} exists in MongoDB but has no slug tag "
+                                    "(the build may not have completed successfully)"
+                                )
+                        unresolved = mv_ids_set - seen_mv_ids
+                    except Exception as e:
+                        logger.warning(
+                            f"   ⚠️  Direct MongoDB lookup failed: {e}; continuing with partially resolved IDs"
+                        )
+
+                if resolved_slug_tags:
+                    logger.info(
+                        f"   Resolved {len(resolved_slug_tags)} modelVersion ID(s) → slug image tag(s) for model image matching"
+                    )
+                    existing_model = list(object_ids_map.get("model", []))
+                    object_ids_map["model"] = existing_model + resolved_slug_tags
+
+                if unresolved:
+                    logger.warning(
+                        f"   ⚠️  {len(unresolved)} modelVersion ID(s) not found in MongoDB "
+                        f"(they may not exist or never completed a build): "
+                        f"{', '.join(sorted(unresolved))}"
+                    )
+
             # Analyze image usage
             logger.info("🔍 Analyzing image usage patterns...")
-            # For deletion, merge all typed IDs to a single set since we evaluate tags after registry prefix removal
-            merged_ids = None
-            if object_ids_map:
-                merged = set()
-                merged.update(object_ids_map.get("environment", []))
-                merged.update(object_ids_map.get("environment_revision", []))
-                merged.update(object_ids_map.get("model", []))
-                merged.update(object_ids_map.get("model_version", []))
-                merged_ids = sorted(merged)
-                logger.info(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
-            analysis = deleter.analyze_image_usage(
-                image_analysis, merged_ids, object_ids_map, mongodb_reports, recent_days=args.days
-            )
+
+            # Determine what input types were provided (using ORIGINAL types, captured before
+            # resolution added a synthetic "model" key for resolved slug tags).
+            has_mv_input = "model_version" in original_input_types
+            has_other_input = bool(original_input_types - {"model_version"})
+
+            if has_mv_input and not resolved_slug_tags:
+                logger.error(
+                    "❌ modelVersion IDs were provided but none could be resolved to Docker image "
+                    "tags.  Make sure the model builds completed (metadata.builds.slug must be "
+                    "present). Aborting."
+                )
+                sys.exit(1)
+
+            if has_mv_input and not has_other_input:
+                # ── Pure model-version input ──────────────────────────────────────────────
+                # Use the dedicated path that works from resolved slug tags only.
+                # This completely bypasses image_analysis (final-report.json) so environment
+                # images can never appear in model-version deletion candidates.
+                logger.info(
+                    f"   Input is modelVersion-only: using dedicated model-version analysis "
+                    f"({len(resolved_slug_tags)} slug tags, bypassing combined image_analysis report)"
+                )
+                analysis = deleter.analyze_model_version_usage(
+                    resolved_slug_tags, object_ids_map, mongodb_reports, image_analysis=image_analysis
+                )
+
+            elif has_mv_input and has_other_input:
+                # ── Mixed input: modelVersion IDs + environment/environmentRevision IDs ───
+                # Run both analyses independently so model images are never sourced from
+                # the combined image_analysis report (which would risk false positives).
+                # The two analyses operate on disjoint candidate sets and are safe to run
+                # concurrently.
+
+                # Build the filter/map for the non-model-version part (environments only).
+                # Deliberately exclude model slug tags so they don't bleed into the
+                # image_analysis-based analysis.
+                other_env_ids: Set[str] = set()
+                other_env_ids.update(object_ids_map.get("environment", []))
+                other_env_ids.update(object_ids_map.get("environment_revision", []))
+
+                if not other_env_ids:
+                    logger.error(
+                        "❌ Mixed input provided but no environment/environmentRevision IDs could be "
+                        "resolved. Aborting."
+                    )
+                    sys.exit(1)
+
+                other_merged_ids = sorted(other_env_ids)
+                # Restrict the type map so analyze_image_usage only sees env-type IDs.
+                env_only_map = {k: v for k, v in object_ids_map.items() if k in ("environment", "environment_revision")}
+
+                logger.info(
+                    f"   Mixed input: running model-version analysis ({len(resolved_slug_tags)} slugs) "
+                    f"and environment analysis ({len(other_merged_ids)} IDs) in parallel"
+                )
+
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    mv_future = executor.submit(
+                        deleter.analyze_model_version_usage,
+                        resolved_slug_tags,
+                        object_ids_map,
+                        mongodb_reports,
+                        image_analysis,
+                    )
+                    env_future = executor.submit(
+                        deleter.analyze_image_usage,
+                        image_analysis,
+                        other_merged_ids,
+                        env_only_map,
+                        mongodb_reports,
+                        args.days,
+                    )
+                    mv_analysis = mv_future.result()
+                    env_analysis = env_future.result()
+
+                analysis = merge_workload_analyses(mv_analysis, env_analysis)
+                logger.info(
+                    f"   Merged analyses: {len(analysis.unused_images)} total deletion candidates "
+                    f"({len(mv_analysis.unused_images)} model versions + "
+                    f"{len(env_analysis.unused_images)} environment images)"
+                )
+
+            else:
+                # ── No model-version input: environment/environmentRevision/model IDs only ─
+                # Use the standard image_analysis-based path with a merged ID filter.
+                merged_ids = None
+                if object_ids_map:
+                    merged = set()
+                    merged.update(object_ids_map.get("environment", []))
+                    merged.update(object_ids_map.get("environment_revision", []))
+                    merged.update(object_ids_map.get("model", []))
+                    if merged:
+                        merged_ids = sorted(merged)
+                        logger.info(f"   Filtering by ObjectIDs: {', '.join(merged_ids)}")
+                    else:
+                        logger.error(
+                            "❌ ID filter was provided but no IDs could be resolved to Docker image tags. " "Aborting."
+                        )
+                        sys.exit(1)
+                analysis = deleter.analyze_image_usage(
+                    image_analysis, merged_ids, object_ids_map, mongodb_reports, recent_days=args.days
+                )
 
             # Generate deletion report
             deleter.generate_deletion_report(analysis, args.output)
