@@ -938,6 +938,29 @@ class IntelligentImageDeleter(BaseDeletionScript):
                 "Their freed space will be under-counted. Run with --generate-reports to refresh."
             )
 
+        # Diagnostic: show layer-sharing breakdown so the user can validate the prediction.
+        # If 0 shared layers are detected the report may be incomplete (e.g. environment
+        # images were not scanned when the report was last generated).
+        exclusive_layers = sum(1 for lid, dc in layer_delete_count.items() if layer_ref_counts.get(lid, 0) == dc)
+        shared_layers = len(layer_delete_count) - exclusive_layers
+        all_other_tags: Set[str] = set()
+        for layer_id, dc in layer_delete_count.items():
+            if layer_ref_counts.get(layer_id, 0) > dc:
+                all_other_tags.update(t for t in image_analysis[layer_id].get("tags", []) if t not in deletion_tags)
+
+        self.logger.info(
+            f"   Layer sharing (from report): "
+            f"{exclusive_layers} layers exclusive to deletion set (will be freed), "
+            f"{shared_layers} layers also referenced by {len(all_other_tags)} other image(s) in report (retained)"
+        )
+        if shared_layers == 0 and len(layer_delete_count) > 0:
+            self.logger.warning(
+                "   ⚠️  No shared layers detected in report. If these model images share base "
+                "layers with environment images, the image_analysis report may be incomplete "
+                "(environment images may not have been scanned). "
+                "Run with --generate-reports to regenerate with full coverage."
+            )
+
         self.logger.info(f"Total space that would be freed (from report): {sizeof_fmt(total_freed)}")
         return total_freed, individual_sizes
 
