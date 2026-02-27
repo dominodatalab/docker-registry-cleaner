@@ -226,13 +226,17 @@ class ImageUsageService:
         Used as a fallback when the pre-generated MongoDB report (which only covers active versions)
         does not contain the requested model version IDs.
 
+        Each model version may have multiple build attempts in metadata.builds. This method
+        joins each build to the builds collection to check its status, excludes any with
+        status "Failed", then returns the slug tag from the most recent non-failed build.
+
         Args:
             model_version_ids: List of model version ObjectId hex strings
 
         Returns:
             Dict mapping model_version_id (hex str) → slug image tag, or None if the version
-            exists but has no completed slug build.  IDs not found in MongoDB are absent from
-            the returned dict.
+            exists but has no non-failed build with a slug.  IDs not found in MongoDB, or
+            where every build has status "Failed", are absent from the returned dict.
         """
         from bson import ObjectId
 
@@ -240,20 +244,57 @@ class ImageUsageService:
         try:
             db = client[self.mongo_db]
             oids = [ObjectId(mv_id) for mv_id in model_version_ids]
-            # Use an aggregation pipeline so MongoDB resolves the nested path.
-            # Python dict traversal would crash if any intermediate key is stored
-            # as null (None) rather than a missing key.
             pipeline = [
                 {"$match": {"_id": {"$in": oids}}},
+                # Unwind so each build attempt becomes its own document.
+                # preserveNullAndEmpty=False drops model versions with no builds array.
+                {"$unwind": {"path": "$metadata.builds", "preserveNullAndEmpty": False}},
+                # Join to the builds collection to get build status.
+                # buildId is [{value: ObjectId}], so dot-notation across the array gives
+                # [ObjectId], which $lookup treats as an $in query against _id.
+                {
+                    "$lookup": {
+                        "from": "builds",
+                        "localField": "metadata.builds.buildId.value",
+                        "foreignField": "_id",
+                        "as": "build_doc",
+                    }
+                },
+                # Flatten the lookup result (0 or 1 docs).
+                # preserveNullAndEmpty=True keeps builds whose build doc is missing
+                # (status unknown → conservatively treated as non-Failed).
+                {"$unwind": {"path": "$build_doc", "preserveNullAndEmpty": True}},
+                # Exclude builds explicitly marked as Failed.
+                {"$match": {"build_doc.status": {"$ne": "Failed"}}},
+                # Group back per model version, preserving build order.
+                {
+                    "$group": {
+                        "_id": "$_id",
+                        "slug_tags": {"$push": "$metadata.builds.slug.image.tag"},
+                    }
+                },
+                # Return the last non-empty slug tag from the remaining builds.
                 {
                     "$project": {
                         "_id": 1,
-                        # metadata.builds is an array (one entry per build attempt).
-                        # Dot notation through an array returns an array, not a scalar,
-                        # so we must use $last to extract the most recent build's tag.
-                        # $ifNull then handles the case where builds is empty or the
-                        # last build has no slug (e.g. build failed before completion).
-                        "slug_tag": {"$ifNull": [{"$last": "$metadata.builds.slug.image.tag"}, None]},
+                        "slug_tag": {
+                            "$ifNull": [
+                                {
+                                    "$last": {
+                                        "$filter": {
+                                            "input": "$slug_tags",
+                                            "cond": {
+                                                "$and": [
+                                                    {"$ne": ["$$this", None]},
+                                                    {"$ne": ["$$this", ""]},
+                                                ]
+                                            },
+                                        }
+                                    }
+                                },
+                                None,
+                            ]
+                        },
                     }
                 },
             ]
@@ -261,7 +302,6 @@ class ImageUsageService:
             for doc in db.model_versions.aggregate(pipeline):
                 mv_id = str(doc["_id"])
                 tag = doc.get("slug_tag")
-                # tag is either a string or None
                 result[mv_id] = tag if isinstance(tag, str) else None
             return result
         finally:

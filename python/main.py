@@ -504,7 +504,7 @@ Safety Notes:
         if args.generate_reports and "--generate-reports" not in args.additional_args:
             args.additional_args.append("--generate-reports")
 
-        if args.apply:
+        if args.apply or "--apply" in args.additional_args:
             dry_run = False
 
     # Run the script
