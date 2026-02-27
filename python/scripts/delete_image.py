@@ -800,6 +800,19 @@ class IntelligentImageDeleter(BaseDeletionScript):
         Returns:
             WorkloadAnalysis with used_images, unused_images, sizes, and stats.
         """
+        # Filter out slug tags that no longer exist in the Docker registry.
+        # After a partial deletion run some tags will already be gone; including
+        # them would produce false "unused" candidates and misleading size estimates.
+        existing_model_tags = set(self.skopeo_client.list_tags(f"{self.repository}/model"))
+        live_slug_tags = [slug for slug in resolved_slug_tags if slug in existing_model_tags]
+        n_missing = len(resolved_slug_tags) - len(live_slug_tags)
+        if n_missing:
+            self.logger.info(
+                f"  {n_missing} of {len(resolved_slug_tags)} slug tags no longer exist in the "
+                f"Docker registry (already deleted) — excluding from candidates"
+            )
+        resolved_slug_tags = live_slug_tags
+
         # Build the complete candidate set with type prefix
         all_tags: Set[str] = {f"model:{slug}" for slug in resolved_slug_tags}
 
