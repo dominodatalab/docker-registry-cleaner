@@ -247,8 +247,8 @@ class ImageUsageService:
             pipeline = [
                 {"$match": {"_id": {"$in": oids}}},
                 # Unwind so each build attempt becomes its own document.
-                # preserveNullAndEmpty=False drops model versions with no builds array.
-                {"$unwind": {"path": "$metadata.builds", "preserveNullAndEmpty": False}},
+                # preserveNullAndEmptyArrays=False drops model versions with no builds array.
+                {"$unwind": {"path": "$metadata.builds", "preserveNullAndEmptyArrays": False}},
                 # Join to the builds collection to get build status.
                 # buildId is [{value: ObjectId}], so dot-notation across the array gives
                 # [ObjectId], which $lookup treats as an $in query against _id.
@@ -261,9 +261,9 @@ class ImageUsageService:
                     }
                 },
                 # Flatten the lookup result (0 or 1 docs).
-                # preserveNullAndEmpty=True keeps builds whose build doc is missing
+                # preserveNullAndEmptyArrays=True keeps builds whose build doc is missing
                 # (status unknown → conservatively treated as non-Failed).
-                {"$unwind": {"path": "$build_doc", "preserveNullAndEmpty": True}},
+                {"$unwind": {"path": "$build_doc", "preserveNullAndEmptyArrays": True}},
                 # Exclude builds explicitly marked as Failed.
                 {"$match": {"build_doc.status": {"$ne": "Failed"}}},
                 # Group back per model version, preserving build order.
