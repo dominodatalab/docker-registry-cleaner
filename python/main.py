@@ -24,6 +24,7 @@ def load_script_paths() -> Dict[str, Optional[str]]:
         "delete_unused_environments": "scripts/delete_unused_environments.py",
         "delete_unused_private_environments": "scripts/delete_unused_private_environments.py",
         "delete_all_unused_environments": None,  # Special: runs multiple scripts
+        "delete_old_revisions": "scripts/delete_old_revisions.py",
         "delete_unused_references": "scripts/delete_unused_references.py",
         "find_environment_usage": "scripts/find_environment_usage.py",
         "migrate_registry": "scripts/migrate_registry.py",
@@ -45,6 +46,7 @@ def get_script_descriptions() -> Dict[str, str]:
         "delete_unused_environments": "Find and optionally delete environments not used in workspaces, models, or project defaults (auto-generates reports)",
         "delete_unused_private_environments": "Find and optionally delete private environments owned by deactivated Keycloak users",
         "delete_all_unused_environments": "Run comprehensive unused environment cleanup (unused environments + deactivated user private environments)",
+        "delete_old_revisions": "Delete old environment revisions, keeping only the N most recent per environment (default: 5)",
         "delete_unused_references": "Find and optionally delete MongoDB references to non-existent Docker images",
         "find_environment_usage": "Find where a specific environment ID is used (projects, jobs, workspaces, runs, workloads)",
         "migrate_registry": "Migrate Docker images from one registry to another using skopeo copy, with optional MongoDB metadata update",
