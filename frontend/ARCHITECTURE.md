@@ -19,15 +19,15 @@ The sidecar architecture was chosen to solve a critical constraint:
 ```
 docker-registry-cleaner-0 Pod
 ├── docker-registry-cleaner (main container)
-│   ├── Has CLI installed
+│   ├── Runs FastAPI backend on localhost:8081 (not externally exposed)
+│   ├── Has CLI installed; API executes CLI commands via subprocess
 │   ├── Mounts /data/reports (read-write)
-│   ├── Generates reports
-│   └── Executes cleanup operations
+│   └── Generates reports
 │
 └── frontend (sidecar container)
-    ├── Flask web application
+    ├── Flask web application on port 8080
     ├── Mounts /app/reports (read-only from same PVC)
-    ├── Serves web UI
+    ├── Serves web UI and proxies operation requests to localhost:8081
     └── Displays reports
 ```
 
@@ -61,24 +61,23 @@ The frontend container does **not** execute `docker-registry-cleaner` commands d
 
 ### How Commands Are Run
 
-The frontend provides **kubectl commands** that users copy and paste:
+The frontend proxies operation requests to the FastAPI backend (`python/api.py`) running on `localhost:8081` in the main container. The browser cannot reach port 8081 directly — the Flask app acts as an intermediary.
 
-```bash
-# Example command shown in UI:
-kubectl exec -it docker-registry-cleaner-0 -n domino-platform -- docker-registry-cleaner health_check
+```
+Browser → Flask (port 8080) → FastAPI backend (localhost:8081) → CLI subprocess
 ```
 
-Users run these commands in their own terminal, which executes them in the main container where the CLI is available.
+The backend runs CLI commands as subprocesses and streams output back. Destructive operations (those requiring `--apply`) are blocked at the API level.
 
 ### User Workflow
 
 1. User browses reports in the web UI
 2. User goes to Operations page
-3. User clicks "Copy" button for desired command
-4. kubectl command is copied to clipboard
-5. User pastes and runs command in their terminal
-6. Command executes in the main container
-7. Results are visible via `kubectl logs` or in generated reports
+3. User selects and submits an operation
+4. Flask proxies the request to the FastAPI backend on localhost:8081
+5. Backend runs the CLI command as a subprocess and tracks the job
+6. User sees real-time output in the browser
+7. For destructive operations: user must run via `kubectl exec` directly
 
 ## Network Access
 
@@ -186,14 +185,13 @@ The StatefulSet is designed for single-replica operation:
 - Complex error handling
 - Security concerns (frontend can exec into main container)
 
-### ✅ Sidecar with kubectl Copy-Paste
+### ✅ Sidecar with Backend API
 
 **Chosen because:**
-- Simplest implementation
 - No PVC conflicts
-- Clean separation of concerns
-- Secure (no elevated permissions needed)
-- Users maintain full control over command execution
+- Clean separation of concerns: Flask handles UI, FastAPI handles execution
+- Secure (port 8081 is not externally exposed; destructive ops blocked at API level)
+- Enables real-time command output in the browser
 - Follows principle of least privilege
 
 ## Security
@@ -216,24 +214,12 @@ The StatefulSet is designed for single-replica operation:
 
 Potential improvements to the architecture:
 
-1. **API-based Command Execution**
-   - Main container exposes HTTP API
-   - Frontend calls API instead of providing kubectl commands
-   - Would enable real-time command execution via UI
-
-2. **Shared Unix Socket**
-   - Main container listens on Unix socket
-   - Frontend communicates via socket
-   - Faster than HTTP, no network exposure
-
-3. **Kubernetes Job Creation**
-   - Frontend creates Kubernetes Jobs to run commands
-   - Jobs use same ServiceAccount and volumes
-   - Better tracking and history
-
-4. **Authentication Layer**
+1. **Authentication Layer**
    - Add OAuth/OIDC to frontend
    - Integrate with Domino's auth system
    - Role-based access control
 
-Currently, the copy-paste approach is the simplest and most maintainable solution given the constraints.
+2. **Kubernetes Job Creation**
+   - Frontend creates Kubernetes Jobs to run commands
+   - Jobs use same ServiceAccount and volumes
+   - Better tracking and history across restarts (currently job history is in-memory)

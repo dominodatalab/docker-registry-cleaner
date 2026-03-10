@@ -6,7 +6,8 @@ Docker Registry Cleaner includes a Flask-based web interface for viewing and ana
 
 - **Report Browser**: Browse all generated JSON reports with formatted summaries, data tables, and raw JSON view
 - **Report Downloads**: Download any report as JSON
-- **Read-Only Design**: No command execution from the web UI — operations must be run via `kubectl exec`
+- **Operations Dashboard**: Run analysis and dry-run commands from the browser via the backend API
+- **Safety**: Destructive operations (those requiring `--apply`) must still be run via `kubectl exec`
 
 ## Accessing the Web UI
 
@@ -73,7 +74,7 @@ python app.py
 
 ## Security
 
-The UI is intentionally read-only. There is no built-in authentication — it relies on Kubernetes RBAC and network access controls. For production deployments, restrict access via NetworkPolicies or add an authenticating proxy.
+The UI does not implement authentication — it relies on Kubernetes RBAC and network access controls. Destructive operations are blocked at the API level. For production deployments, restrict access via NetworkPolicies or add an authenticating proxy.
 
 ## Troubleshooting
 

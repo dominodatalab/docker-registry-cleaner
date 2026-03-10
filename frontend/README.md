@@ -1,6 +1,6 @@
 # Docker Registry Cleaner Web UI
 
-A Flask-based web interface for the Docker Registry Cleaner tool, providing a **read-only** interface for viewing and analyzing reports.
+A Flask-based web interface for the Docker Registry Cleaner tool, for viewing reports and running analysis and dry-run operations via the backend API.
 
 ## Features
 
@@ -12,11 +12,11 @@ A Flask-based web interface for the Docker Registry Cleaner tool, providing a **
   - Download reports as JSON
 
 - **Security-First Design**:
-  - **Read-only interface** - no command execution from web UI
+  - Analysis and dry-run commands only — destructive operations blocked at the API level
   - No exposure of kubectl commands or operational details
   - Minimal attack surface
-  - Runs with read-only volume mounts
-  - Operations must be run via `kubectl exec` by authorized users
+  - Runs with read-only volume mounts for reports
+  - Destructive operations must be run via `kubectl exec` by authorized users
 
 - **User-Friendly Interface**:
   - Modern, responsive design
@@ -26,19 +26,17 @@ A Flask-based web interface for the Docker Registry Cleaner tool, providing a **
 
 ## Security Rationale
 
-The web UI is **intentionally read-only** to prevent:
-- Advertising destructive operations to unauthorized users
-- Exposing kubectl commands that could be misused
+The web UI blocks destructive operations to prevent:
 - Accidental execution of cleanup operations
-- Security information disclosure
+- Unauthorized use by users without `kubectl exec` access
 
-Operations should be run via `kubectl exec` with proper RBAC authorization.
+Analysis and dry-run commands are allowed via the backend API. Destructive operations (those requiring `--apply`) must be run via `kubectl exec` with proper RBAC authorization.
 
 ## Architecture
 
 ```
 frontend/
-├── app.py                 # Flask application (read-only)
+├── app.py                 # Flask application (proxies to backend API on localhost:8081)
 ├── requirements.txt       # Python dependencies
 ├── Dockerfile            # Container image definition
 ├── README.md             # This file

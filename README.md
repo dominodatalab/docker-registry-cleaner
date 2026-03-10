@@ -47,7 +47,7 @@ Commands shown below assume you're running in the Helm-deployed pod. For local d
 
 ## Web UI
 
-Docker Registry Cleaner includes a web interface for browsing and analyzing reports. It is read-only — destructive operations must still be run via `kubectl exec`.
+Docker Registry Cleaner includes a web interface for browsing reports and running analysis operations. Destructive operations (those requiring `--apply`) must still be run via `kubectl exec`.
 
 ```bash
 kubectl port-forward -n domino-platform svc/docker-registry-cleaner-frontend 8080:8080
