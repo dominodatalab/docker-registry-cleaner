@@ -415,7 +415,14 @@ class OldRevisionCleaner(BaseDeletionScript):
 
         try:
             self.logger.info("Analyzing Docker images to calculate freed space (accounting for shared layers)...")
+            self.logger.info("Analyzing both environment and model images so shared layers are counted correctly.")
             analyzer = ImageAnalyzer(self.registry_url, self.repository)
+
+            # Must analyze ALL image types so that ref_counts reflect the full registry.
+            # Analyzing only 'environment' would make layers shared with 'model' images
+            # appear to have lower ref_counts and overestimate freed space.
+            analyzer.analyze_image("environment")
+            analyzer.analyze_image("model")
 
             # Set per-revision size (what would be freed by deleting just that one image)
             for rev in old_revisions:
