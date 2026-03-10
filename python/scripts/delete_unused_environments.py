@@ -601,21 +601,6 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
 
         return unused_env_list
 
-    def list_tags_for_image(self, image: str) -> List[str]:
-        """List tags for a specific image using skopeo"""
-        ref = f"docker://{self.registry_url}/{self.repository}/{image}"
-        output = self.skopeo_client.run_skopeo_command("list-tags", [ref])
-
-        if not output:
-            return []
-
-        try:
-            payload = json.loads(output)
-            return payload.get("Tags", []) or []
-        except json.JSONDecodeError:
-            self.logger.error(f"Failed to parse list-tags output for {ref}")
-            return []
-
     def find_matching_tags(self, unused_envs: List[UnusedEnvInfo]) -> List[UnusedEnvInfo]:
         """Find Docker tags that contain unused environment ObjectIDs"""
         unused_ids_dict = {env.object_id: env.env_name for env in unused_envs}
@@ -624,7 +609,7 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
 
         for image_type in self.image_types:
             self.logger.info(f"Scanning {image_type} images for unused environment ObjectIDs...")
-            tags = self.list_tags_for_image(image_type)
+            tags = self.skopeo_client.list_tags(f"{self.repository}/{image_type}")
             self.logger.info(f"  Found {len(tags)} tags in {image_type}")
 
             for tag in tags:

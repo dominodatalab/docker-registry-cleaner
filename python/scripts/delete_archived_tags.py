@@ -592,21 +592,6 @@ class ArchivedTagsFinder(BaseDeletionScript):
         finally:
             mongo_client.close()
 
-    def list_tags_for_image(self, image: str) -> List[str]:
-        """List tags for a specific image using skopeo"""
-        ref = f"docker://{self.registry_url}/{self.repository}/{image}"
-        output = self.skopeo_client.run_skopeo_command("list-tags", [ref])
-
-        if not output:
-            return []
-
-        try:
-            payload = json.loads(output)
-            return payload.get("Tags", []) or []
-        except json.JSONDecodeError:
-            self.logger.error(f"Failed to parse list-tags output for {ref}")
-            return []
-
     def find_matching_tags(
         self,
         archived_ids: List[str],
@@ -630,7 +615,7 @@ class ArchivedTagsFinder(BaseDeletionScript):
 
         for image_type in self.image_types:
             self.logger.info(f"Scanning {image_type} images for archived ObjectIDs...")
-            tags = self.list_tags_for_image(image_type)
+            tags = self.skopeo_client.list_tags(f"{self.repository}/{image_type}")
             self.logger.info(f"  Found {len(tags)} tags in {image_type}")
 
             for tag in tags:
