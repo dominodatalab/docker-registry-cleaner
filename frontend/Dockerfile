@@ -3,7 +3,7 @@
 # ------------------------------------------------
 
 # 1) Install frontend dependencies into a venv
-FROM cgr.dev/dominodatalab.com/python:3.14.2-dev AS dev
+FROM cgr.dev/dominodatalab.com/python:3.14.3-dev AS dev
 WORKDIR /frontend
 RUN python -m venv venv
 ENV PATH="/frontend/venv/bin:${PATH}"
@@ -19,7 +19,7 @@ deps = data['project']['optional-dependencies']['frontend']; \
 subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-cache-dir'] + deps, check=True)"
 
 # 2) Final runtime: minimal Python + app
-FROM cgr.dev/dominodatalab.com/python:3.14.2
+FROM cgr.dev/dominodatalab.com/python:3.14.3
 WORKDIR /frontend
 
 # Copy venv from dev stage, owned by nonroot
