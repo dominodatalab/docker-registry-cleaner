@@ -205,6 +205,19 @@ class OldRevisionCleaner(BaseDeletionScript):
                         )
                     )
 
+            self.logger.info(f"Found {len(old_revisions)} old revision(s) in MongoDB eligible for deletion")
+
+            # Filter to only revisions whose Docker image actually exists in the registry.
+            # Revisions may reference images that were already deleted or never pushed.
+            self.logger.info("Checking registry for existing tags...")
+            existing_tags = set(self.skopeo_client.list_tags(f"{self.repository}/environment"))
+            before = len(old_revisions)
+            old_revisions = [r for r in old_revisions if r.docker_tag in existing_tags]
+            filtered = before - len(old_revisions)
+            if filtered:
+                self.logger.info(
+                    f"Filtered out {filtered} revision(s) whose Docker image no longer exists in the registry"
+                )
             self.logger.info(f"Found {len(old_revisions)} old revision(s) eligible for deletion")
             return old_revisions
 
