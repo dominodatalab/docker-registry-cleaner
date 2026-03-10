@@ -32,7 +32,7 @@ kubectl exec -it docker-registry-cleaner-0 -n domino-platform -- docker-registry
 ```bash
 helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
   --namespace domino-platform \
-  --set image.tag=v0.3.2 \
+  --set image.tag=v0.3.3 \
   --set resources.requests.memory=512Mi \
   --set persistence.size=20Gi
 ```
@@ -54,7 +54,7 @@ helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
 ```bash
 cat > custom-values.yaml <<EOF
 image:
-  tag: v0.3.2
+  tag: v0.3.3
 resources:
   requests:
     memory: 512Mi
@@ -78,7 +78,7 @@ helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
 # Upgrade to a new version
 helm upgrade docker-registry-cleaner ./charts/docker-registry-cleaner \
   --namespace domino-platform \
-  --set image.tag=v0.3.3
+  --set image.tag=v0.3.4
 
 # Upgrade with custom values
 helm upgrade docker-registry-cleaner ./charts/docker-registry-cleaner \
@@ -101,7 +101,7 @@ The following table lists the configurable parameters of the Docker Registry Cle
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `image.repository` | Container image repository | `quay.io/domino/docker-registry-cleaner` |
-| `image.tag` | Container image tag | `v0.3.2` |
+| `image.tag` | Container image tag | `v0.3.3` |
 | `image.pullPolicy` | Image pull policy | `Always` |
 | `imagePullSecrets` | Image pull secrets | `[{name: domino-quay-repos}]` |
 
