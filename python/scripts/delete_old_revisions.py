@@ -61,6 +61,7 @@ if str(_parent_dir) not in sys.path:
 
 from utils.config_manager import config_manager
 from utils.deletion_base import BaseDeletionScript
+from utils.image_data_analysis import ImageAnalyzer
 from utils.image_usage import ImageUsageService
 from utils.logging_utils import get_logger, setup_logging
 from utils.mongo_utils import get_mongo_client
@@ -83,8 +84,6 @@ class OldRevisionInfo:
     full_image: str
     image_type: str = "environment"
     size_bytes: int = 0
-    revision_rank: int = 0  # 0 = oldest, ascending
-    total_revisions: int = 0
 
 
 class OldRevisionCleaner(BaseDeletionScript):
@@ -184,7 +183,7 @@ class OldRevisionCleaner(BaseDeletionScript):
                 to_delete = revisions[: total - self.keep_revisions]
                 env_name = env_names.get(env_id, "")
 
-                for rank, rev in enumerate(to_delete):
+                for rev in to_delete:
                     rev_id = str(rev["_id"])
                     docker_tag = rev.get("metadata", {}).get("dockerImageName", {}).get("tag", "")
 
@@ -200,8 +199,6 @@ class OldRevisionCleaner(BaseDeletionScript):
                             environment_name=env_name,
                             docker_tag=docker_tag,
                             full_image=full_image,
-                            revision_rank=rank,
-                            total_revisions=total,
                         )
                     )
 
@@ -404,11 +401,45 @@ class OldRevisionCleaner(BaseDeletionScript):
 
         return deletion_results
 
-    def generate_report(self, old_revisions: List[OldRevisionInfo]) -> Dict:
+    def calculate_freed_space(self, old_revisions: List[OldRevisionInfo]) -> int:
+        """Calculate space that would be freed by deleting old revisions.
+
+        Uses ImageAnalyzer to account for shared layers correctly.
+        Layers shared with kept revisions or other image types are not counted.
+        Per-revision size_bytes reflects what would be freed by deleting only that
+        one revision (often 0 when layers are shared), while the returned total
+        reflects what would be freed by deleting all candidates together.
+        """
+        if not old_revisions:
+            return 0
+
+        try:
+            self.logger.info("Analyzing Docker images to calculate freed space (accounting for shared layers)...")
+            analyzer = ImageAnalyzer(self.registry_url, self.repository)
+
+            # Set per-revision size (what would be freed by deleting just that one image)
+            for rev in old_revisions:
+                image_id = f"environment:{rev.docker_tag}"
+                rev.size_bytes = analyzer.freed_space_if_deleted([image_id])
+
+            # Total freed if all candidates deleted together (deduplicated)
+            unique_image_ids = list(dict.fromkeys(f"environment:{r.docker_tag}" for r in old_revisions))
+            total_freed = analyzer.freed_space_if_deleted(unique_image_ids)
+            self.logger.info(f"Total space that would be freed: {total_freed / (1024 ** 3):.2f} GB")
+            return total_freed
+
+        except Exception as e:
+            self.logger.error(f"Error calculating freed space: {e}")
+            return 0
+
+    def generate_report(self, old_revisions: List[OldRevisionInfo], total_freed_bytes: int = 0) -> Dict:
         """Generate a report of old revisions found.
 
         Args:
             old_revisions: Old revisions identified for deletion.
+            total_freed_bytes: Combined freed space if all revisions deleted together
+                (calculated by calculate_freed_space; accounts for shared layers across
+                the full candidate set, so may differ from summing per-revision sizes).
 
         Returns:
             Report dict with summary and per-environment details.
@@ -418,14 +449,12 @@ class OldRevisionCleaner(BaseDeletionScript):
         for rev in old_revisions:
             by_env.setdefault(rev.environment_id, []).append(rev)
 
-        total_size = sum(r.size_bytes for r in old_revisions)
-
         summary = {
             "total_old_revisions": len(old_revisions),
             "environments_affected": len(by_env),
             "keep_revisions": self.keep_revisions,
-            "total_size_bytes": total_size,
-            "total_size_gb": round(total_size / (1024**3), 2),
+            "total_size_bytes": total_freed_bytes,
+            "total_size_gb": round(total_freed_bytes / (1024**3), 2),
         }
 
         grouped: Dict[str, list] = {}
@@ -436,8 +465,6 @@ class OldRevisionCleaner(BaseDeletionScript):
                     "environment_name": r.environment_name,
                     "docker_tag": r.docker_tag,
                     "full_image": r.full_image,
-                    "revision_rank": r.revision_rank,
-                    "total_revisions": r.total_revisions,
                     "size_bytes": r.size_bytes,
                 }
                 for r in revisions
@@ -608,8 +635,11 @@ def main() -> None:
             logger.info("No deletable old revisions after build-chain filtering - nothing to do.")
             sys.exit(0)
 
+        # Calculate freed space (populates per-revision size_bytes and returns combined total)
+        total_freed = cleaner.calculate_freed_space(old_revisions)
+
         # Generate and save report
-        report = cleaner.generate_report(old_revisions)
+        report = cleaner.generate_report(old_revisions, total_freed)
         saved_path = save_json(output_file, report, timestamp=True)
         logger.info(f"Report saved to: {saved_path}")
 
