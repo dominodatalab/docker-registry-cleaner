@@ -5,13 +5,13 @@
 {% block extra_css %}
 <style>
     .json-viewer {
-        background: #1e1e1e;
-        color: #d4d4d4;
+        background: #111;
+        color: #e5e7eb;
         padding: 20px;
         border-radius: 4px;
         overflow-x: auto;
-        font-family: 'Courier New', monospace;
-        font-size: 14px;
+        font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
+        font-size: 13px;
         line-height: 1.5;
     }
     .json-viewer pre {
@@ -21,45 +21,76 @@
     }
     .stats-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 20px;
-        margin-bottom: 30px;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 16px;
+        margin-bottom: 24px;
     }
     .stat-card {
-        background: #f8f9fa;
+        background: white;
+        border: 1px solid #e5e7eb;
         padding: 20px;
-        border-radius: 8px;
+        border-radius: 6px;
         text-align: center;
     }
     .stat-value {
-        font-size: 2em;
-        font-weight: bold;
-        color: #0066cc;
-        margin: 10px 0;
+        font-size: 1.9em;
+        font-weight: 700;
+        color: #111;
+        margin: 8px 0 4px;
+        letter-spacing: -0.02em;
+    }
+    .stat-value.accent {
+        color: #FF6800;
     }
     .stat-label {
-        font-size: 0.9em;
-        color: #666;
+        font-size: 0.8em;
+        color: #888;
         text-transform: uppercase;
-        letter-spacing: 1px;
+        letter-spacing: 0.06em;
+    }
+    .dry-run-badge {
+        display: inline-block;
+        background: #fef3c7;
+        color: #92400e;
+        border: 1px solid #fcd34d;
+        padding: 4px 12px;
+        border-radius: 4px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        margin-bottom: 16px;
+    }
+    .apply-badge {
+        display: inline-block;
+        background: #fee2e2;
+        color: #991b1b;
+        border: 1px solid #fca5a5;
+        padding: 4px 12px;
+        border-radius: 4px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        margin-bottom: 16px;
     }
     .tabs {
         display: flex;
-        border-bottom: 2px solid #e0e0e0;
+        border-bottom: 2px solid #e5e7eb;
         margin-bottom: 20px;
     }
     .tab {
-        padding: 12px 24px;
+        padding: 10px 20px;
         cursor: pointer;
         border: none;
         background: none;
-        font-size: 16px;
-        color: #666;
-        transition: all 0.3s;
+        font-size: 0.95rem;
+        color: #888;
+        transition: color 0.2s;
+        font-weight: 500;
+    }
+    .tab:hover {
+        color: #333;
     }
     .tab.active {
-        color: #0066cc;
-        border-bottom: 3px solid #0066cc;
+        color: #FF6800;
+        border-bottom: 2px solid #FF6800;
         margin-bottom: -2px;
     }
     .tab-content {
@@ -67,6 +98,40 @@
     }
     .tab-content.active {
         display: block;
+    }
+    .section-title {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #666;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin: 24px 0 12px;
+    }
+    .breakdown-grid {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 20px;
+    }
+    .breakdown-item {
+        background: #f9fafb;
+        border: 1px solid #e5e7eb;
+        border-radius: 4px;
+        padding: 8px 16px;
+        font-size: 0.9rem;
+    }
+    .breakdown-item strong {
+        color: #111;
+    }
+    .breakdown-label {
+        color: #888;
+        font-size: 0.8rem;
+        margin-left: 4px;
+    }
+    .no-summary {
+        padding: 24px;
+        color: #888;
+        font-style: italic;
     }
 </style>
 {% endblock %}
@@ -78,8 +143,8 @@
 </div>
 
 <div class="tabs">
-    <button class="tab active" onclick="switchTab('summary')">Summary</button>
-    <button class="tab" onclick="switchTab('raw')">Raw JSON</button>
+    <button class="tab active" onclick="switchTab('summary', event)">Summary</button>
+    <button class="tab" onclick="switchTab('raw', event)">Raw JSON</button>
 </div>
 
 <div id="summary-tab" class="tab-content active">
@@ -97,244 +162,271 @@
 <script>
 const reportData = {{ report_data | safe }};
 const reportType = "{{ report_type }}";
-const filename = "{{ filename }}";
 
-function switchTab(tabName) {
-    // Update tab buttons
-    document.querySelectorAll('.tab').forEach(tab => {
-        tab.classList.remove('active');
-    });
+function switchTab(tabName, event) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     event.target.classList.add('active');
-
-    // Update tab content
-    document.querySelectorAll('.tab-content').forEach(content => {
-        content.classList.remove('active');
-    });
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
     document.getElementById(tabName + '-tab').classList.add('active');
 }
 
 function formatBytes(bytes) {
-    if (bytes === 0) return '0 B';
+    if (!bytes || bytes === 0) return '0 B';
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-function renderSummary() {
-    const summaryDiv = document.getElementById('report-summary');
-    let html = '';
-
-    if (reportType === 'size_report') {
-        html = renderSizeReport(reportData);
-    } else if (reportType === 'mongodb_usage') {
-        html = renderMongoDBUsageReport(reportData);
-    } else if (reportType === 'archived_tags') {
-        html = renderArchivedTagsReport(reportData);
-    } else if (reportType === 'unused_environments') {
-        html = renderUnusedEnvironmentsReport(reportData);
-    } else if (reportType === 'deletion_results') {
-        html = renderDeletionResultsReport(reportData);
-    } else if (reportType === 'final_report') {
-        html = renderFinalReport(reportData);
-    } else {
-        html = renderGenericReport(reportData);
-    }
-
-    summaryDiv.innerHTML = html;
+function formatGb(gb) {
+    if (!gb && gb !== 0) return '—';
+    if (gb >= 1) return gb.toFixed(2) + ' GB';
+    return (gb * 1024).toFixed(1) + ' MB';
 }
 
-function renderSizeReport(data) {
+function stat(label, value, accent) {
+    const cls = accent ? 'stat-value accent' : 'stat-value';
+    return `<div class="stat-card">
+        <div class="stat-label">${label}</div>
+        <div class="${cls}">${value ?? '—'}</div>
+    </div>`;
+}
+
+function table(headers, rows) {
+    if (!rows || !rows.length) return '<p class="no-summary">No items to display.</p>';
+    const ths = headers.map(h => `<th>${h}</th>`).join('');
+    const trs = rows.map(cells =>
+        '<tr>' + cells.map(c => `<td>${c ?? '—'}</td>`).join('') + '</tr>'
+    ).join('');
+    return `<div class="table-wrapper"><table class="data-table">
+        <thead><tr>${ths}</tr></thead>
+        <tbody>${trs}</tbody>
+    </table></div>`;
+}
+
+function sectionTitle(text) {
+    return `<div class="section-title">${text}</div>`;
+}
+
+// ── Report renderers ────────────────────────────────────────────────────────
+
+function renderUnusedEnvironmentsReport(data) {
+    const s = data.summary || {};
     let html = '<div class="stats-grid">';
-
-    if (data.total_size_bytes) {
-        html += `<div class="stat-card">
-            <div class="stat-label">Total Size</div>
-            <div class="stat-value">${formatBytes(data.total_size_bytes)}</div>
-        </div>`;
-    }
-
-    if (data.total_images) {
-        html += `<div class="stat-card">
-            <div class="stat-label">Total Images</div>
-            <div class="stat-value">${data.total_images}</div>
-        </div>`;
-    }
-
+    html += stat('Unused Environment IDs', s.total_unused_environment_ids);
+    html += stat('Matching Tags', s.total_matching_tags);
+    html += stat('Space Reclaimable', formatGb(s.freed_space_gb), true);
     html += '</div>';
 
-    // Show top items
-    if (data.images || data.users) {
-        html += '<h3>Top Items</h3><div class="table-wrapper"><table class="data-table">';
-        html += '<thead><tr><th>Name</th><th>Size</th><th>Count</th></tr></thead><tbody>';
-
-        const items = data.images || data.users || [];
-        items.slice(0, 20).forEach(item => {
-            html += `<tr>
-                <td>${item.name || item.user || item.image_name || 'Unknown'}</td>
-                <td>${formatBytes(item.size_bytes || item.total_size_bytes || 0)}</td>
-                <td>${item.count || item.image_count || '-'}</td>
-            </tr>`;
+    // Flatten grouped_by_object_id into rows
+    const grouped = data.grouped_by_object_id || {};
+    const rows = [];
+    Object.values(grouped).forEach(tags => {
+        (Array.isArray(tags) ? tags : [tags]).forEach(item => {
+            rows.push([
+                item.env_name || item.object_id || '—',
+                item.image_type || '—',
+                item.tag || '—',
+                formatBytes(item.size_bytes),
+                item.usage_summary || '—',
+            ]);
         });
+    });
 
-        html += '</tbody></table></div>';
+    if (rows.length) {
+        html += sectionTitle('Unused Environments');
+        html += table(['Name / Object ID', 'Type', 'Tag', 'Size', 'Usage'], rows);
+    }
+    return html;
+}
+
+function renderArchivedTagsReport(data) {
+    const s = data.summary || {};
+    let html = '<div class="stats-grid">';
+    html += stat('Archived Object IDs', s.total_archived_object_ids);
+    html += stat('Matching Tags', s.total_matching_tags);
+    html += stat('Space Reclaimable', formatGb(s.freed_space_gb), true);
+    html += '</div>';
+
+    // Breakdown by image type
+    if (s.tags_by_image_type && Object.keys(s.tags_by_image_type).length) {
+        html += sectionTitle('By Image Type');
+        html += '<div class="breakdown-grid">';
+        Object.entries(s.tags_by_image_type).forEach(([type, count]) => {
+            html += `<div class="breakdown-item"><strong>${count}</strong><span class="breakdown-label">${type}</span></div>`;
+        });
+        html += '</div>';
     }
 
+    // Top archived tags table
+    const items = data.archived_tags || [];
+    if (items.length) {
+        html += sectionTitle(`Archived Tags (${items.length} total)`);
+        const rows = items.slice(0, 100).map(item => [
+            item.image_type || '—',
+            item.tag || '—',
+            formatBytes(item.size_bytes),
+            item.usage_summary || '—',
+        ]);
+        html += table(['Type', 'Tag', 'Size', 'Usage'], rows);
+    }
     return html;
 }
 
 function renderMongoDBUsageReport(data) {
     let html = '<div class="stats-grid">';
-
-    if (data.summary) {
-        const s = data.summary;
-        if (s.total_environments !== undefined) {
-            html += `<div class="stat-card">
-                <div class="stat-label">Total Environments</div>
-                <div class="stat-value">${s.total_environments}</div>
-            </div>`;
-        }
-        if (s.total_models !== undefined) {
-            html += `<div class="stat-card">
-                <div class="stat-label">Total Models</div>
-                <div class="stat-value">${s.total_models}</div>
-            </div>`;
-        }
-        if (s.total_runs !== undefined) {
-            html += `<div class="stat-card">
-                <div class="stat-label">Total Runs</div>
-                <div class="stat-value">${s.total_runs}</div>
-            </div>`;
-        }
-    }
-
+    html += stat('Runs', (data.runs || []).length);
+    html += stat('Workspaces', (data.workspaces || []).length);
+    html += stat('Models', (data.models || []).length);
+    html += stat('Scheduler Jobs', (data.scheduler_jobs || []).length);
+    html += stat('App Versions', (data.app_versions || []).length);
     html += '</div>';
+
+    if ((data.runs || []).length) {
+        html += sectionTitle('Recent Runs (top 50)');
+        const rows = (data.runs || []).slice(0, 50).map(r => [
+            r.project_name || r.project_id || '—',
+            r.project_owner_name || r.project_owner_id || '—',
+            r.status || '—',
+            r.environment_docker_tag || '—',
+        ]);
+        html += table(['Project', 'Owner', 'Status', 'Environment Tag'], rows);
+    }
     return html;
 }
 
-function renderArchivedTagsReport(data) {
+function renderSizeReport(data) {
+    const s = data.summary || {};
     let html = '<div class="stats-grid">';
 
-    if (data.summary) {
-        const s = data.summary;
-        if (s.total_archived !== undefined) {
-            html += `<div class="stat-card">
-                <div class="stat-label">Total Archived</div>
-                <div class="stat-value">${s.total_archived}</div>
-            </div>`;
+    if (data.users !== undefined) {
+        // user-size report
+        html += stat('Users', s.total_users);
+        html += stat('Images', s.total_images);
+        html += stat('Total Size', formatBytes(s.total_size_bytes));
+        html += stat('Max Reclaimable', formatBytes(s.total_freed_if_all_deleted_bytes), true);
+        html += '</div>';
+
+        if ((data.users || []).length) {
+            html += sectionTitle('Users by Size');
+            const rows = (data.users || []).map(u => [
+                u.user_name || u.login_id || u.user_id || '—',
+                u.image_count,
+                formatBytes(u.total_size_bytes),
+                formatBytes(u.freed_space_bytes),
+            ]);
+            html += table(['User', 'Images', 'Total Size', 'Reclaimable'], rows);
         }
-        if (s.space_to_free_bytes !== undefined) {
-            html += `<div class="stat-card">
-                <div class="stat-label">Space to Free</div>
-                <div class="stat-value">${formatBytes(s.space_to_free_bytes)}</div>
-            </div>`;
-        }
-    }
+    } else {
+        // image-size report
+        html += stat('Images', s.total_images);
+        html += stat('Total Size', formatBytes(s.total_size_bytes));
+        html += stat('Max Reclaimable', formatBytes(s.total_freed_if_all_deleted_bytes), true);
+        html += '</div>';
 
-    html += '</div>';
-
-    if (data.archived_items) {
-        html += '<h3>Archived Items</h3><div class="table-wrapper"><table class="data-table">';
-        html += '<thead><tr><th>Type</th><th>Tag</th><th>Size</th></tr></thead><tbody>';
-
-        data.archived_items.slice(0, 50).forEach(item => {
-            html += `<tr>
-                <td>${item.image_type || 'Unknown'}</td>
-                <td>${item.tag || item.image_tag || '-'}</td>
-                <td>${formatBytes(item.size_bytes || 0)}</td>
-            </tr>`;
-        });
-
-        html += '</tbody></table></div>';
-    }
-
-    return html;
-}
-
-function renderUnusedEnvironmentsReport(data) {
-    let html = '<div class="stats-grid">';
-
-    if (data.summary) {
-        const s = data.summary;
-        if (s.total_unused !== undefined) {
-            html += `<div class="stat-card">
-                <div class="stat-label">Total Unused</div>
-                <div class="stat-value">${s.total_unused}</div>
-            </div>`;
+        if ((data.images || []).length) {
+            html += sectionTitle('Images by Size');
+            const rows = (data.images || []).slice(0, 100).map(img => [
+                img.image_type || '—',
+                img.user_name || img.owner_login_id || '—',
+                img.tag || '—',
+                formatBytes(img.total_size_bytes),
+                formatBytes(img.freed_space_bytes),
+            ]);
+            html += table(['Type', 'Owner', 'Tag', 'Total Size', 'Reclaimable'], rows);
         }
     }
-
-    html += '</div>';
     return html;
 }
 
 function renderDeletionResultsReport(data) {
-    let html = '<div class="stats-grid">';
+    const s = data.summary || {};
+    let html = '';
 
-    if (data.deleted_count !== undefined) {
-        html += `<div class="stat-card">
-            <div class="stat-label">Deleted</div>
-            <div class="stat-value">${data.deleted_count}</div>
-        </div>`;
+    if (data.dry_run === true) {
+        html += '<div class="dry-run-badge">Dry-run — no changes made</div>';
+    } else if (data.dry_run === false) {
+        html += '<div class="apply-badge">Apply — changes were made</div>';
     }
 
-    if (data.failed_count !== undefined) {
-        html += `<div class="stat-card">
-            <div class="stat-label">Failed</div>
-            <div class="stat-value">${data.failed_count}</div>
-        </div>`;
-    }
-
-    if (data.freed_space_bytes !== undefined) {
-        html += `<div class="stat-card">
-            <div class="stat-label">Space Freed</div>
-            <div class="stat-value">${formatBytes(data.freed_space_bytes)}</div>
-        </div>`;
-    }
-
+    html += '<div class="stats-grid">';
+    html += stat('Deleted', s.successful_deletions);
+    html += stat('Failed', s.failed_deletions);
+    html += stat('Used (skipped)', s.used_images);
+    html += stat('Space Freed', formatBytes(s.total_size_deleted_bytes), true);
     html += '</div>';
+
+    if ((data.deleted_images || []).length) {
+        html += sectionTitle('Deleted Images');
+        const rows = (data.deleted_images || []).map(img => [
+            img.tag || '—',
+            formatBytes(img.size_bytes),
+            img.status || '—',
+        ]);
+        html += table(['Tag', 'Size', 'Status'], rows);
+    }
+
+    if ((data.failed_deletions || []).length) {
+        html += sectionTitle('Failed Deletions');
+        const rows = (data.failed_deletions || []).map(img => [
+            img.tag || '—',
+            formatBytes(img.size_bytes),
+        ]);
+        html += table(['Tag', 'Size'], rows);
+    }
     return html;
 }
 
 function renderFinalReport(data) {
+    const s = data.summary || data;
     let html = '<div class="stats-grid">';
-
-    if (data.total_images !== undefined) {
-        html += `<div class="stat-card">
-            <div class="stat-label">Total Images</div>
-            <div class="stat-value">${data.total_images}</div>
-        </div>`;
-    }
-
-    if (data.total_size_bytes !== undefined) {
-        html += `<div class="stat-card">
-            <div class="stat-label">Total Size</div>
-            <div class="stat-value">${formatBytes(data.total_size_bytes)}</div>
-        </div>`;
-    }
-
-    if (data.total_layers !== undefined) {
-        html += `<div class="stat-card">
-            <div class="stat-label">Total Layers</div>
-            <div class="stat-value">${data.total_layers}</div>
-        </div>`;
-    }
-
+    if (s.total_images !== undefined) html += stat('Total Images', s.total_images);
+    if (s.total_size_bytes !== undefined) html += stat('Total Size', formatBytes(s.total_size_bytes));
+    if (s.total_layers !== undefined) html += stat('Total Layers', s.total_layers);
     html += '</div>';
     return html;
 }
 
 function renderGenericReport(data) {
-    // Extract some generic stats
-    let html = '<div class="info-box">';
-    html += '<h3>Report Data</h3>';
-    html += '<p>This report contains ' + Object.keys(data).length + ' top-level fields.</p>';
-    html += '<p>View the Raw JSON tab for complete details.</p>';
-    html += '</div>';
+    // Try to surface a summary block if present
+    let html = '';
+    if (data.summary && typeof data.summary === 'object') {
+        html += '<div class="stats-grid">';
+        Object.entries(data.summary).forEach(([key, val]) => {
+            if (typeof val === 'number' || typeof val === 'string') {
+                const label = key.replaceAll('_', ' ');
+                const display = typeof val === 'number' && key.includes('bytes')
+                    ? formatBytes(val)
+                    : String(val);
+                html += stat(label, display);
+            }
+        });
+        html += '</div>';
+    }
+    if (!html) {
+        html = `<div class="info-box">
+            <h3>Report Data</h3>
+            <p>This report contains ${Object.keys(data).length} top-level fields. View the Raw JSON tab for complete details.</p>
+        </div>`;
+    }
     return html;
 }
 
-// Render summary on load
+// ── Bootstrap ───────────────────────────────────────────────────────────────
+
+function renderSummary() {
+    const summaryDiv = document.getElementById('report-summary');
+    let html = '';
+    if      (reportType === 'size_report')           html = renderSizeReport(reportData);
+    else if (reportType === 'mongodb_usage')         html = renderMongoDBUsageReport(reportData);
+    else if (reportType === 'archived_tags')         html = renderArchivedTagsReport(reportData);
+    else if (reportType === 'unused_environments')   html = renderUnusedEnvironmentsReport(reportData);
+    else if (reportType === 'deletion_results')      html = renderDeletionResultsReport(reportData);
+    else if (reportType === 'final_report')          html = renderFinalReport(reportData);
+    else                                             html = renderGenericReport(reportData);
+    summaryDiv.innerHTML = html;
+}
+
 renderSummary();
 </script>
 {% endblock %}
