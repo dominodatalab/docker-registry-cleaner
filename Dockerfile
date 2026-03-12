@@ -35,8 +35,8 @@ USER nonroot:nonroot
 # Base image has ENTRYPOINT ["/usr/bin/python"], which we don't want
 ENTRYPOINT []
 
-# Default command keeps the container alive for interactive use.
-# Run commands via: kubectl exec -it <pod> -- docker-registry-cleaner <command>
-# Or override with: docker run <image> docker-registry-cleaner --help
-# Sleep for 30 days (2,592,000 seconds)
-CMD ["python", "-c", "import time; time.sleep(2592000)"]
+# Start the backend API server on port 8081.
+# This port is not exposed by any Kubernetes Service — it is only reachable
+# from within the pod (i.e. by the frontend sidecar via localhost:8081).
+# CLI operations are still available via: kubectl exec -it <pod> -- docker-registry-cleaner <command>
+CMD ["python", "-m", "uvicorn", "python.api:app", "--host", "0.0.0.0", "--port", "8081"]

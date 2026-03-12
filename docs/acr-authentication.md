@@ -52,8 +52,9 @@ az role assignment create \
 ### 3. Update values.yaml
 
 ```yaml
-env:
-  registryUrl: "myregistry.azurecr.io"
+config:
+  registry:
+    url: "myregistry.azurecr.io"
   # azureClientId is not required when there is only one identity on the node
 ```
 
@@ -132,8 +133,10 @@ Role assignments can take a few minutes to propagate.
 ### 4. Update values.yaml
 
 ```yaml
+config:
+  registry:
+    url: "myregistry.azurecr.io"
 env:
-  registryUrl: "myregistry.azurecr.io"
   azureClientId: "<client-id-from-step-1>"  # UUID shown in the identity's Overview
   azureTenantId: "<azure-ad-tenant-id>"     # Optional; helps with troubleshooting
 ```
@@ -146,11 +149,11 @@ env:
 
 | Value | Description |
 |---|---|
-| `env.registryUrl` | ACR hostname, e.g. `myregistry.azurecr.io` |
+| `config.registry.url` | ACR hostname, e.g. `myregistry.azurecr.io` |
 | `env.azureClientId` | Client ID of the user-assigned managed identity |
 | `env.azureTenantId` | Azure AD tenant ID (optional; used only in log output) |
 
-These map to the `REGISTRY_URL`, `AZURE_CLIENT_ID`, and `AZURE_TENANT_ID` environment variables in the container.
+`AZURE_CLIENT_ID` and `AZURE_TENANT_ID` are passed as environment variables in the container. The registry URL is provided via the mounted `config.yaml`.
 
 ---
 
