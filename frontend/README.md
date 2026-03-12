@@ -143,9 +143,8 @@ frontend:
     port: 8080
   ingress:
     enabled: false  # Enable for external access
-    className: nginx
     hosts:
-      - host: registry-cleaner.example.com
+      - host: domino.example.com  # your Domino hostname; serves at /registry-cleaner
 ```
 
 ## API Endpoints

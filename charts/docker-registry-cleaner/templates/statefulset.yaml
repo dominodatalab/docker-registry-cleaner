@@ -73,6 +73,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.backendApi.apiKeySecret }}
                   key: api-key
+                  optional: false
             {{- end }}
             {{- if .Values.extraEnv }}
             {{- toYaml .Values.extraEnv | nindent 12 }}
@@ -100,6 +101,11 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.backendApi.apiKeySecret }}
                   key: api-key
+                  optional: false
+            {{- end }}
+            {{- if (.Values.frontend).basePath }}
+            - name: FLASK_BASE_PATH
+              value: {{ .Values.frontend.basePath | quote }}
             {{- end }}
           ports:
             - name: http

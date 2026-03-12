@@ -95,7 +95,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 // ── Load operation catalogue ───────────────────────────────────────────────────
 async function loadOperations() {
     try {
-        const resp = await fetch('/api/operations');
+        const resp = await fetch(API_BASE + '/api/operations');
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         _operations = await resp.json();
 
@@ -308,7 +308,7 @@ async function launchJob() {
     document.getElementById('run-status').textContent = 'Starting…';
 
     try {
-        const resp = await fetch('/api/jobs', {
+        const resp = await fetch(API_BASE + '/api/jobs', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({operation: opName, params}),
@@ -350,7 +350,7 @@ function startActiveJobTracking(jobId, opName) {
 
 async function pollActiveJob(jobId) {
     try {
-        const resp = await fetch(`/api/jobs/${jobId}`);
+        const resp = await fetch(`${API_BASE}/api/jobs/${jobId}`);
         if (!resp.ok) return;
         const job = await resp.json();
 
@@ -389,7 +389,7 @@ async function pollActiveJob(jobId) {
 async function cancelActiveJob() {
     if (!_activeJobId) return;
     try {
-        await fetch(`/api/jobs/${_activeJobId}`, {method: 'DELETE'});
+        await fetch(`${API_BASE}/api/jobs/${_activeJobId}`, {method: 'DELETE'});
         showNotification('Cancellation requested', 'info');
     } catch (e) {
         showNotification(`Cancel failed: ${e.message}`, 'error');
@@ -400,7 +400,7 @@ async function cancelActiveJob() {
 async function loadJobHistory() {
     const container = document.getElementById('job-history-list');
     try {
-        const resp = await fetch('/api/jobs');
+        const resp = await fetch(API_BASE + '/api/jobs');
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const jobs = await resp.json();
 
@@ -436,7 +436,7 @@ function buildJobHistoryRow(job) {
 async function toggleJobLogs(jobId) {
     const logsEl = document.getElementById(`history-logs-${jobId}`);
     if (logsEl.style.display === 'none') {
-        const resp = await fetch(`/api/jobs/${jobId}`);
+        const resp = await fetch(`${API_BASE}/api/jobs/${jobId}`);
         if (resp.ok) {
             const job = await resp.json();
             logsEl.textContent = job.logs.length ? job.logs.join('\n') : '(no output)';

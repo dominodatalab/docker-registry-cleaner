@@ -45,19 +45,30 @@ persistence:
 # within the pod (i.e. by the frontend sidecar via localhost).
 backendApi:
   port: 8081
-  # Name of a Kubernetes Secret that contains an "api-key" key.
-  # Both the backend and frontend containers mount this as BACKEND_API_KEY,
-  # which authenticates frontend→backend requests.
-  #
-  # Create with:
-  #   kubectl create secret generic registry-cleaner-api-key \
-  #     --from-literal=api-key=$(openssl rand -hex 32) \
-  #     -n <namespace>
+  # Name of the Kubernetes Secret that holds the API key used to authenticate
+  # frontend→backend requests. The chart creates this secret automatically with a
+  # random 32-character key on first install and preserves it across upgrades and
+  # reinstalls (helm.sh/resource-policy: keep). Override apiKeySecret to use a
+  # pre-existing secret instead.
   apiKeySecret: "registry-cleaner-api-key"
 
 # Frontend web UI configuration (runs as sidecar in StatefulSet)
 frontend:
   enabled: true
+  networkPolicy:
+    enabled: true
+    # Label on the namespace that contains the nginx ingress controller.
+    # Traffic is allowed from any pod in a namespace bearing this label.
+    ingressNamespaceLabel:
+      domino-platform: "true"
+    # Optional: restrict further to pods matching these labels within that namespace.
+    # When set, both selectors are ANDed — only matching pods in a matching namespace
+    # can reach the frontend. Leave empty ({}) to allow all pods in the namespace.
+    ingressPodLabels: {}
+    # Example — restrict to the nginx ingress controller pod only:
+    # ingressPodLabels:
+    #   app.kubernetes.io/name: nginx-ingress
+    #   app.kubernetes.io/component: controller
   image:
     repository: quay.io/domino/docker-registry-cleaner-frontend
     tag: v0.3.4
@@ -73,21 +84,25 @@ frontend:
     type: ClusterIP
     port: 8080
     targetPort: 8080
+  # Subpath under the Domino hostname where the UI will be served.
+  # Must match the path in ingress.hosts and the nginx rewrite rule.
+  basePath: /registry-cleaner
   ingress:
-    enabled: false
+    enabled: true
     className: nginx
-    annotations: {}
-      # kubernetes.io/ingress.class: nginx
-      # cert-manager.io/cluster-issuer: letsencrypt-prod
+    # Nginx rewrites /registry-cleaner/foo → /foo before forwarding to Flask.
+    # FLASK_BASE_PATH (= frontend.basePath) tells Flask its SCRIPT_NAME so that
+    # url_for() generates correct prefixed URLs — no configuration-snippet needed.
+    annotations:
+      nginx.ingress.kubernetes.io/rewrite-target: /$2
+      nginx.ingress.kubernetes.io/use-regex: "true"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     hosts:
       - host: registry-cleaner.example.com
         paths:
-          - path: /
-            pathType: Prefix
+          - path: /registry-cleaner(/|$)(.*)
+            pathType: ImplementationSpecific
     tls: []
-      # - secretName: registry-cleaner-tls
-      #   hosts:
-      #     - registry-cleaner.example.com
 
 config:
   # Inline config.yaml content mounted into the container

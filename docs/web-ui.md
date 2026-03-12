@@ -19,19 +19,19 @@ Then open [http://localhost:8080](http://localhost:8080).
 
 **Ingress (production)**
 
+The frontend is designed to be served at `/registry-cleaner` on your existing Domino hostname, consistent with other Domino integrations (e.g. `/grafana`, `/toolkit`).
+
 Enable in your Helm values:
 ```yaml
 frontend:
   enabled: true
   ingress:
     enabled: true
-    className: nginx
     hosts:
-      - host: registry-cleaner.your-domain.com
-        paths:
-          - path: /
-            pathType: Prefix
+      - host: domino.example.com  # your Domino instance hostname
 ```
+
+This exposes the UI at `https://domino.example.com/registry-cleaner`. The default annotations rewrite paths and forward `X-Forwarded-Prefix` so all links work correctly.
 
 ## Architecture
 
@@ -59,6 +59,8 @@ frontend:
     port: 8080
   ingress:
     enabled: false
+    hosts:
+      - host: domino.example.com  # your Domino hostname
 ```
 
 ## Local Development

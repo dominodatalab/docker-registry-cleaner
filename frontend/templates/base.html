@@ -30,6 +30,7 @@
         </div>
     </footer>
 
+    <script>const API_BASE = {{ request.script_root | tojson }};</script>
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
     {% block extra_js %}{% endblock %}
 </body>

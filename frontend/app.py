@@ -18,10 +18,25 @@ HOST = "0.0.0.0"
 PORT = 8080
 BACKEND_API_URL = os.environ.get("BACKEND_API_URL", "http://localhost:8081")
 BACKEND_API_KEY = os.environ.get("BACKEND_API_KEY", "")
+FLASK_BASE_PATH = os.environ.get("FLASK_BASE_PATH", "")
 
 # Flask app setup
 app = Flask(__name__, static_url_path="/static", static_folder="templates/static")
 app.secret_key = os.environ.get("SECRET_KEY") or os.urandom(24)
+
+if FLASK_BASE_PATH:
+    # nginx rewrites /registry-cleaner/foo → /foo before forwarding to Flask, but
+    # url_for() needs SCRIPT_NAME to generate correct prefixed URLs. This middleware
+    # injects SCRIPT_NAME from FLASK_BASE_PATH so all links work without relying on
+    # the configuration-snippet annotation (which is often blocked by cluster policy).
+    _base = FLASK_BASE_PATH
+    _inner = app.wsgi_app
+
+    def _prefix_middleware(environ, start_response):
+        environ["SCRIPT_NAME"] = _base
+        return _inner(environ, start_response)
+
+    app.wsgi_app = _prefix_middleware
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -40,7 +55,11 @@ def get_report_files() -> List[Dict]:
         return []
 
     reports = []
-    for file_path in sorted(REPORTS_DIR.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+    for file_path in sorted(
+        (f for f in REPORTS_DIR.glob("*.json") if not f.name.startswith(".")),
+        key=lambda x: x.stat().st_mtime,
+        reverse=True,
+    ):
         stat = file_path.stat()
         reports.append({
             "name": file_path.name,
