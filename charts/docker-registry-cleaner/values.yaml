@@ -34,6 +34,14 @@ serviceAccount:
 
 dominoPlatformNamespace: domino-platform
 
+# Domino API configuration for admin authentication.
+# The frontend validates each request by forwarding the user's dominoAuth
+# cookie to the nucleus-frontend service and checking isAdmin on the principal.
+# Override apiUrl only if your nucleus-frontend service uses a non-standard
+# address; by default it is derived from dominoPlatformNamespace above.
+domino:
+  apiUrl: ""  # e.g. http://nucleus-frontend.domino-platform.svc.cluster.local
+
 persistence:
   enabled: true
   size: 10Gi

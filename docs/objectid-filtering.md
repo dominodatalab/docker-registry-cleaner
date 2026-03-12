@@ -15,7 +15,7 @@ model:627d94043035a63be6140e93
 modelVersion:627d94043035a63be6140e94
 ```
 
-Lines starting with `#` are treated as comments and ignored. Bare ObjectIDs without a prefix are also accepted.
+Lines starting with `#` are treated as comments and ignored. A type prefix is required on every ID — bare ObjectIDs without a prefix are rejected to avoid ambiguous matches across collections.
 
 ## Supported Prefixes
 

@@ -352,7 +352,7 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
                 "flag": "--input",
                 "type": "id_list",
                 "default": None,
-                "help": "Restrict to specific images: paste one ObjectID per line, with an optional type prefix (e.g. environment:507f…, model:507f…)",
+                "help": "Restrict to specific images: paste one ObjectID per line with a required type prefix (e.g. environment:507f…, model:507f…)",
             },
         ],
     },
@@ -365,16 +365,16 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
 
 # ── Input file validation ──────────────────────────────────────────────────────
 
-# Accepts bare 24-hex ObjectIDs and typed variants: environment:, environmentRevision:,
-# model:, modelVersion:, and any other word-character prefix the parser understands.
-_INPUT_LINE_RE = re.compile(r"^(?:[a-zA-Z_][a-zA-Z0-9_]*:)?[a-fA-F0-9]{24}$")
+# Requires a type prefix (e.g. environment:, model:) followed by a 24-hex ObjectID.
+# Bare IDs without a prefix are rejected to avoid ambiguous matches across collections.
+_INPUT_LINE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*:[a-fA-F0-9]{24}$")
 
 
 def _write_validated_input(raw: str) -> str:
     """Validate pasted ObjectID lines and write them to a temp file.
 
     Blank lines and lines starting with '#' are skipped.  Every other line must
-    match an optional prefix (e.g. environment:, model:) followed by a 24-char
+    match a required type prefix (e.g. environment:, model:) followed by a 24-char
     hex ObjectID.  Raises ValueError listing up to five bad lines on failure.
     Returns the path of the temp file; the caller is responsible for cleanup.
     """

@@ -14,6 +14,7 @@ if str(_python_dir) not in sys.path:
 from utils.config_manager import config_manager
 from utils.health_checks import HealthChecker
 from utils.logging_utils import setup_logging
+from utils.object_id_utils import read_typed_object_ids_from_file
 
 
 def load_script_paths() -> Dict[str, Optional[str]]:
@@ -92,43 +93,6 @@ def run_script(script_path: str, args: List[str], dry_run: bool = True) -> None:
         sys.exit(1)
 
 
-def read_object_ids_from_file(file_path: str) -> List[str]:
-    """Read ObjectIDs from a file, one per line (comments starting with # are ignored).
-
-    Supports both formats:
-    - Plain ObjectID: <ObjectID>
-    - Typed format: environment:<ObjectID> or model:<ObjectID> (extracts the ObjectID part)
-    """
-    object_ids = []
-    try:
-        with open(file_path, "r") as f:
-            for line_num, line in enumerate(f, 1):
-                line = line.strip()
-                if line and not line.startswith("#"):  # Skip empty lines and comments
-                    # Extract ObjectID from typed format (e.g., "environment:<ObjectID>")
-                    if ":" in line:
-                        _, _, obj_id = line.partition(":")
-                        obj_id = obj_id.strip()
-                    else:
-                        obj_id = line
-
-                    if len(obj_id) == 24:
-                        try:
-                            int(obj_id, 16)  # Validate hexadecimal
-                            object_ids.append(obj_id)
-                        except ValueError:
-                            logging.warning(f"Invalid ObjectID '{obj_id}' on line {line_num}")
-                    else:
-                        logging.warning(f"ObjectID '{obj_id}' on line {line_num} is not 24 characters")
-        return object_ids
-    except FileNotFoundError:
-        logging.error(f"File '{file_path}' not found")
-        return []
-    except Exception as e:
-        logging.error(f"Error reading file '{file_path}': {e}")
-        return []
-
-
 def validate_script_requirements(script_keyword: str, args: List[str]) -> None:
     """Validate required arguments for specific scripts"""
 
@@ -161,21 +125,29 @@ def validate_script_requirements(script_keyword: str, args: List[str]) -> None:
             logging.warning("  2. Set REGISTRY_AUTH_SECRET to the name of a Kubernetes secret with .dockerconfigjson")
             logging.warning("  3. For ECR/ACR/GCR registries, authentication is automatic (no password needed)")
 
-    # Validate ObjectID file if provided for supported scripts
+    # Validate ObjectID file if provided for delete_image.
+    # Typed prefixes (environment:, model:, etc.) are required; bare IDs are rejected
+    # to avoid ambiguous matches across MongoDB collections.
     if script_keyword == "delete_image":
         file_arg = None
-        # Check for --input (delete_image)
         for i, arg in enumerate(args):
-            if (arg == "--input" or arg == "--file") and i + 1 < len(args):
+            if arg == "--input" and i + 1 < len(args):
                 file_arg = args[i + 1]
                 break
 
         if file_arg:
-            object_ids = read_object_ids_from_file(file_arg)
-            if not object_ids:
-                logging.error(f"No valid ObjectIDs found in file '{file_arg}'")
+            object_ids_map = read_typed_object_ids_from_file(file_arg)
+            total = sum(len(v) for v in object_ids_map.values())
+            if not total:
+                logging.error(
+                    f"No valid typed ObjectIDs found in file '{file_arg}'. "
+                    "Each line must include a type prefix, e.g. environment:<id>, model:<id>."
+                )
                 sys.exit(1)
-            logging.info(f"Validated ObjectIDs from file '{file_arg}': {object_ids}")
+            logging.info(
+                f"Validated ObjectIDs from '{file_arg}': "
+                + ", ".join(f"{k}={len(v)}" for k, v in object_ids_map.items())
+            )
 
 
 def main():

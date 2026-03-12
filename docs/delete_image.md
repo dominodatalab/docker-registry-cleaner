@@ -67,7 +67,7 @@ model:627d94043035a63be6140e93
 modelVersion:627d94043035a63be6140e94
 ```
 
-Bare 24-character hex IDs without a prefix are also accepted.
+A type prefix is required on every line — bare ObjectIDs without a prefix are rejected to avoid ambiguous matches across collections.
 
 When using the **web UI**, paste your ObjectIDs directly into the *Input IDs* text box on the `delete_image` form instead of creating a file.
 
