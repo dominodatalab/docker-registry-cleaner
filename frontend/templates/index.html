@@ -9,9 +9,22 @@
 </div>
 
 {% if reports %}
-<div class="reports-grid">
+<div class="reports-toolbar">
+    <span class="reports-count" id="reports-count">{{ reports | length }} report{{ 's' if reports | length != 1 }}</span>
+    <div class="reports-filter">
+        <label for="age-filter">Show:</label>
+        <select id="age-filter" class="form-control form-control-sm">
+            <option value="0">All reports</option>
+            <option value="1">Last 24 hours</option>
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+        </select>
+    </div>
+</div>
+<div class="reports-grid" id="reports-grid">
     {% for report in reports %}
-    <div class="card report-card">
+    <div class="card report-card" data-timestamp="{{ report.timestamp }}">
         <div class="card-header">
             <h3>{{ report.name }}</h3>
         </div>
@@ -34,6 +47,7 @@
     </div>
     {% endfor %}
 </div>
+<p id="reports-empty-filter" class="reports-empty-filter" style="display:none;">No reports match the selected time period.</p>
 {% else %}
 <div class="empty-state">
     <div class="empty-icon">📊</div>
@@ -71,4 +85,31 @@
         <li>Review the generated reports before running <code>--apply</code> commands</li>
     </ol>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+{% if reports %}
+<script>
+(function () {
+    const select = document.getElementById('age-filter');
+    const cards = Array.from(document.querySelectorAll('#reports-grid .report-card'));
+    const countEl = document.getElementById('reports-count');
+    const emptyEl = document.getElementById('reports-empty-filter');
+
+    select.addEventListener('change', function () {
+        const days = parseInt(this.value, 10);
+        const cutoff = days > 0 ? (Date.now() / 1000) - days * 86400 : 0;
+        let visible = 0;
+        cards.forEach(card => {
+            const ts = parseFloat(card.dataset.timestamp);
+            const show = cutoff === 0 || ts >= cutoff;
+            card.style.display = show ? '' : 'none';
+            if (show) visible++;
+        });
+        countEl.textContent = visible + ' report' + (visible !== 1 ? 's' : '');
+        emptyEl.style.display = visible === 0 ? '' : 'none';
+    });
+}());
+</script>
+{% endif %}
 {% endblock %}

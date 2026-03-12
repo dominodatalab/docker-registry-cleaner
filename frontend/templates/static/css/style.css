@@ -67,8 +67,9 @@ body {
 .navbar-user {
     color: #888;
     font-size: 0.85rem;
-    padding: 0.4rem 0;
     list-style: none;
+    align-self: center;
+    line-height: 1;
 }
 
 /* Main Content */
@@ -143,6 +144,39 @@ main {
     gap: 1rem;
     justify-content: flex-start;
     border-top: 1px solid #e5e7eb;
+}
+
+/* Reports Toolbar */
+.reports-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+}
+
+.reports-count {
+    font-size: 0.9rem;
+    color: #666;
+}
+
+.reports-filter {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.9rem;
+    color: #555;
+}
+
+.reports-filter .form-control-sm {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.875rem;
+    width: auto;
+}
+
+.reports-empty-filter {
+    color: #888;
+    font-style: italic;
+    margin-bottom: 2rem;
 }
 
 /* Reports Grid */
