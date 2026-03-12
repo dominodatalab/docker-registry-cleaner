@@ -34,6 +34,11 @@ serviceAccount:
 
 dominoPlatformNamespace: domino-platform
 
+# Set to "json" to enable structured JSON logging (one JSON object per line).
+# Useful for log aggregators such as Datadog or ELK that ingest pod logs.
+# Leave empty for the default human-readable format.
+logFormat: ""
+
 # Domino API configuration for admin authentication.
 # The frontend validates each request by forwarding the user's dominoAuth
 # cookie to the nucleus-frontend service and checking isAdmin on the principal.
