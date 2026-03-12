@@ -90,7 +90,7 @@ frontend:
       nginx.ingress.kubernetes.io/use-regex: "true"
       nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     hosts:
-      - host: "itgdock115210.az.domino.tech"
+      - host: "domino.example.com"
         paths:
           - path: /registry-cleaner(/|$)(.*)
             pathType: ImplementationSpecific
@@ -99,7 +99,7 @@ frontend:
 config:
   # Inline config.yaml content mounted into the container
   registry:
-    url: "itgdock115210domino.azurecr.io"
+    url: "docker-registry:5000"
     repository: "dominodatalab"
   mongo:
     host: "mongodb-replicaset"
