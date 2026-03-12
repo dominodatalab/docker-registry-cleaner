@@ -41,10 +41,6 @@ spec:
           env:
             - name: CONFIG_FILE
               value: "/config.yaml"
-            {{- if and .Values.env .Values.env.registryUrl }}
-            - name: REGISTRY_URL
-              value: {{ .Values.env.registryUrl | quote }}
-            {{- end }}
             {{- if and .Values.env .Values.env.registryAuthSecret }}
             - name: REGISTRY_AUTH_SECRET
               value: {{ .Values.env.registryAuthSecret | quote }}

@@ -1,6 +1,6 @@
 image:
   repository: quay.io/domino/docker-registry-cleaner
-  tag: v0.3.4
+  tag: backend-poc
   pullPolicy: Always
 
 # fsGroup makes the PVC at /data/reports writable by nonroot (65532)
@@ -17,8 +17,8 @@ resources:
     memory: 1Gi
 
 # Optional env overrides for external registries (ECR, Quay, GCR, ACR, etc.)
+# Registry URL is set via config.registry.url below.
 env:
-  registryUrl: ""         # Set to registry host (e.g. 946429944765.dkr.ecr.eu-west-1.amazonaws.com)
   registryAuthSecret: ""  # Name of a K8s secret with .dockerconfigjson for secure credential storage
   azureClientId: ""       # Client ID of the managed identity for ACR auth
   azureTenantId: ""       # Azure AD tenant ID for ACR auth
@@ -61,17 +61,9 @@ frontend:
     # Traffic is allowed from any pod in a namespace bearing this label.
     ingressNamespaceLabel:
       domino-platform: "true"
-    # Optional: restrict further to pods matching these labels within that namespace.
-    # When set, both selectors are ANDed — only matching pods in a matching namespace
-    # can reach the frontend. Leave empty ({}) to allow all pods in the namespace.
-    ingressPodLabels: {}
-    # Example — restrict to the nginx ingress controller pod only:
-    # ingressPodLabels:
-    #   app.kubernetes.io/name: nginx-ingress
-    #   app.kubernetes.io/component: controller
   image:
     repository: quay.io/domino/docker-registry-cleaner-frontend
-    tag: v0.3.4
+    tag: poc
     pullPolicy: Always
   resources:
     requests:
@@ -98,7 +90,7 @@ frontend:
       nginx.ingress.kubernetes.io/use-regex: "true"
       nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     hosts:
-      - host: registry-cleaner.example.com
+      - host: "itgdock115210.az.domino.tech"
         paths:
           - path: /registry-cleaner(/|$)(.*)
             pathType: ImplementationSpecific
@@ -107,7 +99,7 @@ frontend:
 config:
   # Inline config.yaml content mounted into the container
   registry:
-    url: "docker-registry:5000"
+    url: "itgdock115210domino.azurecr.io"
     repository: "dominodatalab"
   mongo:
     host: "mongodb-replicaset"

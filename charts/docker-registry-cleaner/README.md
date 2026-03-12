@@ -42,12 +42,12 @@ helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
 # AWS ECR
 helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
   --namespace domino-platform \
-  --set env.registryUrl="946429944765.dkr.ecr.eu-west-1.amazonaws.com"
+  --set config.registry.url="946429944765.dkr.ecr.eu-west-1.amazonaws.com"
 
 # Azure ACR
 helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
   --namespace domino-platform \
-  --set env.registryUrl="myregistry.azurecr.io"
+  --set config.registry.url="myregistry.azurecr.io"
 ```
 
 **Use custom values file:**
@@ -132,7 +132,6 @@ The following table lists the configurable parameters of the Docker Registry Cle
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `env.registryUrl` | Override registry URL (e.g., for ECR, Quay) | `""` |
 | `env.registryAuthSecret` | Name of a K8s secret with `.dockerconfigjson` for secure credential storage | `""` |
 | `env.azureClientId` | Client ID of the managed identity for ACR auth | `""` |
 | `env.azureTenantId` | Azure AD tenant ID for ACR auth | `""` |
@@ -191,23 +190,21 @@ extraEnv:
         key: config-value
 ```
 
-### Overriding Registry URL
+### Setting the Registry URL
 
-For AWS ECR, Azure ACR, or other external registries, use the `env.registryUrl` parameter:
+Set `config.registry.url` to the hostname of the registry you want to manage:
 
 ```bash
 # AWS ECR
 helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
   --namespace domino-platform \
-  --set env.registryUrl="946429944765.dkr.ecr.eu-west-1.amazonaws.com"
+  --set config.registry.url="946429944765.dkr.ecr.eu-west-1.amazonaws.com"
 
 # Azure ACR
 helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
   --namespace domino-platform \
-  --set env.registryUrl="myregistry.azurecr.io"
+  --set config.registry.url="myregistry.azurecr.io"
 ```
-
-This sets the `REGISTRY_URL` environment variable, which overrides the `config.registry.url` value.
 
 ### Custom Storage Class
 
@@ -272,19 +269,23 @@ For AWS ECR registries (`*.amazonaws.com`) and Azure ACR registries (`*.azurecr.
 
 ```yaml
 # For AWS ECR
-env:
-  registryUrl: "123456789.dkr.ecr.us-west-2.amazonaws.com"
+config:
+  registry:
+    url: "123456789.dkr.ecr.us-west-2.amazonaws.com"
 
 # For Azure ACR
-env:
-  registryUrl: "myregistry.azurecr.io"
+config:
+  registry:
+    url: "myregistry.azurecr.io"
 ```
 
 **For Azure AKS:** You must specify the managed identity client ID and tenant ID:
 
 ```yaml
+config:
+  registry:
+    url: "myregistry.azurecr.io"
 env:
-  registryUrl: "myregistry.azurecr.io"
   azureClientId: "12345678-1234-1234-1234-123456789abc"  # Client ID of the managed identity with AcrPull role
   azureTenantId: "87654321-4321-4321-4321-cba987654321"  # Azure AD tenant ID
 ```
@@ -310,8 +311,10 @@ kubectl create secret docker-registry quay-registry-creds \
 Then reference it in your values:
 
 ```yaml
+config:
+  registry:
+    url: "quay.io"
 env:
-  registryUrl: "quay.io"
   registryAuthSecret: "quay-registry-creds"
 ```
 
