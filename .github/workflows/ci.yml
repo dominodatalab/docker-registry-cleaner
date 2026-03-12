@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   lint:
     name: Lint & Format Check
@@ -21,16 +24,16 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ".[dev]"
+          pip install ".[dev,frontend]"
 
       - name: Check formatting with black
-        run: black --check python/ tests/
+        run: black --check python/ tests/ frontend/
 
       - name: Check import sorting with isort
-        run: isort --check-only python/ tests/
+        run: isort --check-only python/ tests/ frontend/
 
       - name: Lint with flake8
-        run: flake8 python/ tests/
+        run: flake8 python/ tests/ frontend/
 
   type-check:
     name: Type Check
@@ -46,7 +49,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ".[dev]"
+          pip install ".[dev,frontend]"
 
       - name: Type check with mypy
         run: mypy python/
@@ -70,7 +73,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ".[dev]"
+          pip install ".[dev,frontend]"
 
       - name: Run tests with pytest
         run: |

@@ -20,7 +20,7 @@ docker-registry-cleaner delete_image environment:abc123-456 --apply
 docker-registry-cleaner delete_image --apply --backup --s3-bucket my-bucket
 
 # Filter to specific ObjectIDs from a file
-docker-registry-cleaner delete_image --input environments --apply
+docker-registry-cleaner delete_image --input my-ids.txt --apply
 
 # Force-regenerate analysis reports before running
 docker-registry-cleaner delete_image --generate-reports --apply
@@ -40,7 +40,7 @@ docker-registry-cleaner delete_image --apply --mongo-cleanup
 | `--apply` | Actually delete images (dry-run without this) | `false` |
 | `--force` | Skip confirmation prompt | `false` |
 | `--generate-reports` | Force regeneration of image analysis and usage reports | `false` |
-| `--input FILE` | ObjectID file or pre-generated report to filter images | — |
+| `--input FILE` | Plain-text file of ObjectIDs (one per line, optional type prefix) to restrict which images are processed | — |
 | `--skip-analysis` | Skip workload analysis, use traditional environments file | `false` |
 | `--unused-since-days N` | Only delete images unused for more than N days | — |
 | `--output FILE` | Output path for the deletion analysis report | From config |
@@ -53,18 +53,25 @@ docker-registry-cleaner delete_image --apply --mongo-cleanup
 | `--enable-docker-deletion` | Override registry in-cluster auto-detection | `false` |
 | `--registry-statefulset NAME` | StatefulSet/Deployment name for registry | `docker-registry` |
 
-## ObjectID File Format
+## ObjectID Input Format
 
-When using `--input`, provide a file with one ObjectID per line using typed prefixes:
+`delete_image --input` accepts a **plain text list of ObjectIDs**, one per line. This is different from the `--input` flag on other deletion commands, which accept a pre-generated JSON report from a dry-run.
+
+Each line may optionally include a type prefix to narrow the lookup to a specific MongoDB collection:
 
 ```
+# Comments are ignored
 environment:6286a3c76d4fd0362f8ba3ec
 environmentRevision:6286a3c76d4fd0362f8ba3ed
 model:627d94043035a63be6140e93
 modelVersion:627d94043035a63be6140e94
 ```
 
-See [ObjectID Filtering](objectid-filtering.md) for details.
+A type prefix is required on every line — bare ObjectIDs without a prefix are rejected to avoid ambiguous matches across collections.
+
+When using the **web UI**, paste your ObjectIDs directly into the *Input IDs* text box on the `delete_image` form instead of creating a file.
+
+See [ObjectID Filtering](objectid-filtering.md) for the full list of supported prefixes.
 
 ## Notes
 

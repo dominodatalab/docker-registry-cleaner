@@ -39,7 +39,21 @@ kubectl port-forward -n domino-platform svc/docker-registry 5000:5000 &
 kubectl port-forward -n domino-platform svc/keycloak-http 8080:80 &
 ```
 
-Update `config.yaml` to use localhost endpoints. For local development, use `python python/main.py` instead of `docker-registry-cleaner`.
+Update `config.yaml` to use localhost for registry, MongoDB, and Keycloak endpoints.
+
+### Command Conventions
+
+Commands shown below assume you're running in the Helm-deployed pod. For local development, use `python python/main.py` instead of `docker-registry-cleaner`.
+
+## Web UI
+
+Docker Registry Cleaner includes a web interface for browsing reports and running analysis operations. Destructive operations (those requiring `--apply`) must still be run via `kubectl exec`.
+
+```bash
+kubectl port-forward -n domino-platform svc/docker-registry-cleaner-frontend 8080:8080
+```
+
+See [docs/web-ui.md](docs/web-ui.md) for access options, Helm configuration, and local development setup.
 
 ## Quick Start
 

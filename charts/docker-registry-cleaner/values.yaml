@@ -1,6 +1,6 @@
 image:
   repository: quay.io/domino/docker-registry-cleaner
-  tag: v0.3.3
+  tag: v0.3.4
   pullPolicy: Always
 
 # fsGroup makes the PVC at /data/reports writable by nonroot (65532)
@@ -17,8 +17,8 @@ resources:
     memory: 1Gi
 
 # Optional env overrides for external registries (ECR, Quay, GCR, ACR, etc.)
+# Registry URL is set via config.registry.url below.
 env:
-  registryUrl: ""         # Set to registry host (e.g. 946429944765.dkr.ecr.eu-west-1.amazonaws.com)
   registryAuthSecret: ""  # Name of a K8s secret with .dockerconfigjson for secure credential storage
   azureClientId: ""       # Client ID of the managed identity for ACR auth
   azureTenantId: ""       # Azure AD tenant ID for ACR auth
@@ -34,10 +34,75 @@ serviceAccount:
 
 dominoPlatformNamespace: domino-platform
 
+# Domino API configuration for admin authentication.
+# The frontend validates each request by forwarding the user's dominoAuth
+# cookie to the nucleus-frontend service and checking isAdmin on the principal.
+# Override apiUrl only if your nucleus-frontend service uses a non-standard
+# address; by default it is derived from dominoPlatformNamespace above.
+domino:
+  apiUrl: ""  # e.g. http://nucleus-frontend.domino-platform.svc.cluster.local
+
 persistence:
   enabled: true
   size: 10Gi
   storageClass: "dominodisk"  # Use default storage class if empty
+
+# Backend API configuration
+# The backend container exposes a REST API on port 8081 for the frontend sidecar.
+# This port is NOT exposed by any Kubernetes Service — it is only reachable from
+# within the pod (i.e. by the frontend sidecar via localhost).
+backendApi:
+  port: 8081
+  # Name of the Kubernetes Secret that holds the API key used to authenticate
+  # frontend→backend requests. The chart creates this secret automatically with a
+  # random 32-character key on first install and preserves it across upgrades and
+  # reinstalls (helm.sh/resource-policy: keep). Override apiKeySecret to use a
+  # pre-existing secret instead.
+  apiKeySecret: "registry-cleaner-api-key"
+
+# Frontend web UI configuration (runs as sidecar in StatefulSet)
+frontend:
+  enabled: true
+  networkPolicy:
+    enabled: true
+    # Label on the namespace that contains the nginx ingress controller.
+    # Traffic is allowed from any pod in a namespace bearing this label.
+    ingressNamespaceLabel:
+      domino-platform: "true"
+  image:
+    repository: quay.io/domino/docker-registry-cleaner-frontend
+    tag: v0.3.4
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  service:
+    type: ClusterIP
+    port: 8080
+    targetPort: 8080
+  # Subpath under the Domino hostname where the UI will be served.
+  # Must match the path in ingress.hosts and the nginx rewrite rule.
+  basePath: /registry-cleaner
+  ingress:
+    enabled: true
+    className: nginx
+    # Nginx rewrites /registry-cleaner/foo → /foo before forwarding to Flask.
+    # FLASK_BASE_PATH (= frontend.basePath) tells Flask its SCRIPT_NAME so that
+    # url_for() generates correct prefixed URLs — no configuration-snippet needed.
+    annotations:
+      nginx.ingress.kubernetes.io/rewrite-target: /$2
+      nginx.ingress.kubernetes.io/use-regex: "true"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    hosts:
+      - host: "domino.example.com"
+        paths:
+          - path: /registry-cleaner(/|$)(.*)
+            pathType: ImplementationSpecific
+    tls: []
 
 config:
   # Inline config.yaml content mounted into the container
