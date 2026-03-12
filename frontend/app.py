@@ -132,7 +132,7 @@ def get_report_files() -> List[Dict]:
 
     reports = []
     for file_path in sorted(
-        (f for f in REPORTS_DIR.glob("*.json") if not f.name.startswith(".")),
+        REPORTS_DIR.glob("*.json"),
         key=lambda x: x.stat().st_mtime,
         reverse=True,
     ):

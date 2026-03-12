@@ -61,12 +61,13 @@ class TestGetReportFiles:
         assert len(files) == 1
         assert files[0]["name"] == "report.json"
 
-    def test_excludes_dotfiles(self, reports_dir):
-        (reports_dir / ".registry-auth.json").write_text('{"secret": "key"}')
+    def test_auth_file_not_in_reports_dir(self, reports_dir):
+        # .registry-auth.json lives one directory above reports; glob("*.json")
+        # should never encounter it here.
         (reports_dir / "report.json").write_text("{}")
         names = [f["name"] for f in get_report_files()]
-        assert ".registry-auth.json" not in names
         assert "report.json" in names
+        assert not any(n.startswith(".") for n in names)
 
     def test_sorted_newest_first(self, reports_dir):
         a = reports_dir / "a.json"

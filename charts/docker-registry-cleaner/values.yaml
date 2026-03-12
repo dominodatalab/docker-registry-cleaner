@@ -1,6 +1,6 @@
 image:
   repository: quay.io/domino/docker-registry-cleaner
-  tag: backend-poc
+  tag: v0.3.4
   pullPolicy: Always
 
 # fsGroup makes the PVC at /data/reports writable by nonroot (65532)
@@ -71,7 +71,7 @@ frontend:
       domino-platform: "true"
   image:
     repository: quay.io/domino/docker-registry-cleaner-frontend
-    tag: poc
+    tag: v0.3.4
     pullPolicy: Always
   resources:
     requests:

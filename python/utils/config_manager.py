@@ -57,8 +57,11 @@ class ConfigManager:
         self.config_file = config_file
         self.config = self._load_config()
 
-        # Set up skopeo auth file early (before any skopeo commands run)
-        auth_dir = self.get_output_dir()
+        # Set up skopeo auth file early (before any skopeo commands run).
+        # Stored one level above output_dir so it never appears alongside reports.
+        output_dir = self.get_output_dir()
+        os.makedirs(output_dir, exist_ok=True)
+        auth_dir = os.path.dirname(output_dir) or output_dir
         os.makedirs(auth_dir, exist_ok=True)
         self.auth_file = os.path.join(auth_dir, ".registry-auth.json")
         os.environ["REGISTRY_AUTH_FILE"] = self.auth_file
