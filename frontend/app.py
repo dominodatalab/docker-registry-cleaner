@@ -3,6 +3,7 @@ Flask web interface for Docker Registry Cleaner.
 Serves a read-only report viewer and proxies operation requests to the
 backend API running on localhost:8081.
 """
+
 import json
 import os
 from datetime import datetime
@@ -81,7 +82,10 @@ def require_domino_admin():
         # Domino API is unreachable — fail closed.
         if request.path.startswith("/api/"):
             return jsonify({"error": "Authentication service unavailable"}), 503
-        return render_template("error.html", message="Authentication service unavailable. Please try again shortly."), 503
+        return (
+            render_template("error.html", message="Authentication service unavailable. Please try again shortly."),
+            503,
+        )
 
     if resp.status_code != 200:
         return _deny(authenticated=False)
@@ -137,18 +141,20 @@ def get_report_files() -> List[Dict]:
         reverse=True,
     ):
         stat = file_path.stat()
-        reports.append({
-            "name": file_path.name,
-            "size": format_bytes(stat.st_size),
-            "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-            "timestamp": stat.st_mtime
-        })
+        reports.append(
+            {
+                "name": file_path.name,
+                "size": format_bytes(stat.st_size),
+                "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                "timestamp": stat.st_mtime,
+            }
+        )
     return reports
 
 
 def format_bytes(bytes_size: int) -> str:
     """Format bytes to human-readable size"""
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
         if bytes_size < 1024.0:
             return f"{bytes_size:.2f} {unit}"
         bytes_size /= 1024.0
@@ -161,7 +167,7 @@ def load_report(filename: str) -> Optional[Dict]:
         file_path = REPORTS_DIR / filename
         if not file_path.exists():
             return None
-        with open(file_path, 'r') as f:
+        with open(file_path, "r") as f:
             return json.load(f)
     except Exception as e:
         print(f"Error loading report {filename}: {e}")
@@ -175,7 +181,7 @@ def load_report(filename: str) -> Optional[Dict]:
 def index():
     """Main page - list all available reports"""
     reports = get_report_files()
-    return render_template('index.html', reports=reports)
+    return render_template("index.html", reports=reports)
 
 
 @app.route("/api/reports")
@@ -216,10 +222,9 @@ def view_report(filename):
     elif "final-report" in filename:
         report_type = "final_report"
 
-    return render_template('report.html',
-                          filename=filename,
-                          report_type=report_type,
-                          report_data=json.dumps(report_data, indent=2))
+    return render_template(
+        "report.html", filename=filename, report_type=report_type, report_data=json.dumps(report_data, indent=2)
+    )
 
 
 # ── Operations page ────────────────────────────────────────────────────────────
@@ -228,7 +233,7 @@ def view_report(filename):
 @app.route("/operations")
 def operations():
     """Operations page — trigger backend jobs from the UI"""
-    return render_template('operations.html')
+    return render_template("operations.html")
 
 
 # ── Backend API proxy routes ───────────────────────────────────────────────────
@@ -302,5 +307,6 @@ def health():
 
 if __name__ == "__main__":
     from waitress import serve
+
     print(f"Starting Docker Registry Cleaner Web UI on {HOST}:{PORT}")
     serve(app, host=HOST, port=PORT)
