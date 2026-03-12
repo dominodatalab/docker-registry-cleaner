@@ -155,11 +155,41 @@ The following table lists the configurable parameters of the Docker Registry Cle
 | `frontend.networkPolicy.ingressPodLabels` | Optional additional pod labels to restrict ingress | `{}` |
 | `domino.apiUrl` | URL of the nucleus-frontend service for admin auth | derived from `dominoPlatformNamespace` |
 
+### Prometheus Metrics
+
+The backend container exposes `GET /metrics` on port 8081 (named port `metrics`). The pod
+template has `prometheus.io/scrape: "true"` annotations, and the Prometheus `kubernetes-pods`
+scrape job in standard Domino deployments honours these automatically.
+
+The NetworkPolicy is enabled by default with labels matching the standard Domino Prometheus
+server pod — no extra configuration is needed for most deployments.
+
+To disable or override:
+
+```yaml
+metrics:
+  networkPolicy:
+    enabled: false   # disable entirely
+    # or override if your Prometheus pod has different labels:
+    prometheusPodLabels:
+      app.kubernetes.io/name: prometheus
+      app.kubernetes.io/component: server
+    # or for cross-namespace Prometheus, use namespace label instead:
+    prometheusNamespaceLabel:
+      kubernetes.io/metadata.name: monitoring
+```
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `metrics.networkPolicy.enabled` | Create a NetworkPolicy allowing Prometheus to scrape port 8081 | `true` |
+| `metrics.networkPolicy.prometheusPodLabels` | Pod labels identifying the Prometheus scraper (same-namespace) | see values.yaml |
+| `metrics.networkPolicy.prometheusNamespaceLabel` | Namespace label for cross-namespace Prometheus | `{}` |
+
 ### Backend API
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `backendApi.port` | Port for the FastAPI backend (not exposed via Service) | `8081` |
+| `backendApi.port` | Port for the FastAPI backend / Prometheus `/metrics` endpoint | `8081` |
 | `backendApi.apiKeySecret` | Name of the Secret holding the frontend→backend API key | `registry-cleaner-api-key` |
 
 ### Service Account

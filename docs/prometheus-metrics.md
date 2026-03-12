@@ -1,8 +1,7 @@
 # Prometheus Metrics
 
 The backend API (`python/api.py`) exposes a Prometheus scrape endpoint at `GET /metrics`
-on port 8081.  Port 8081 has no Kubernetes Service, so it is only reachable via
-`kubectl port-forward` or a Prometheus `PodMonitor`.  No Pushgateway is needed.
+on port 8081.  Port 8081 has no Kubernetes Service.  No Pushgateway is needed.
 
 The pod template is annotated for annotation-based Prometheus discovery:
 ```yaml
@@ -10,6 +9,11 @@ prometheus.io/scrape: "true"
 prometheus.io/port: "8081"
 prometheus.io/path: "/metrics"
 ```
+
+Standard Domino deployments run Prometheus as a StatefulSet in `domino-platform` with a
+`kubernetes-pods` scrape job that honours these annotations.  The Helm chart creates a
+NetworkPolicy (enabled by default) that allows the Prometheus server pod to reach port 8081.
+See `charts/docker-registry-cleaner/README.md` for configuration options.
 
 To scrape manually:
 ```bash

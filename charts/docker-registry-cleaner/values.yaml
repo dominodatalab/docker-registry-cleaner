@@ -52,10 +52,34 @@ persistence:
   size: 10Gi
   storageClass: "dominodisk"  # Use default storage class if empty
 
+# Prometheus metrics scraping configuration
+# The backend exposes GET /metrics on port 8081 (backendApi.port).
+#
+# NetworkPolicy: set enabled=true so the Prometheus scraper can reach port 8081.
+# - Same-namespace Prometheus (e.g. running in domino-platform): set prometheusPodLabels
+#   to match the Prometheus pod labels. namespaceSelector is not used in this case.
+#   Example: prometheusPodLabels: { app: prometheus }
+# - Different-namespace Prometheus: set prometheusNamespaceLabel instead.
+#   Example: prometheusNamespaceLabel: { kubernetes.io/metadata.name: monitoring }
+# - Leave both empty to allow all pods in the same namespace to reach port 8081.
+metrics:
+  networkPolicy:
+    enabled: true
+    # Defaults match the Prometheus server pod labels on standard Domino deployments
+    # (prometheus Helm chart in domino-platform namespace). Override if your cluster
+    # runs Prometheus in a different namespace or with different labels.
+    prometheusPodLabels:
+      app.kubernetes.io/name: prometheus
+      app.kubernetes.io/component: server
+    # For cross-namespace Prometheus: set this instead of prometheusPodLabels.
+    # e.g. prometheusNamespaceLabel: { kubernetes.io/metadata.name: monitoring }
+    prometheusNamespaceLabel: {}
+
 # Backend API configuration
 # The backend container exposes a REST API on port 8081 for the frontend sidecar.
-# This port is NOT exposed by any Kubernetes Service — it is only reachable from
-# within the pod (i.e. by the frontend sidecar via localhost).
+# Port 8081 is also the Prometheus /metrics scrape endpoint.
+# This port is NOT exposed by any Kubernetes Service — it is reachable via
+# kubectl port-forward, or from a Prometheus scraper allowed by metrics.networkPolicy.
 backendApi:
   port: 8081
   # Name of the Kubernetes Secret that holds the API key used to authenticate

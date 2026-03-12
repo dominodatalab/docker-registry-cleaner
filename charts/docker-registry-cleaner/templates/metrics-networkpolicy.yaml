@@ -1,0 +1,41 @@
+{{- if (.Values.metrics).networkPolicy | default false }}
+{{- if (.Values.metrics.networkPolicy).enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "docker-registry-cleaner.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "docker-registry-cleaner.name" . }}
+    helm.sh/chart: {{ include "docker-registry-cleaner.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/component: metrics
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "docker-registry-cleaner.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    {{- if (.Values.metrics.networkPolicy).prometheusPodLabels }}
+    # Prometheus is in the same namespace — use podSelector only.
+    - podSelector:
+        matchLabels:
+          {{- .Values.metrics.networkPolicy.prometheusPodLabels | toYaml | nindent 10 }}
+    {{- else if (.Values.metrics.networkPolicy).prometheusNamespaceLabel }}
+    # Prometheus is in a different namespace — match by namespace label.
+    - namespaceSelector:
+        matchLabels:
+          {{- .Values.metrics.networkPolicy.prometheusNamespaceLabel | toYaml | nindent 10 }}
+    {{- else }}
+    # No selector configured: allow all pods in the same namespace.
+    - podSelector: {}
+    {{- end }}
+    ports:
+    - port: {{ (.Values.backendApi | default dict).port | default 8081 }}
+      protocol: TCP
+{{- end }}
+{{- end }}
