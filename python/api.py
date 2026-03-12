@@ -15,9 +15,12 @@ container clears the history — that is intentional for a single-replica
 StatefulSet.
 """
 
+import logging
 import os
+import re
 import subprocess
 import sys
+import tempfile
 import threading
 import uuid
 from collections import OrderedDict
@@ -36,6 +39,21 @@ BACKEND_API_KEY: str = os.environ.get("BACKEND_API_KEY", "")
 _MAIN_PY: Path = Path(__file__).parent / "main.py"
 MAX_JOBS: int = 50
 
+# Detect once at startup whether the Docker registry is running inside the cluster.
+# Operations that require exec'ing into the registry pod (run_registry_gc) are only
+# meaningful when the registry is in-cluster; they are hidden when it is not.
+try:
+    from utils.config_manager import config_manager as _cfg
+    from utils.skopeo_client import is_registry_in_cluster as _check_registry_in_cluster
+
+    _REGISTRY_IN_CLUSTER: bool = _check_registry_in_cluster(
+        _cfg.get_registry_url(),
+        _cfg.get_domino_platform_namespace(),
+    )
+except Exception as _e:
+    logging.warning(f"Could not determine if registry is in-cluster, defaulting to False: {_e}")
+    _REGISTRY_IN_CLUSTER = False
+
 # ── Operation catalogue ────────────────────────────────────────────────────────
 # Each entry declares:
 #   description  – shown in the UI
@@ -49,7 +67,7 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
         "params": [],
     },
     "reports": {
-        "description": "Generate tag usage reports from analysis data",
+        "description": "Analyse Docker tag usage against active workloads and report unused tags with potential space savings",
         "destructive": False,
         "params": [
             {
@@ -251,7 +269,7 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "delete_all_unused_environments": {
-        "description": "Comprehensive cleanup: unused environments + private environments of deactivated users",
+        "description": "Find (or delete) all unused environments: both shared unused environments and private environments owned by deactivated users",
         "destructive": True,
         "params": [
             {
@@ -291,7 +309,7 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "delete_image": {
-        "description": "Analyze unused Docker images — or delete a specific image by ID",
+        "description": "Delete Docker images after verifying they are not in use by any active Domino workload",
         "destructive": True,
         "params": [
             {
@@ -329,6 +347,13 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
                 "default": False,
                 "help": "Run Docker registry garbage collection after deletion",
             },
+            {
+                "name": "input_ids",
+                "flag": "--input",
+                "type": "id_list",
+                "default": None,
+                "help": "Restrict to specific images: paste one ObjectID per line, with an optional type prefix (e.g. environment:507f…, model:507f…)",
+            },
         ],
     },
     "run_registry_gc": {
@@ -337,6 +362,31 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
         "params": [],
     },
 }
+
+# ── Input file validation ──────────────────────────────────────────────────────
+
+# Accepts bare 24-hex ObjectIDs and typed variants: environment:, environmentRevision:,
+# model:, modelVersion:, and any other word-character prefix the parser understands.
+_INPUT_LINE_RE = re.compile(r"^(?:[a-zA-Z_][a-zA-Z0-9_]*:)?[a-fA-F0-9]{24}$")
+
+
+def _write_validated_input(raw: str) -> str:
+    """Validate pasted ObjectID lines and write them to a temp file.
+
+    Blank lines and lines starting with '#' are skipped.  Every other line must
+    match an optional prefix (e.g. environment:, model:) followed by a 24-char
+    hex ObjectID.  Raises ValueError listing up to five bad lines on failure.
+    Returns the path of the temp file; the caller is responsible for cleanup.
+    """
+    lines = [line.strip() for line in raw.splitlines() if line.strip() and not line.strip().startswith("#")]
+    invalid = [line for line in lines if not _INPUT_LINE_RE.match(line)]
+    if invalid:
+        raise ValueError(f"Invalid line(s): {invalid[:5]}")
+    fd, path = tempfile.mkstemp(suffix=".txt", prefix="rc-input-")
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(lines))
+    return path
+
 
 # ── In-memory job store ────────────────────────────────────────────────────────
 
@@ -367,7 +417,7 @@ def _build_args(operation: str, params: Dict[str, Any]) -> List[str]:
         if param_type == "bool":
             if value:
                 args.append(flag)
-        elif param_type in ("int", "str"):
+        elif param_type in ("int", "str", "id_list"):
             if value is not None and str(value).strip() != "":
                 args.extend([flag, str(value)])
 
@@ -383,6 +433,8 @@ def _run_job(job_id: str, cli_args: List[str]) -> None:
         job = _jobs.get(job_id)
     if job is None:
         return
+
+    input_tmp_path: Optional[str] = job.get("input_tmp_path")
 
     try:
         process = subprocess.Popen(
@@ -414,6 +466,13 @@ def _run_job(job_id: str, cli_args: List[str]) -> None:
             _jobs[job_id]["status"] = "failed"
             _jobs[job_id]["logs"].append(f"[api] Error launching job: {exc}")
             _jobs[job_id]["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+    finally:
+        if input_tmp_path:
+            try:
+                os.unlink(input_tmp_path)
+            except OSError:
+                pass
 
 
 # ── FastAPI app ────────────────────────────────────────────────────────────────
@@ -473,14 +532,21 @@ def health() -> Dict[str, str]:
 @app.get("/api/operations", dependencies=[Depends(_check_api_key)])
 def list_operations() -> Dict[str, Any]:
     """Return all available operations with their param schemas."""
-    return {
-        name: {
+    result = {}
+    for name, op in OPERATIONS.items():
+        # run_registry_gc requires exec'ing into the registry pod — only available
+        # when the Docker registry is running inside the cluster.
+        if name == "run_registry_gc" and not _REGISTRY_IN_CLUSTER:
+            continue
+        params = op["params"]
+        if not _REGISTRY_IN_CLUSTER:
+            params = [p for p in params if p["name"] != "run_registry_gc"]
+        result[name] = {
             "description": op["description"],
             "destructive": op["destructive"],
-            "params": op["params"],
+            "params": params,
         }
-        for name, op in OPERATIONS.items()
-    }
+    return result
 
 
 @app.post("/api/jobs", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(_check_api_key)])
@@ -500,6 +566,23 @@ def create_job(req: JobRequest) -> Dict[str, str]:
                 detail=f"Missing required parameter '{spec['name']}'",
             )
 
+    # For id_list params: validate content and write to a temp file.
+    # The temp file path replaces the raw text in params so _build_args can pass
+    # it as a --input flag.  The path is also stored in the job record so the
+    # background runner can delete it after the process finishes.
+    input_tmp_path: Optional[str] = None
+    for spec in OPERATIONS[req.operation]["params"]:
+        if spec["type"] == "id_list":
+            raw = req.params.get(spec["name"]) or ""
+            if raw.strip():
+                try:
+                    input_tmp_path = _write_validated_input(raw)
+                    req.params[spec["name"]] = input_tmp_path
+                except ValueError as exc:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+            else:
+                req.params[spec["name"]] = None  # omit --input flag
+
     cli_args = _build_args(req.operation, req.params)
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -516,6 +599,7 @@ def create_job(req: JobRequest) -> Dict[str, str]:
             "returncode": None,
             "pid": None,
             "logs": [],
+            "input_tmp_path": input_tmp_path,
         }
         _trim_jobs()
 

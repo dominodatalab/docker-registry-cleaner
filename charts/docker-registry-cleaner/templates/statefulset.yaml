@@ -25,6 +25,7 @@ spec:
         docker-registry-client: "true"
         mongodb-replicaset-client: "true"
         keycloak-client: "true"
+        nucleus-client: "true"
     spec:
       # fsGroup makes the PVC at /data/reports writable by nonroot (65532)
       securityContext:
@@ -103,6 +104,8 @@ spec:
             - name: FLASK_BASE_PATH
               value: {{ .Values.frontend.basePath | quote }}
             {{- end }}
+            - name: DOMINO_API_URL
+              value: {{ (.Values.domino).apiUrl | default (printf "http://nucleus-frontend.%s.svc.cluster.local" .Values.dominoPlatformNamespace) | quote }}
           ports:
             - name: http
               containerPort: {{ .Values.frontend.service.targetPort }}

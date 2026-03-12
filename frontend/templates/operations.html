@@ -86,6 +86,13 @@ let _operations = {};
 let _activeJobId = null;
 let _pollInterval = null;
 
+// ── Helpers ────────────────────────────────────────────────────────────────────
+const _WORD_MAP = {'ids': 'IDs', 'gc': 'GC', 's3': 'S3', 'url': 'URL', 'api': 'API'};
+function toTitleCase(name) {
+    return name.replaceAll('_', ' ')
+               .replace(/\b\w+/g, w => _WORD_MAP[w.toLowerCase()] ?? (w[0].toUpperCase() + w.slice(1)));
+}
+
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
     await loadOperations();
@@ -115,7 +122,7 @@ async function loadOperations() {
             items.forEach(([name, op]) => {
                 const opt = document.createElement('option');
                 opt.value = name;
-                opt.textContent = name.replaceAll('_', ' ');
+                opt.textContent = toTitleCase(name);
                 group.appendChild(opt);
             });
             select.appendChild(group);
@@ -182,7 +189,7 @@ function buildParamField(param) {
 
     const label = document.createElement('label');
     label.className = 'form-label';
-    label.textContent = param.name.replaceAll('_', ' ');
+    label.textContent = toTitleCase(param.name);
     if (param.required) {
         const req = document.createElement('span');
         req.className = 'required-star';
@@ -192,9 +199,18 @@ function buildParamField(param) {
     wrapper.appendChild(label);
 
     if (param.name === 'apply') {
-        // Special: apply toggle — show an explicit danger toggle
+        // Special: apply toggle — show an explicit danger toggle (admins only)
         const toggle = buildApplyToggle();
         wrapper.appendChild(toggle);
+    } else if (param.type === 'id_list') {
+        const ta = document.createElement('textarea');
+        ta.id = `param-${param.name}`;
+        ta.name = param.name;
+        ta.className = 'form-control id-list-input';
+        ta.placeholder = 'One ObjectID per line, e.g.\nenvironment:507f1f77bcf86cd799439011\nmodel:507f1f77bcf86cd799439012';
+        ta.rows = 6;
+        ta.spellcheck = false;
+        wrapper.appendChild(ta);
     } else if (param.type === 'bool') {
         const cb = document.createElement('input');
         cb.type = 'checkbox';
@@ -243,22 +259,31 @@ function buildApplyToggle() {
     const text = document.createElement('span');
     text.className = 'toggle-label';
     text.id = 'apply-toggle-label';
-    text.textContent = 'Dry-run only (safe)';
 
-    cb.addEventListener('change', () => {
-        const runBtn = document.getElementById('run-btn');
-        if (cb.checked) {
-            text.textContent = 'Apply changes — THIS WILL DELETE DATA';
-            text.className = 'toggle-label danger-text';
-            runBtn.className = 'btn btn-danger';
-            runBtn.textContent = 'Run Operation (APPLY)';
-        } else {
-            text.textContent = 'Dry-run only (safe)';
-            text.className = 'toggle-label';
-            runBtn.className = 'btn btn-primary';
-            runBtn.textContent = 'Run Operation (dry-run)';
-        }
-    });
+    if (!IS_ADMIN) {
+        cb.disabled = true;
+        slider.title = 'Administrator privileges required to apply changes';
+        slider.style.opacity = '0.4';
+        slider.style.cursor = 'not-allowed';
+        text.textContent = 'Dry-run only (administrator privileges required to apply)';
+        text.style.color = '#888';
+    } else {
+        text.textContent = 'Dry-run only (safe)';
+        cb.addEventListener('change', () => {
+            const runBtn = document.getElementById('run-btn');
+            if (cb.checked) {
+                text.textContent = 'Apply changes — THIS WILL DELETE DATA';
+                text.className = 'toggle-label danger-text';
+                runBtn.className = 'btn btn-danger';
+                runBtn.textContent = 'Run Operation (APPLY)';
+            } else {
+                text.textContent = 'Dry-run only (safe)';
+                text.className = 'toggle-label';
+                runBtn.className = 'btn btn-primary';
+                runBtn.textContent = 'Run Operation (dry-run)';
+            }
+        });
+    }
 
     label.appendChild(cb);
     label.appendChild(slider);
@@ -276,6 +301,8 @@ function collectParams(opName) {
         if (!el) return;
         if (param.type === 'bool' || param.name === 'apply') {
             params[param.name] = el.checked;
+        } else if (param.type === 'id_list') {
+            params[param.name] = el.value.trim() || null;
         } else if (param.type === 'int') {
             params[param.name] = el.value !== '' ? parseInt(el.value, 10) : null;
         } else {
@@ -336,7 +363,7 @@ function startActiveJobTracking(jobId, opName) {
     section.style.display = 'block';
     section.scrollIntoView({behavior: 'smooth', block: 'start'});
 
-    document.getElementById('active-job-name').textContent = opName.replaceAll('_', ' ');
+    document.getElementById('active-job-name').textContent = toTitleCase(opName);
     document.getElementById('active-job-logs').textContent = 'Waiting for output…';
     document.getElementById('active-job-badge').textContent = 'pending';
     document.getElementById('active-job-badge').className = 'job-status-badge status-pending';
@@ -423,7 +450,7 @@ function buildJobHistoryRow(job) {
     row.className = 'job-history-row';
     row.innerHTML = `
         <div class="job-row-main">
-            <span class="job-op-name">${job.operation.replaceAll('_', ' ')}</span>
+            <span class="job-op-name">${toTitleCase(job.operation)}</span>
             <span class="job-status-badge status-${job.status}">${job.status}</span>
             <span class="job-time">${new Date(job.started_at).toLocaleString()}</span>
             <button class="btn btn-secondary btn-sm" onclick="toggleJobLogs('${job.job_id}')">Logs</button>

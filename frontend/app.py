@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import httpx
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, jsonify, redirect, render_template, request, session
 
 # Configuration
 REPORTS_DIR = Path("/app/reports")  # In container
@@ -19,6 +19,12 @@ PORT = 8080
 BACKEND_API_URL = os.environ.get("BACKEND_API_URL", "http://localhost:8081")
 BACKEND_API_KEY = os.environ.get("BACKEND_API_KEY", "")
 FLASK_BASE_PATH = os.environ.get("FLASK_BASE_PATH", "")
+# Internal URL of the Domino nucleus-frontend service.  When set, every request
+# is authenticated by forwarding the user's dominoAuth cookie to the Domino API
+# and verifying that the caller is a system administrator.  Leave unset to
+# disable auth (useful for local development).
+DOMINO_API_URL = os.environ.get("DOMINO_API_URL", "")
+
 
 # Flask app setup
 app = Flask(__name__, static_url_path="/static", static_folder="templates/static")
@@ -37,6 +43,76 @@ if FLASK_BASE_PATH:
         return _inner(environ, start_response)
 
     app.wsgi_app = _prefix_middleware
+
+
+# ── Authentication ──────────────────────────────────────────────────────────────
+
+
+@app.before_request
+def require_domino_admin():
+    """Validate the caller is a Domino system administrator.
+
+    Forwards all browser cookies to the Domino API to verify identity and
+    admin status.  Sending the full Cookie header handles both vanilla Domino
+    deployments (dominoAuth cookie) and Keycloak-based SSO deployments that
+    use different session cookies.  The result is cached in the Flask session
+    for _AUTH_CACHE_TTL seconds to avoid a Domino API call on every page load.
+
+    Skipped when DOMINO_API_URL is not configured (local dev mode).
+    Skipped for the /health endpoint (used by Kubernetes liveness probes).
+    """
+    if not DOMINO_API_URL:
+        return  # auth disabled — local dev
+
+    if request.endpoint == "health" or request.path.startswith("/static/"):
+        return
+
+    cookie_header = request.headers.get("Cookie", "")
+    if not cookie_header:
+        return _deny(authenticated=False)
+
+    try:
+        resp = httpx.get(
+            f"{DOMINO_API_URL}/v4/auth/principal",
+            headers={"Cookie": cookie_header},
+            timeout=5,
+        )
+    except httpx.RequestError:
+        # Domino API is unreachable — fail closed.
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "Authentication service unavailable"}), 503
+        return render_template("error.html", message="Authentication service unavailable. Please try again shortly."), 503
+
+    if resp.status_code != 200:
+        return _deny(authenticated=False)
+
+    principal = resp.json()
+    if not principal.get("isAdmin", False):
+        return _deny(authenticated=True)
+
+    session["domino_username"] = principal.get("canonicalName", "")
+    session["is_domino_admin"] = principal.get("isAdmin", False)
+
+
+def _deny(authenticated: bool):
+    """Return the appropriate response when access is denied."""
+    if request.path.startswith("/api/"):
+        status = 403 if authenticated else 401
+        msg = "Administrator privileges required." if authenticated else "Authentication required."
+        return jsonify({"error": msg}), status
+    if authenticated:
+        return render_template("error.html", message="Access denied: Domino administrator privileges required."), 403
+    # Not logged in — send to Domino's own login page (same hostname, root path).
+    return redirect("/")
+
+
+@app.context_processor
+def inject_auth():
+    """Make the logged-in username available in all templates."""
+    return {
+        "domino_username": session.get("domino_username", ""),
+        "is_domino_admin": session.get("is_domino_admin", False),
+    }
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

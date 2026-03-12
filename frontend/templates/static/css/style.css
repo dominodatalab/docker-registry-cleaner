@@ -64,6 +64,13 @@ body {
     background: rgba(255, 104, 0, 0.25);
 }
 
+.navbar-user {
+    color: #888;
+    font-size: 0.85rem;
+    padding: 0.4rem 0;
+    list-style: none;
+}
+
 /* Main Content */
 main {
     padding: 2rem 0;
@@ -635,7 +642,6 @@ footer p {
     color: #111;
     flex: 1;
     min-width: 150px;
-    text-transform: capitalize;
 }
 
 .job-time {
@@ -657,3 +663,10 @@ footer p {
 .mb-2 { margin-bottom: 1rem; }
 .mb-3 { margin-bottom: 1.5rem; }
 .mb-4 { margin-bottom: 2rem; }
+
+/* ObjectID list textarea */
+.id-list-input {
+    font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
+    font-size: 0.82rem;
+    resize: vertical;
+}

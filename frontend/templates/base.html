@@ -16,6 +16,7 @@
             <ul class="navbar-menu">
                 <li><a href="{{ url_for('index') }}" class="{% if request.endpoint == 'index' %}active{% endif %}">Reports</a></li>
                 <li><a href="{{ url_for('operations') }}" class="{% if request.endpoint == 'operations' %}active{% endif %}">Operations</a></li>
+                {% if domino_username %}<li class="navbar-user">{{ domino_username }}</li>{% endif %}
             </ul>
         </div>
     </nav>
@@ -30,7 +31,7 @@
         </div>
     </footer>
 
-    <script>const API_BASE = {{ request.script_root | tojson }};</script>
+    <script>const API_BASE = {{ request.script_root | tojson }}; const IS_ADMIN = {{ is_domino_admin | tojson }};</script>
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
     {% block extra_js %}{% endblock %}
 </body>
