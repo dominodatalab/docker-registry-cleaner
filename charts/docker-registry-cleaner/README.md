@@ -137,6 +137,60 @@ The following table lists the configurable parameters of the Docker Registry Cle
 | `env.azureTenantId` | Azure AD tenant ID for ACR auth | `""` |
 | `extraEnv` | Additional environment variables (array) | `[]` |
 | `dominoPlatformNamespace` | Domino platform namespace | `domino-platform` |
+| `logFormat` | Set to `"json"` for structured JSON logging (useful for Datadog / ELK) | `""` |
+
+### Frontend Web UI
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `frontend.enabled` | Deploy the Flask web UI sidecar | `true` |
+| `frontend.image.repository` | Frontend image repository | `quay.io/domino/docker-registry-cleaner-frontend` |
+| `frontend.image.tag` | Frontend image tag | `v0.3.4` |
+| `frontend.basePath` | Subpath under the Domino hostname where the UI is served | `/registry-cleaner` |
+| `frontend.service.port` | Service port | `8080` |
+| `frontend.ingress.enabled` | Create an nginx Ingress for the frontend | `true` |
+| `frontend.ingress.hosts` | Ingress hostname and path configuration | see `values.yaml` |
+| `frontend.networkPolicy.enabled` | Create a NetworkPolicy allowing ingress traffic | `true` |
+| `frontend.networkPolicy.ingressNamespaceLabel` | Namespace label identifying the nginx controller | `domino-platform: "true"` |
+| `frontend.networkPolicy.ingressPodLabels` | Optional additional pod labels to restrict ingress | `{}` |
+| `domino.apiUrl` | URL of the nucleus-frontend service for admin auth | derived from `dominoPlatformNamespace` |
+
+### Prometheus Metrics
+
+The backend container exposes `GET /metrics` on port 8081 (named port `metrics`). The pod
+template has `prometheus.io/scrape: "true"` annotations, and the Prometheus `kubernetes-pods`
+scrape job in standard Domino deployments honours these automatically.
+
+The NetworkPolicy is enabled by default with labels matching the standard Domino Prometheus
+server pod — no extra configuration is needed for most deployments.
+
+To disable or override:
+
+```yaml
+metrics:
+  networkPolicy:
+    enabled: false   # disable entirely
+    # or override if your Prometheus pod has different labels:
+    prometheusPodLabels:
+      app.kubernetes.io/name: prometheus
+      app.kubernetes.io/component: server
+    # or for cross-namespace Prometheus, use namespace label instead:
+    prometheusNamespaceLabel:
+      kubernetes.io/metadata.name: monitoring
+```
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `metrics.networkPolicy.enabled` | Create a NetworkPolicy allowing Prometheus to scrape port 8081 | `true` |
+| `metrics.networkPolicy.prometheusPodLabels` | Pod labels identifying the Prometheus scraper (same-namespace) | see values.yaml |
+| `metrics.networkPolicy.prometheusNamespaceLabel` | Namespace label for cross-namespace Prometheus | `{}` |
+
+### Backend API
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `backendApi.port` | Port for the FastAPI backend / Prometheus `/metrics` endpoint | `8081` |
+| `backendApi.apiKeySecret` | Name of the Secret holding the frontend→backend API key | `registry-cleaner-api-key` |
 
 ### Service Account
 
@@ -406,7 +460,8 @@ kubectl exec -it docker-registry-cleaner-0 -n domino-platform -- \
 
 ### Accessing Reports
 
-Reports are stored in the persistent volume at `/data/reports`:
+The web UI (if enabled) provides a browser-based report viewer at
+`https://<domino-host>/registry-cleaner`.  Reports can also be accessed directly:
 
 ```bash
 # List reports
@@ -416,6 +471,19 @@ kubectl exec -it docker-registry-cleaner-0 -n domino-platform -- \
 # Copy report to local machine
 kubectl cp domino-platform/docker-registry-cleaner-0:/data/reports/report.json ./report.json
 ```
+
+### Prometheus Metrics
+
+The backend API exposes `GET /metrics` on port 8081 for Prometheus scraping.
+The pod template includes `prometheus.io/scrape` annotations for automatic discovery.
+
+```bash
+# Scrape metrics manually
+kubectl port-forward pod/docker-registry-cleaner-0 8081:8081 -n domino-platform
+curl -s localhost:8081/metrics
+```
+
+See [docs/prometheus-metrics.md](../../docs/prometheus-metrics.md) for the full metric catalogue.
 
 ## Support
 

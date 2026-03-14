@@ -15,6 +15,7 @@ container clears the history — that is intentional for a single-replica
 StatefulSet.
 """
 
+import json
 import logging
 import os
 import re
@@ -28,7 +29,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
+from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
 from pydantic import BaseModel
 
 _API_KEY_HEADER: Optional[str] = Header(default=None)
@@ -38,6 +40,7 @@ _API_KEY_HEADER: Optional[str] = Header(default=None)
 BACKEND_API_KEY: str = os.environ.get("BACKEND_API_KEY", "")
 _MAIN_PY: Path = Path(__file__).parent / "main.py"
 MAX_JOBS: int = 50
+OUTPUT_DIR: Path = Path(os.environ.get("OUTPUT_DIR", "/data/reports"))
 
 # Detect once at startup whether the Docker registry is running inside the cluster.
 # Operations that require exec'ing into the registry pod (run_registry_gc) are only
@@ -53,6 +56,66 @@ try:
 except Exception as _e:
     logging.warning(f"Could not determine if registry is in-cluster, defaulting to False: {_e}")
     _REGISTRY_IN_CLUSTER = False
+
+# ── Prometheus metrics ─────────────────────────────────────────────────────────
+
+_tags_pending = Gauge(
+    "registry_cleaner_tags_pending_deletion",
+    "Image tags eligible for deletion per operation (from latest dry-run report)",
+    ["operation"],
+)
+_space_recoverable = Gauge(
+    "registry_cleaner_space_recoverable_bytes",
+    "Estimated bytes recoverable per operation (from latest dry-run report)",
+    ["operation"],
+)
+_last_report_ts = Gauge(
+    "registry_cleaner_last_report_timestamp",
+    "Unix mtime of the latest report file per operation",
+    ["operation"],
+)
+_jobs_gauge = Gauge(
+    "registry_cleaner_jobs_total",
+    "Tracked jobs by operation and status",
+    ["operation", "status"],
+)
+
+# Map operation name → (report filename, summary.tags_key, summary.space_gb_key)
+# Both report types nest their summary under data["summary"].
+_REPORT_FIELDS: Dict[str, tuple] = {
+    "delete_archived_tags": ("archived-tags.json", "total_matching_tags", "freed_space_gb"),
+    "delete_unused_environments": ("unused-environments.json", "total_matching_tags", "freed_space_gb"),
+    "delete_unused_private_environments": ("unused-environments.json", "total_matching_tags", "freed_space_gb"),
+}
+
+
+def _refresh_report_metrics() -> None:
+    """Read the latest dry-run report files and update pending-deletion gauges."""
+    for operation, (filename, tags_key, space_key) in _REPORT_FIELDS.items():
+        path = OUTPUT_DIR / filename
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text())
+            summary = data.get("summary", data)
+            _tags_pending.labels(operation=operation).set(summary.get(tags_key, 0))
+            _space_recoverable.labels(operation=operation).set(summary.get(space_key, 0) * 1024**3)
+            _last_report_ts.labels(operation=operation).set(path.stat().st_mtime)
+        except Exception:
+            pass  # stale or malformed file; keep the previous gauge value
+
+
+def _refresh_job_metrics() -> None:
+    """Count in-memory jobs by operation and status and update the jobs gauge."""
+    with _jobs_lock:
+        jobs_snapshot = list(_jobs.values())
+    counts: Dict[tuple, int] = {}
+    for job in jobs_snapshot:
+        key = (job["operation"], job["status"])
+        counts[key] = counts.get(key, 0) + 1
+    for (operation, job_status), count in counts.items():
+        _jobs_gauge.labels(operation=operation, status=job_status).set(count)
+
 
 # ── Operation catalogue ────────────────────────────────────────────────────────
 # Each entry declares:
@@ -527,6 +590,20 @@ class JobDetail(JobSummary):
 def health() -> Dict[str, str]:
     """Health check — no auth required."""
     return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/metrics")
+def metrics() -> Response:
+    """Prometheus scrape endpoint — no auth required.
+
+    Refreshes dry-run finding gauges from the latest report files on the shared
+    PVC, then returns the full metric set in Prometheus text format.  Port 8081
+    has no Kubernetes Service so this is only reachable via kubectl port-forward
+    or a Prometheus PodMonitor.
+    """
+    _refresh_report_metrics()
+    _refresh_job_metrics()
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/api/operations", dependencies=[Depends(_check_api_key)])
