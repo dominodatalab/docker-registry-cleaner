@@ -34,6 +34,8 @@ spec:
       # fsGroup makes the PVC at /data/reports writable by nonroot (65532)
       securityContext:
         fsGroup: {{ (.Values.podSecurityContext | default dict).fsGroup | default 65532 }}
+      nodeSelector:
+        dominodatalab.com/node-pool: platform
       serviceAccountName: {{ $saName }}
       imagePullSecrets:
 {{- range .Values.imagePullSecrets }}

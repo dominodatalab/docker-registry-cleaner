@@ -39,6 +39,7 @@ class RunInfo(TypedDict, total=False):
     project_name: str
     project_owner_id: str
     project_owner_name: str
+    project_owner_login: str
     status: str
     started: Optional[str]
     completed: Optional[str]
@@ -50,6 +51,7 @@ class WorkspaceInfo(TypedDict, total=False):
     workspace_id: str
     workspace_name: str
     project_name: str
+    user_login: str
     usage_type: str
     workspace_last_change: Optional[str]
 
@@ -59,6 +61,7 @@ class ModelInfo(TypedDict, total=False):
 
     model_id: str
     model_name: str
+    model_owner_login: str
     version_id: str
 
 
@@ -493,6 +496,7 @@ class ImageUsageService:
                     "project_name": record.get("project_name", "unknown"),
                     "project_owner_id": record.get("project_owner_id", "unknown"),
                     "project_owner_name": record.get("project_owner_name", "unknown"),
+                    "project_owner_login": record.get("project_owner_login", ""),
                     "status": record.get("status", "unknown"),
                     "started": record.get("started") or record.get("any_started"),
                     "completed": record.get("completed") or record.get("any_completed") or record.get("last_used"),
@@ -530,6 +534,7 @@ class ImageUsageService:
                         "workspace_id": workspace_id,
                         "workspace_name": workspace_name,
                         "project_name": project_name,
+                        "user_login": record.get("user_login", ""),
                         "usage_type": usage_type,
                         "workspace_last_change": record.get("workspace_last_change"),
                     }
@@ -563,6 +568,7 @@ class ImageUsageService:
                     model_info = {
                         "model_id": model_id,
                         "model_name": model_name,
+                        "model_owner_login": record.get("model_owner_login", ""),
                         "version_id": version_id,
                     }
                     usage_info[tag]["models"].append(model_info)

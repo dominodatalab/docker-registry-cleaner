@@ -6,9 +6,9 @@ This script analyzes workload usage patterns and safely deletes unused Docker im
 from the registry while preserving all actively used ones.
 
 Configuration:
-  Registry password is sourced from (in priority order):
+  Registry password is sourced from:
   1. REGISTRY_PASSWORD environment variable
-  2. config.yaml registry.password field
+  For K8s secret-based auth, set REGISTRY_AUTH_SECRET (handled by SkopeoClient directly).
 
 Usage examples:
   # Delete a specific image (dry-run)
@@ -1714,8 +1714,8 @@ def main():
             f"Filtering images by ObjectIDs from file '{args.input}': environment={len(env_ids)}, environmentRevision={len(env_rev_ids)}, model={len(model_ids)}, modelVersion={len(model_ver_ids)}"
         )
 
-    # Get password from env var or config
-    password = os.environ.get("REGISTRY_PASSWORD") or config_manager.get_registry_password()
+    # Get password from env var (auth via K8s secret is handled by SkopeoClient directly)
+    password = os.environ.get("REGISTRY_PASSWORD")
 
     # Default to dry-run unless --apply is specified
     dry_run = not args.apply

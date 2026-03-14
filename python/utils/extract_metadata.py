@@ -116,6 +116,7 @@ def model_env_usage_pipeline() -> Pipeline:
                 "model_name": 1,
                 "model_last_change": 1,
                 "model_owner": {"$first": "$user_id.fullName"},
+                "model_owner_login": {"$first": "$user_id.loginId.id"},
                 "model_created_by": {"$first": "$created_id.fullName"},
                 "environment_name": {"$first": "$environment_id.name"},
                 "environment_id": "$model_environment_id",
@@ -138,6 +139,7 @@ def model_env_usage_pipeline() -> Pipeline:
                 "model_name": {"$first": "$model_name"},
                 "model_last_change": {"$first": "$model_last_change"},
                 "model_owner": {"$first": "$model_owner"},
+                "model_owner_login": {"$first": "$model_owner_login"},
                 "model_created_by": {"$first": "$model_created_by"},
                 "environment_name": {"$first": "$environment_name"},
                 "environment_id": {"$first": "$environment_id"},
@@ -158,6 +160,7 @@ def model_env_usage_pipeline() -> Pipeline:
                 "model_name": {"$first": "$model_name"},
                 "model_last_change": {"$first": "$model_last_change"},
                 "model_owner": {"$first": "$model_owner"},
+                "model_owner_login": {"$first": "$model_owner_login"},
                 "model_created_by": {"$first": "$model_created_by"},
                 "environment_name": {"$first": "$environment_name"},
                 "environment_id": {"$first": "$environment_id"},
@@ -257,6 +260,7 @@ def workspace_env_usage_pipeline() -> Pipeline:
                 "workspace_last_change": "$stateUpdatedAt",
                 "project_name": {"$first": "$project_id.name"},
                 "user_name": {"$first": "$user_id.fullName"},
+                "user_login": {"$first": "$user_id.loginId.id"},
                 "environment_name": {"$first": "$environment_id.name"},
                 # Compute cluster environment name if present
                 "compute_environment_name": {"$first": "$compute_environment_id.name"},
@@ -444,6 +448,7 @@ def workspace_env_usage_pipeline() -> Pipeline:
                 "workspace_last_change": "$workspace_last_change",
                 "project_name": "$project_name",
                 "user_name": "$user_name",
+                "user_login": "$user_login",
                 "environment_name": "$environment_name",
                 "environment_docker_repo": "$environment_docker_repo",
                 "environment_docker_tag": "$environment_docker_tag",
@@ -507,7 +512,12 @@ def runs_env_usage_pipeline() -> Pipeline:
             }
         },
         {"$lookup": {"from": "users", "localField": "project_owner_id", "foreignField": "_id", "as": "owner_doc"}},
-        {"$addFields": {"project_owner_name": {"$first": "$owner_doc.fullName"}}},
+        {
+            "$addFields": {
+                "project_owner_name": {"$first": "$owner_doc.fullName"},
+                "project_owner_login": {"$first": "$owner_doc.loginId.id"},
+            }
+        },
         # Group by environment + revision to compute most recent completion time as last_used
         {
             "$group": {
@@ -527,6 +537,7 @@ def runs_env_usage_pipeline() -> Pipeline:
                 "project_name": {"$first": "$project_name"},
                 "project_owner_id": {"$first": "$project_owner_id"},
                 "project_owner_name": {"$first": "$project_owner_name"},
+                "project_owner_login": {"$first": "$project_owner_login"},
             }
         },
         # Final projection, keep both last_used and a started field for compatibility
@@ -546,6 +557,7 @@ def runs_env_usage_pipeline() -> Pipeline:
                 "project_name": 1,
                 "project_owner_id": 1,
                 "project_owner_name": 1,
+                "project_owner_login": 1,
             }
         },
     ]

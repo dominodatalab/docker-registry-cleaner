@@ -1,6 +1,6 @@
 image:
   repository: quay.io/domino/docker-registry-cleaner
-  tag: v0.3.4
+  tag: summary-improvements
   pullPolicy: Always
 
 # fsGroup makes the PVC at /data/reports writable by nonroot (65532)
@@ -20,7 +20,7 @@ resources:
 # Registry URL is set via config.registry.url below.
 env:
   registryAuthSecret: ""  # Name of a K8s secret with .dockerconfigjson for secure credential storage
-  azureClientId: ""       # Client ID of the managed identity for ACR auth
+  azureClientId: "97cfbcb9-e3c1-4724-97a3-0b4250de8e4c"       # Client ID of the managed identity for ACR auth
   azureTenantId: ""       # Azure AD tenant ID for ACR auth
 
 imagePullSecrets:
@@ -100,7 +100,7 @@ frontend:
       domino-platform: "true"
   image:
     repository: quay.io/domino/docker-registry-cleaner-frontend
-    tag: v0.3.4
+    tag: summary-improvements
     pullPolicy: Always
   resources:
     requests:
@@ -127,7 +127,7 @@ frontend:
       nginx.ingress.kubernetes.io/use-regex: "true"
       nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     hosts:
-      - host: "domino.example.com"
+      - host: "itgdock115210.az.domino.tech"
         paths:
           - path: /registry-cleaner(/|$)(.*)
             pathType: ImplementationSpecific
@@ -136,7 +136,7 @@ frontend:
 config:
   # Inline config.yaml content mounted into the container
   registry:
-    url: "docker-registry:5000"
+    url: "itgdock115210domino.azurecr.io"
     repository: "dominodatalab"
   mongo:
     host: "mongodb-replicaset"

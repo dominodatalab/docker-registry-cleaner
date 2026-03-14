@@ -222,8 +222,13 @@ def view_report(filename):
     elif "final-report" in filename:
         report_type = "final_report"
 
+    domino_url = DOMINO_API_URL.rstrip("/") if DOMINO_API_URL else ""
     return render_template(
-        "report.html", filename=filename, report_type=report_type, report_data=json.dumps(report_data, indent=2)
+        "report.html",
+        filename=filename,
+        report_type=report_type,
+        report_data=json.dumps(report_data, indent=2),
+        domino_url=domino_url,
     )
 
 
