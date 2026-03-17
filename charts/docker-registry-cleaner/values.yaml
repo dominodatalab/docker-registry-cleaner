@@ -1,6 +1,6 @@
 image:
   repository: quay.io/domino/docker-registry-cleaner
-  tag: summary-improvements
+  tag: v0.3.4
   pullPolicy: Always
 
 # fsGroup makes the PVC at /data/reports writable by nonroot (65532)
@@ -20,7 +20,7 @@ resources:
 # Registry URL is set via config.registry.url below.
 env:
   registryAuthSecret: ""  # Name of a K8s secret with .dockerconfigjson for secure credential storage
-  azureClientId: "97cfbcb9-e3c1-4724-97a3-0b4250de8e4c"       # Client ID of the managed identity for ACR auth
+  azureClientId: ""       # Client ID of the managed identity for ACR auth
   azureTenantId: ""       # Azure AD tenant ID for ACR auth
 
 imagePullSecrets:
@@ -46,6 +46,10 @@ logFormat: ""
 # address; by default it is derived from dominoPlatformNamespace above.
 domino:
   apiUrl: ""  # e.g. http://nucleus-frontend.domino-platform.svc.cluster.local
+  # Public URL of the Domino web UI used to build clickable links in reports.
+  # Defaults to https://{frontend.ingress.hosts[0].host} when ingress is enabled.
+  # Override only if the public URL differs from the ingress hostname.
+  uiUrl: ""
 
 persistence:
   enabled: true
@@ -100,7 +104,7 @@ frontend:
       domino-platform: "true"
   image:
     repository: quay.io/domino/docker-registry-cleaner-frontend
-    tag: summary-improvements
+    tag: v0.3.4
     pullPolicy: Always
   resources:
     requests:
@@ -127,7 +131,7 @@ frontend:
       nginx.ingress.kubernetes.io/use-regex: "true"
       nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     hosts:
-      - host: "itgdock115210.az.domino.tech"
+      - host: "domino.example.com"
         paths:
           - path: /registry-cleaner(/|$)(.*)
             pathType: ImplementationSpecific
@@ -136,7 +140,7 @@ frontend:
 config:
   # Inline config.yaml content mounted into the container
   registry:
-    url: "itgdock115210domino.azurecr.io"
+    url: "docker-registry:5000"
     repository: "dominodatalab"
   mongo:
     host: "mongodb-replicaset"

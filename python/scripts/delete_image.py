@@ -1120,8 +1120,6 @@ class IntelligentImageDeleter(BaseDeletionScript):
             if matching_stats:
                 size_bytes = matching_stats.get("size", 0)
                 usage = matching_stats.get("usage", {})
-                # Include only summary info - counts and why_cannot_delete
-                # Full usage details removed to reduce file size (available in unused_images if needed)
                 used_entry = {
                     "tag": image_tag,
                     "size_bytes": size_bytes,
@@ -1134,6 +1132,7 @@ class IntelligentImageDeleter(BaseDeletionScript):
                     "projects_count": len(usage.get("projects", [])),
                     "organizations_count": len(usage.get("organizations", [])),
                     "app_versions_count": len(usage.get("app_versions", [])),
+                    "usage": usage,
                     "why_cannot_delete": self._generate_usage_summary(usage),
                 }
                 report["used_images"].append(used_entry)

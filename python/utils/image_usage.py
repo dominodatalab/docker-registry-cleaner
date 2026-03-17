@@ -592,6 +592,7 @@ class ImageUsageService:
                     "_id": str(record.get("project_id", "")),
                     "name": record.get("project_name", "unknown"),
                     "ownerId": str(record.get("owner_id", "")) if record.get("owner_id") else "unknown",
+                    "owner_login": record.get("owner_login", ""),
                 }
                 usage_info[tag]["projects"].append(project_info)
 

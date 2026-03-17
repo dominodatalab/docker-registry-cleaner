@@ -188,6 +188,11 @@ function modelVersionUrl(modelId, versionId, ownerLogin) {
     return `${dominoUrl}/models/${encodeURIComponent(modelId)}/versions/${encodeURIComponent(versionId)}${q}`;
 }
 
+function projectUrl(ownerLogin, projectName) {
+    if (!dominoUrl || !ownerLogin || !projectName) return null;
+    return `${dominoUrl}/u/${encodeURIComponent(ownerLogin)}/${encodeURIComponent(projectName)}/overview`;
+}
+
 function orgUrl(name) {
     if (!dominoUrl || !name) return null;
     return `${dominoUrl}/u/${encodeURIComponent(name)}#environment`;
@@ -315,11 +320,11 @@ function renderUsageDetails(usage) {
     const projects = usage.projects || [];
     if (projects.length) {
         html += sectionTitle(`Projects (${projects.length})`);
-        const rows = projects.map(p => [
-            p.name || p._id || '—',
-            p.ownerId || '—',
-        ]);
-        html += table(['Project', 'Owner ID'], rows);
+        const rows = projects.map(p => {
+            const url = projectUrl(p.owner_login, p.name);
+            return [link(url, p.name || p._id || '—'), p.owner_login || p.ownerId || '—'];
+        });
+        html += table(['Project', 'Owner'], rows);
     }
 
     const orgs = usage.organizations || [];

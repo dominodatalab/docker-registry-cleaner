@@ -618,6 +618,30 @@ def projects_env_usage_pipeline() -> Pipeline:
             }
         },
         {"$match": {"environment_docker_tag": {"$exists": True, "$ne": None}}},
+        {
+            "$lookup": {
+                "from": "users",
+                "localField": "owner_id",
+                "foreignField": "_id",
+                "as": "owner_doc",
+            }
+        },
+        {
+            "$addFields": {
+                "owner_login": {"$first": "$owner_doc.loginId.id"},
+            }
+        },
+        {
+            "$project": {
+                "project_id": 1,
+                "project_name": 1,
+                "owner_id": 1,
+                "owner_login": 1,
+                "environment_id": 1,
+                "environment_docker_repo": 1,
+                "environment_docker_tag": 1,
+            }
+        },
     ]
 
 
