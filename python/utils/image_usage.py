@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, TypedDict, Union
 
 from utils.config_manager import config_manager
-from utils.mongo_utils import bson_to_jsonable, get_mongo_client
+from utils.mongo_utils import get_mongo_client
 from utils.report_utils import save_json
 
 logger = logging.getLogger(__name__)
@@ -349,13 +349,9 @@ class ImageUsageService:
         """
         results = self.run_aggregations(target)
 
-        # Convert all results to JSON-serializable format
         consolidated = {}
         for key in ["runs", "workspaces", "models", "projects", "scheduler_jobs", "organizations", "app_versions"]:
-            if key in results:
-                consolidated[key] = bson_to_jsonable(results[key])
-            else:
-                consolidated[key] = []
+            consolidated[key] = results.get(key, [])
 
         # Save to consolidated file with timestamp
         save_json(
@@ -530,6 +526,10 @@ class ImageUsageService:
                             "organizations": [],
                             "app_versions": [],
                         }
+                    # Skip if this workspace is already recorded for this tag (same image
+                    # can appear in multiple tag fields, e.g. environment + project_default)
+                    if any(w["workspace_id"] == workspace_id for w in usage_info[tag]["workspaces"]):
+                        continue
                     workspace_usage = {
                         "workspace_id": workspace_id,
                         "workspace_name": workspace_name,

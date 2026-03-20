@@ -362,6 +362,7 @@ def workspace_env_usage_pipeline() -> Pipeline:
                 "workspace_last_change": "$workspace_last_change",
                 "project_name": "$project_name",
                 "user_name": "$user_name",
+                "user_login": "$user_login",
                 "environment_name": "$environment_name",
                 "environment_docker_repo": {"$first": "$environment_revision_id.metadata.dockerImageName.repository"},
                 "environment_docker_tag": {"$first": "$environment_revision_id.metadata.dockerImageName.tag"},
@@ -480,7 +481,15 @@ def runs_env_usage_pipeline() -> Pipeline:
             MongoDB aggregation pipeline stages
     """
     return [
-        {"$match": {"environmentId": {"$exists": True}, "environmentRevisionId": {"$exists": True}}},
+        {
+            "$match": {
+                "environmentId": {"$exists": True},
+                "environmentRevisionId": {"$exists": True},
+                # Exclude workspace and app sessions — these use a reusable volume and are
+                # tracked separately via the workspace_session collection.
+                "volumeSpecification._t": {"$ne": "RunReusableVolumeSpecification"},
+            }
+        },
         {
             "$lookup": {
                 "from": "environment_revisions",
