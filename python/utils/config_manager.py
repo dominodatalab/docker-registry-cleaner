@@ -95,6 +95,9 @@ class ConfigManager:
             "reports": {
                 "archived_tags": "archived-tags.json",
                 "deletion_analysis": "deletion-analysis.json",
+                "unused_environments": "unused-environments.json",
+                "old_revisions": "old-revisions.json",
+                "deactivated_user_envs": "deactivated-user-envs.json",
                 "filtered_layers": "filtered-layers.json",
                 "image_analysis": "final-report.json",
                 "images_report": "images-report",
@@ -329,6 +332,18 @@ class ConfigManager:
     def get_archived_tags_report_path(self) -> str:
         """Get archived tags report path from config"""
         return self._resolve_report_path(self.config["reports"]["archived_tags"])
+
+    def get_unused_environments_report_path(self) -> str:
+        """Get unused environments report path from config"""
+        return self._resolve_report_path(self.config["reports"]["unused_environments"])
+
+    def get_old_revisions_report_path(self) -> str:
+        """Get old revisions report path from config"""
+        return self._resolve_report_path(self.config["reports"]["old_revisions"])
+
+    def get_deactivated_user_envs_report_path(self) -> str:
+        """Get deactivated-user environments report path from config"""
+        return self._resolve_report_path(self.config["reports"]["deactivated_user_envs"])
 
     def get_unused_references_report_path(self) -> str:
         """Get unused references report path from config"""

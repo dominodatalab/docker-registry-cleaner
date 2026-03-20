@@ -1,13 +1,17 @@
+# Public URL of the Domino deployment — used for clickable links in reports and
+# to derive the ingress hostname.  Set to the external URL of your deployment,
+# e.g. https://domino.example.com
+dominoUrl: "https://domino.example.com"
+
+# Kubernetes namespace where Domino platform services run (mongodb, keycloak, …)
+dominoPlatformNamespace: domino-platform
+
+# ── Backend container configuration ──────────────────
 image:
   repository: quay.io/domino/docker-registry-cleaner
   tag: v0.4.0
   pullPolicy: Always
 
-# fsGroup makes the PVC at /data/reports writable by nonroot (65532)
-podSecurityContext:
-  fsGroup: 65532
-
-# Resource requests and limits for the container
 resources:
   requests:
     cpu: 100m
@@ -16,8 +20,13 @@ resources:
     cpu: 1000m
     memory: 1Gi
 
+# Set to "json" to enable structured JSON logging (one JSON object per line).
+# Useful for log aggregators such as Datadog or ELK that ingest pod logs.
+# Leave empty for the default human-readable format.
+logFormat: ""
+
 # Optional env overrides for external registries (ECR, Quay, GCR, ACR, etc.)
-# Registry URL is set via config.registry.url below.
+# Registry URL is set via config.registry.url above.
 env:
   registryAuthSecret: ""  # Name of a K8s secret with .dockerconfigjson for secure credential storage
   azureClientId: ""       # Client ID of the managed identity for ACR auth
@@ -34,78 +43,9 @@ extraEnv: []
 #       name: my-secret
 #       key: value
 
-imagePullSecrets:
-  - name: domino-quay-repos
-
-serviceAccount:
-  create: true
-  name: docker-registry-cleaner
-  # Optional: override full name; by default uses release-name + chart name
-  fullnameOverride: ""
-
-dominoPlatformNamespace: domino-platform
-
-# Set to "json" to enable structured JSON logging (one JSON object per line).
-# Useful for log aggregators such as Datadog or ELK that ingest pod logs.
-# Leave empty for the default human-readable format.
-logFormat: ""
-
-# Public URL of the Domino web UI — used for clickable links in reports and
-# to derive the ingress hostname.  Set to the external URL of your deployment,
-# e.g. https://domino.example.com
-dominoUrl: "https://domino.example.com"
-
-persistence:
-  enabled: true
-  size: 10Gi
-  storageClass: "dominodisk"  # Use default storage class if empty
-
-# Prometheus metrics scraping configuration
-# The backend exposes GET /metrics on port 8081 (backendApi.port).
-#
-# NetworkPolicy: set enabled=true so the Prometheus scraper can reach port 8081.
-# - Same-namespace Prometheus (e.g. running in domino-platform): set prometheusPodLabels
-#   to match the Prometheus pod labels. namespaceSelector is not used in this case.
-#   Example: prometheusPodLabels: { app: prometheus }
-# - Different-namespace Prometheus: set prometheusNamespaceLabel instead.
-#   Example: prometheusNamespaceLabel: { kubernetes.io/metadata.name: monitoring }
-# - Leave both empty to allow all pods in the same namespace to reach port 8081.
-metrics:
-  networkPolicy:
-    enabled: true
-    # Defaults match the Prometheus server pod labels on standard Domino deployments
-    # (prometheus Helm chart in domino-platform namespace). Override if your cluster
-    # runs Prometheus in a different namespace or with different labels.
-    prometheusPodLabels:
-      app.kubernetes.io/name: prometheus
-      app.kubernetes.io/component: server
-    # For cross-namespace Prometheus: set this instead of prometheusPodLabels.
-    # e.g. prometheusNamespaceLabel: { kubernetes.io/metadata.name: monitoring }
-    prometheusNamespaceLabel: {}
-
-# Backend API configuration
-# The backend container exposes a REST API on port 8081 for the frontend sidecar.
-# Port 8081 is also the Prometheus /metrics scrape endpoint.
-# This port is NOT exposed by any Kubernetes Service — it is reachable via
-# kubectl port-forward, or from a Prometheus scraper allowed by metrics.networkPolicy.
-backendApi:
-  port: 8081
-  # Name of the Kubernetes Secret that holds the API key used to authenticate
-  # frontend→backend requests. The chart creates this secret automatically with a
-  # random 32-character key on first install and preserves it across upgrades and
-  # reinstalls (helm.sh/resource-policy: keep). Override apiKeySecret to use a
-  # pre-existing secret instead.
-  apiKeySecret: "registry-cleaner-api-key"
-
-# Frontend web UI configuration (runs as sidecar in StatefulSet)
+# ── Frontend container configuration ──────────────────
 frontend:
   enabled: true
-  networkPolicy:
-    enabled: true
-    # Label on the namespace that contains the nginx ingress controller.
-    # Traffic is allowed from any pod in a namespace bearing this label.
-    ingressNamespaceLabel:
-      domino-platform: "true"
   image:
     repository: quay.io/domino/docker-registry-cleaner-frontend
     tag: v0.4.0
@@ -134,7 +74,70 @@ frontend:
       nginx.ingress.kubernetes.io/use-regex: "true"
       nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     tls: []
+  networkPolicy:
+    enabled: true
+    # Label on the namespace that contains the nginx ingress controller.
+    # Traffic is allowed from any pod in a namespace bearing this label.
+    ingressNamespaceLabel:
+      domino-platform: "true"
 
+# ── StatefulSet pod configuration ──────────────────
+imagePullSecrets:
+  - name: domino-quay-repos
+
+# fsGroup makes the PVC at /data/reports writable by nonroot (65532)
+podSecurityContext:
+  fsGroup: 65532
+
+serviceAccount:
+  create: true
+  name: docker-registry-cleaner
+  # Optional: override full name; by default uses release-name + chart name
+  fullnameOverride: ""
+
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClass: "dominodisk"  # Use default storage class if empty
+
+# Backend API configuration
+# The backend container exposes a REST API on port 8081 for the frontend sidecar.
+# Port 8081 is also the Prometheus /metrics scrape endpoint.
+# This port is NOT exposed by any Kubernetes Service — it is reachable via
+# kubectl port-forward, or from a Prometheus scraper allowed by metrics.networkPolicy.
+backendApi:
+  port: 8081
+  # Name of the Kubernetes Secret that holds the API key used to authenticate
+  # frontend→backend requests. The chart creates this secret automatically with a
+  # random 32-character key on first install and preserves it across upgrades and
+  # reinstalls (helm.sh/resource-policy: keep). Override apiKeySecret to use a
+  # pre-existing secret instead.
+  apiKeySecret: "registry-cleaner-api-key"
+
+# Prometheus metrics scraping configuration
+# The backend exposes GET /metrics on port 8081 (backendApi.port).
+#
+# NetworkPolicy: set enabled=true so the Prometheus scraper can reach port 8081.
+# - Same-namespace Prometheus (e.g. running in domino-platform): set prometheusPodLabels
+#   to match the Prometheus pod labels. namespaceSelector is not used in this case.
+#   Example: prometheusPodLabels: { app: prometheus }
+# - Different-namespace Prometheus: set prometheusNamespaceLabel instead.
+#   Example: prometheusNamespaceLabel: { kubernetes.io/metadata.name: monitoring }
+# - Leave both empty to allow all pods in the same namespace to reach port 8081.
+metrics:
+  networkPolicy:
+    enabled: true
+    # Defaults match the Prometheus server pod labels on standard Domino deployments
+    # (prometheus Helm chart in domino-platform namespace). Override if your cluster
+    # runs Prometheus in a different namespace or with different labels.
+    prometheusPodLabels:
+      app.kubernetes.io/name: prometheus
+      app.kubernetes.io/component: server
+    # For cross-namespace Prometheus: set this instead of prometheusPodLabels.
+    # e.g. prometheusNamespaceLabel: { kubernetes.io/metadata.name: monitoring }
+    prometheusNamespaceLabel: {}
+
+# ── Application configuration ──────────────────
 config:
   # Inline config.yaml content mounted into the container
   registry:
@@ -177,14 +180,8 @@ config:
   reports:
     archived_tags: "archived-tags.json"
     deletion_analysis: "deletion-analysis.json"
-    filtered_layers: "filtered-layers.json"
-    image_analysis: "final-report.json"
-    images_report: "images-report"
-    layers_and_sizes: "layers-and-sizes.json"
-    mongodb_usage: "mongodb_usage_report.json"
-    tags_per_layer: "tags-per-layer.json"
-    tag_sums: "tag-sums.json"
-    unused_references: "unused-references.json"
+    unused_environments: "unused-environments.json"
+    old_revisions: "old-revisions.json"
   security:
     dry_run_by_default: true
     require_confirmation: true
