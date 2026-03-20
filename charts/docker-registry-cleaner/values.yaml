@@ -1,6 +1,6 @@
 image:
   repository: quay.io/domino/docker-registry-cleaner
-  tag: v0.3.4
+  tag: v0.4.0
   pullPolicy: Always
 
 # fsGroup makes the PVC at /data/reports writable by nonroot (65532)
@@ -23,6 +23,17 @@ env:
   azureClientId: ""       # Client ID of the managed identity for ACR auth
   azureTenantId: ""       # Azure AD tenant ID for ACR auth
 
+# Additional environment variables injected into the main container.
+# Supports the full Kubernetes env entry syntax, including valueFrom.
+extraEnv: []
+# - name: AWS_DEFAULT_REGION
+#   value: us-west-2
+# - name: MY_SECRET
+#   valueFrom:
+#     secretKeyRef:
+#       name: my-secret
+#       key: value
+
 imagePullSecrets:
   - name: domino-quay-repos
 
@@ -39,17 +50,10 @@ dominoPlatformNamespace: domino-platform
 # Leave empty for the default human-readable format.
 logFormat: ""
 
-# Domino API configuration for admin authentication.
-# The frontend validates each request by forwarding the user's dominoAuth
-# cookie to the nucleus-frontend service and checking isAdmin on the principal.
-# Override apiUrl only if your nucleus-frontend service uses a non-standard
-# address; by default it is derived from dominoPlatformNamespace above.
-domino:
-  apiUrl: ""  # e.g. http://nucleus-frontend.domino-platform.svc.cluster.local
-  # Public URL of the Domino web UI used to build clickable links in reports.
-  # Defaults to https://{frontend.ingress.hosts[0].host} when ingress is enabled.
-  # Override only if the public URL differs from the ingress hostname.
-  uiUrl: ""
+# Public URL of the Domino web UI — used for clickable links in reports and
+# to derive the ingress hostname.  Set to the external URL of your deployment,
+# e.g. https://domino.example.com
+dominoUrl: "https://domino.example.com"
 
 persistence:
   enabled: true
@@ -104,7 +108,7 @@ frontend:
       domino-platform: "true"
   image:
     repository: quay.io/domino/docker-registry-cleaner-frontend
-    tag: v0.3.4
+    tag: v0.4.0
     pullPolicy: Always
   resources:
     requests:
@@ -118,7 +122,6 @@ frontend:
     port: 8080
     targetPort: 8080
   # Subpath under the Domino hostname where the UI will be served.
-  # Must match the path in ingress.hosts and the nginx rewrite rule.
   basePath: /registry-cleaner
   ingress:
     enabled: true
@@ -130,11 +133,6 @@ frontend:
       nginx.ingress.kubernetes.io/rewrite-target: /$2
       nginx.ingress.kubernetes.io/use-regex: "true"
       nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-    hosts:
-      - host: "domino.example.com"
-        paths:
-          - path: /registry-cleaner(/|$)(.*)
-            pathType: ImplementationSpecific
     tls: []
 
 config:

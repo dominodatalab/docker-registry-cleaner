@@ -1,11 +1,4 @@
 {{- $saName := default (include "docker-registry-cleaner.fullname" .) .Values.serviceAccount.name -}}
-{{- $uiUrl := (.Values.domino).uiUrl -}}
-{{- if and (not $uiUrl) (.Values.frontend).ingress (.Values.frontend.ingress).enabled (.Values.frontend.ingress).hosts -}}
-  {{- $firstHost := first .Values.frontend.ingress.hosts -}}
-  {{- if $firstHost.host -}}
-    {{- $uiUrl = printf "https://%s" $firstHost.host -}}
-  {{- end -}}
-{{- end -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -16,7 +9,6 @@ metadata:
     helm.sh/chart: {{ include "docker-registry-cleaner.chart" . }}
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/managed-by: {{ .Release.Service }}
-    docker-registry-client: "true"
 spec:
   serviceName: {{ include "docker-registry-cleaner.fullname" . }}
   replicas: 1
@@ -126,11 +118,9 @@ spec:
               value: {{ .Values.frontend.basePath | quote }}
             {{- end }}
             - name: DOMINO_API_URL
-              value: {{ (.Values.domino).apiUrl | default (printf "http://nucleus-frontend.%s.svc.cluster.local" .Values.dominoPlatformNamespace) | quote }}
-            {{- if $uiUrl }}
-            - name: DOMINO_UI_URL
-              value: {{ $uiUrl | quote }}
-            {{- end }}
+              value: {{ printf "http://nucleus-frontend.%s.svc.cluster.local" .Values.dominoPlatformNamespace | quote }}
+            - name: DOMINO_URL
+              value: {{ .Values.dominoUrl | quote }}
           ports:
             - name: http
               containerPort: {{ .Values.frontend.service.targetPort }}

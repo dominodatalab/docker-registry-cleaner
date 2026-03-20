@@ -1138,7 +1138,7 @@ class IntelligentImageDeleter(BaseDeletionScript):
                 report["used_images"].append(used_entry)
 
         try:
-            save_json(output_file, report)
+            save_json(output_file, report, timestamp=True)
             self.logger.info(f"Deletion analysis report saved to: {output_file}")
         except Exception as e:
             self.logger.error(f"Failed to save deletion report: {e}")
