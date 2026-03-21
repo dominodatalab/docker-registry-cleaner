@@ -1073,7 +1073,7 @@ class IntelligentImageDeleter(BaseDeletionScript):
             log_exception(self.logger, "Error calculating freed space", exc_info=e)
             return 0, {}
 
-    def generate_deletion_report(self, analysis: WorkloadAnalysis, output_file: str = "deletion-analysis.json") -> None:
+    def generate_deletion_report(self, analysis: WorkloadAnalysis, output_file: str = "deletion-analysis.json") -> str:
         """Generate a detailed deletion analysis report"""
         report = {
             "summary": {
@@ -1138,10 +1138,12 @@ class IntelligentImageDeleter(BaseDeletionScript):
                 report["used_images"].append(used_entry)
 
         try:
-            save_json(output_file, report, timestamp=True)
-            self.logger.info(f"Deletion analysis report saved to: {output_file}")
+            saved_path = save_json(output_file, report, timestamp=True)
+            self.logger.info(f"Deletion analysis report saved to: {saved_path}")
+            return saved_path
         except Exception as e:
             self.logger.error(f"Failed to save deletion report: {e}")
+            return output_file
 
         # Log summary
         self.logger.info("\n📊 Deletion Analysis Summary:")

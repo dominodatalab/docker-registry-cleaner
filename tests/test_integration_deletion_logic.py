@@ -115,18 +115,18 @@ class TestDeletionLogic:
             temp_path = f.name
 
         try:
-            self.deleter.generate_deletion_report(analysis, temp_path)
+            saved_path = self.deleter.generate_deletion_report(analysis, temp_path)
 
-            assert os.path.exists(temp_path)
-            with open(temp_path, "r") as f:
+            assert os.path.exists(saved_path)
+            with open(saved_path, "r") as f:
                 report = json.load(f)
 
             assert report["summary"]["unused_images"] == 2
             assert report["summary"]["total_size_saved"] == 5000
             assert len(report["unused_images"]) == 2
         finally:
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
+            if os.path.exists(saved_path):
+                os.unlink(saved_path)
 
     @patch("scripts.delete_image.SkopeoClient")
     def test_delete_unused_images_dry_run(self, mock_skopeo_class):
