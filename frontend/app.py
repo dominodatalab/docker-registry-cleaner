@@ -150,10 +150,7 @@ def get_report_files() -> List[Dict]:
 
     reports = []
     for file_path in sorted(
-        (
-            p for p in REPORTS_DIR.glob("*.json")
-            if p.name.startswith(_USER_FACING_REPORT_PREFIXES)
-        ),
+        (p for p in REPORTS_DIR.glob("*.json") if p.name.startswith(_USER_FACING_REPORT_PREFIXES)),
         key=lambda x: x.stat().st_mtime,
         reverse=True,
     ):
