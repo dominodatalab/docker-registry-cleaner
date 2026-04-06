@@ -153,11 +153,15 @@ class SkopeoClient:
         os.environ["REGISTRY_AUTH_FILE"] = self.auth_file
 
         # Remove auth file from the old location (inside output_dir) if still present.
-        _old_auth_file = os.path.join(config_manager.get_output_dir(), ".registry-auth.json")
-        try:
-            os.remove(_old_auth_file)
-        except FileNotFoundError:
-            pass
+        # config_manager places auth_file one level above output_dir; the old code
+        # placed it inside output_dir alongside the reports.
+        _output_dir = config_manager.get_output_dir()
+        if isinstance(_output_dir, str):
+            _old_auth_file = os.path.join(_output_dir, ".registry-auth.json")
+            try:
+                os.remove(_old_auth_file)
+            except OSError:
+                pass
 
         # Get credentials
         self.username = self._get_registry_username()
