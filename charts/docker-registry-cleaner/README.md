@@ -32,7 +32,7 @@ kubectl exec -it docker-registry-cleaner-0 -n domino-platform -- docker-registry
 ```bash
 helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
   --namespace domino-platform \
-  --set image.tag=v0.3.4 \
+  --set image.tag=v0.4.0 \
   --set resources.requests.memory=512Mi \
   --set persistence.size=20Gi
 ```
@@ -54,7 +54,7 @@ helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
 ```bash
 cat > custom-values.yaml <<EOF
 image:
-  tag: v0.3.4
+  tag: v0.4.0
 resources:
   requests:
     memory: 512Mi
@@ -78,7 +78,7 @@ helm install docker-registry-cleaner ./charts/docker-registry-cleaner \
 # Upgrade to a new version
 helm upgrade docker-registry-cleaner ./charts/docker-registry-cleaner \
   --namespace domino-platform \
-  --set image.tag=v0.3.5
+  --set image.tag=v0.4.1
 
 # Upgrade with custom values
 helm upgrade docker-registry-cleaner ./charts/docker-registry-cleaner \
@@ -101,7 +101,7 @@ The following table lists the configurable parameters of the Docker Registry Cle
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `image.repository` | Container image repository | `quay.io/domino/docker-registry-cleaner` |
-| `image.tag` | Container image tag | `v0.3.4` |
+| `image.tag` | Container image tag | `v0.4.0` |
 | `image.pullPolicy` | Image pull policy | `Always` |
 | `imagePullSecrets` | Image pull secrets | `[{name: domino-quay-repos}]` |
 
@@ -145,15 +145,14 @@ The following table lists the configurable parameters of the Docker Registry Cle
 |-----------|-------------|---------|
 | `frontend.enabled` | Deploy the Flask web UI sidecar | `true` |
 | `frontend.image.repository` | Frontend image repository | `quay.io/domino/docker-registry-cleaner-frontend` |
-| `frontend.image.tag` | Frontend image tag | `v0.3.4` |
+| `frontend.image.tag` | Frontend image tag | `v0.4.0` |
 | `frontend.basePath` | Subpath under the Domino hostname where the UI is served | `/registry-cleaner` |
 | `frontend.service.port` | Service port | `8080` |
 | `frontend.ingress.enabled` | Create an nginx Ingress for the frontend | `true` |
-| `frontend.ingress.hosts` | Ingress hostname and path configuration | see `values.yaml` |
 | `frontend.networkPolicy.enabled` | Create a NetworkPolicy allowing ingress traffic | `true` |
 | `frontend.networkPolicy.ingressNamespaceLabel` | Namespace label identifying the nginx controller | `domino-platform: "true"` |
 | `frontend.networkPolicy.ingressPodLabels` | Optional additional pod labels to restrict ingress | `{}` |
-| `domino.apiUrl` | URL of the nucleus-frontend service for admin auth | derived from `dominoPlatformNamespace` |
+| `dominoUrl` | Public URL of the Domino deployment — used for report links and to derive the ingress hostname | `https://domino.example.com` |
 
 ### Prometheus Metrics
 

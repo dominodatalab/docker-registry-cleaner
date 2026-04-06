@@ -56,40 +56,49 @@ class TestGetReportFiles:
         assert get_report_files() == []
 
     def test_returns_json_files(self, reports_dir):
-        (reports_dir / "report.json").write_text("{}")
+        (reports_dir / "deletion-analysis.json").write_text("{}")
         files = get_report_files()
         assert len(files) == 1
-        assert files[0]["name"] == "report.json"
+        assert files[0]["name"] == "deletion-analysis.json"
 
     def test_auth_file_not_in_reports_dir(self, reports_dir):
         # .registry-auth.json lives one directory above reports; glob("*.json")
         # should never encounter it here.
-        (reports_dir / "report.json").write_text("{}")
+        (reports_dir / "deletion-analysis.json").write_text("{}")
         names = [f["name"] for f in get_report_files()]
-        assert "report.json" in names
+        assert "deletion-analysis.json" in names
         assert not any(n.startswith(".") for n in names)
 
     def test_sorted_newest_first(self, reports_dir):
-        a = reports_dir / "a.json"
+        a = reports_dir / "archived-tags.json"
         a.write_text("{}")
         time.sleep(0.02)
-        b = reports_dir / "b.json"
+        b = reports_dir / "deletion-analysis.json"
         b.write_text("{}")
         files = get_report_files()
-        assert files[0]["name"] == "b.json"
-        assert files[1]["name"] == "a.json"
+        assert files[0]["name"] == "deletion-analysis.json"
+        assert files[1]["name"] == "archived-tags.json"
 
     def test_metadata_fields_present(self, reports_dir):
-        (reports_dir / "report.json").write_text("{}")
+        (reports_dir / "deletion-analysis.json").write_text("{}")
         f = get_report_files()[0]
         assert {"name", "size", "modified", "timestamp"} <= f.keys()
 
     def test_ignores_non_json_files(self, reports_dir):
         (reports_dir / "data.txt").write_text("text")
-        (reports_dir / "report.json").write_text("{}")
+        (reports_dir / "deletion-analysis.json").write_text("{}")
         files = get_report_files()
         assert all(f["name"].endswith(".json") for f in files)
         assert len(files) == 1
+
+    def test_filters_backend_only_files(self, reports_dir):
+        (reports_dir / "final-report.json").write_text("{}")
+        (reports_dir / "layers-and-sizes.json").write_text("{}")
+        (reports_dir / "mongodb_usage_report.json").write_text("{}")
+        (reports_dir / "deletion-analysis.json").write_text("{}")
+        files = get_report_files()
+        names = [f["name"] for f in files]
+        assert names == ["deletion-analysis.json"]
 
 
 # ── load_report ────────────────────────────────────────────────────────────────
@@ -142,8 +151,8 @@ class TestRoutes:
         assert r.status_code == 200
 
     def test_api_reports_list(self, client, reports_dir):
-        (reports_dir / "r1.json").write_text("{}")
-        (reports_dir / "r2.json").write_text("{}")
+        (reports_dir / "deletion-analysis.json").write_text("{}")
+        (reports_dir / "archived-tags.json").write_text("{}")
         r = client.get("/api/reports")
         assert r.status_code == 200
         assert len(r.get_json()) == 2

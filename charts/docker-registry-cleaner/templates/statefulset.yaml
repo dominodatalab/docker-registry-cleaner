@@ -9,7 +9,6 @@ metadata:
     helm.sh/chart: {{ include "docker-registry-cleaner.chart" . }}
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/managed-by: {{ .Release.Service }}
-    docker-registry-client: "true"
 spec:
   serviceName: {{ include "docker-registry-cleaner.fullname" . }}
   replicas: 1
@@ -34,6 +33,8 @@ spec:
       # fsGroup makes the PVC at /data/reports writable by nonroot (65532)
       securityContext:
         fsGroup: {{ (.Values.podSecurityContext | default dict).fsGroup | default 65532 }}
+      nodeSelector:
+        dominodatalab.com/node-pool: platform
       serviceAccountName: {{ $saName }}
       imagePullSecrets:
 {{- range .Values.imagePullSecrets }}
@@ -117,7 +118,9 @@ spec:
               value: {{ .Values.frontend.basePath | quote }}
             {{- end }}
             - name: DOMINO_API_URL
-              value: {{ (.Values.domino).apiUrl | default (printf "http://nucleus-frontend.%s.svc.cluster.local" .Values.dominoPlatformNamespace) | quote }}
+              value: {{ printf "http://nucleus-frontend.%s.svc.cluster.local" .Values.dominoPlatformNamespace | quote }}
+            - name: DOMINO_URL
+              value: {{ .Values.dominoUrl | quote }}
           ports:
             - name: http
               containerPort: {{ .Values.frontend.service.targetPort }}

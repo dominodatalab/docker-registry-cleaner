@@ -358,6 +358,40 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
             },
         ],
     },
+    "delete_old_revisions": {
+        "description": "Find (or delete) old environment revisions, keeping the N most recent per environment",
+        "destructive": True,
+        "params": [
+            {
+                "name": "keep_revisions",
+                "flag": "--keep-revisions",
+                "type": "int",
+                "default": 5,
+                "help": "Number of most recent revisions to keep per environment (default: 5)",
+            },
+            {
+                "name": "apply",
+                "flag": "--apply",
+                "type": "bool",
+                "default": False,
+                "help": "Actually delete old revisions (default is dry-run — no deletions occur without this)",
+            },
+            {
+                "name": "generate_reports",
+                "flag": "--generate-reports",
+                "type": "bool",
+                "default": False,
+                "help": "Force regeneration of metadata reports before analysis",
+            },
+            {
+                "name": "mongo_cleanup",
+                "flag": "--mongo-cleanup",
+                "type": "bool",
+                "default": False,
+                "help": "Also delete MongoDB environment_revision records after Docker image deletion",
+            },
+        ],
+    },
     "delete_unused_references": {
         "description": "Find (or delete) MongoDB references to non-existent Docker images",
         "destructive": True,
