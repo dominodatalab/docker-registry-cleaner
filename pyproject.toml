@@ -15,6 +15,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.14",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
 ]
@@ -47,8 +48,8 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.10.0",
-    "black>=24.0.0,<26.0.0",
-    "isort>=5.13.0",
+    "black>=26.1.0,<27.0.0",
+    "isort>=6.0.0",
     "flake8>=7.0.0",
     "flake8-bugbear>=24.0.0",
     "mypy>=1.8.0",
