@@ -19,6 +19,12 @@ from utils.cache_utils import cached_image_inspect, cached_tag_list
 from utils.retry_utils import is_retryable_error, retry_with_backoff
 
 
+class _AuthExpiredError(Exception):
+    """Internal signal that skopeo returned 401 — triggers a one-shot re-authentication."""
+
+    pass
+
+
 class ImageNotFoundError(Exception):
     """Raised when an image tag does not exist in the registry.
 
@@ -141,10 +147,17 @@ class SkopeoClient:
         self._rate_limiter = None
         self._rate_limiter_lock = Lock()
 
-        # Set up auth file
-        auth_dir = config_manager.get_output_dir()
-        self.auth_file = os.path.join(auth_dir, ".registry-auth.json")
+        # Set up auth file — use the path config_manager already resolved (one level
+        # above output_dir so credentials don't appear alongside report files).
+        self.auth_file = config_manager.auth_file
         os.environ["REGISTRY_AUTH_FILE"] = self.auth_file
+
+        # Remove auth file from the old location (inside output_dir) if still present.
+        _old_auth_file = os.path.join(config_manager.get_output_dir(), ".registry-auth.json")
+        try:
+            os.remove(_old_auth_file)
+        except FileNotFoundError:
+            pass
 
         # Get credentials
         self.username = self._get_registry_username()
@@ -270,6 +283,21 @@ class SkopeoClient:
 
             raise create_registry_auth_error(self.registry_url, e)
 
+    def refresh_auth(self) -> None:
+        """Re-authenticate with the registry, fetching fresh credentials.
+
+        Re-reads credentials from the configured source (environment variable,
+        Kubernetes secret, or cloud provider) and runs skopeo login again.
+        Useful for long-running operations where tokens (ACR ~3h, ECR 12h)
+        may expire mid-run.
+        """
+        logging.info("Refreshing registry authentication...")
+        self._logged_in = False
+        self.username = self._get_registry_username()
+        self.password = self._get_registry_password()
+        self._ensure_logged_in()
+        logging.info("Registry authentication refreshed")
+
     def _login_to_registry(self):
         """Login to the registry using skopeo login."""
         if not self.username:
@@ -359,6 +387,8 @@ class SkopeoClient:
                     from utils.error_utils import create_rate_limit_error
 
                     raise create_rate_limit_error(f"skopeo {subcommand}", retry_after=1.0)
+                if "401" in error_str or "unauthorized" in error_str:
+                    raise _AuthExpiredError(e.stderr.strip())
                 if (
                     "manifest unknown" in error_str
                     or "name unknown" in error_str
@@ -381,6 +411,14 @@ class SkopeoClient:
 
         try:
             return _execute()
+        except _AuthExpiredError as e:
+            logging.warning(f"Registry credentials expired, refreshing and retrying: {e}")
+            self.refresh_auth()
+            try:
+                return _execute()
+            except Exception as retry_e:
+                logging.error(f"Skopeo command failed after re-authentication: {retry_e}")
+                return None
         except ImageNotFoundError as e:
             logging.warning(str(e))
             return None

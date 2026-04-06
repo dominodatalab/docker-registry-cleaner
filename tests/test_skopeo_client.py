@@ -108,6 +108,7 @@ class TestSkopeoClientInitialization:
         mock.get_repository.return_value = "myrepo"
         mock.get_domino_platform_namespace.return_value = "domino-platform"
         mock.get_output_dir.return_value = "/tmp/output"
+        mock.auth_file = "/tmp/.registry-auth.json"
         mock.get_skopeo_rate_limit_enabled.return_value = True
         mock.get_skopeo_rate_limit_rps.return_value = 10.0
         mock.get_skopeo_rate_limit_burst.return_value = 20
@@ -172,6 +173,7 @@ class TestSkopeoClientCredentials:
         mock.get_repository.return_value = "myrepo"
         mock.get_domino_platform_namespace.return_value = "domino-platform"
         mock.get_output_dir.return_value = "/tmp/output"
+        mock.auth_file = "/tmp/.registry-auth.json"
         mock.get_skopeo_rate_limit_enabled.return_value = False
         mock.get_max_retries.return_value = 3
         mock.get_retry_initial_delay.return_value = 1.0
@@ -252,6 +254,7 @@ class TestSkopeoClientOperations:
         mock_config.get_repository.return_value = "myrepo"
         mock_config.get_domino_platform_namespace.return_value = "domino-platform"
         mock_config.get_output_dir.return_value = "/tmp/output"
+        mock_config.auth_file = "/tmp/.registry-auth.json"
         mock_config.get_skopeo_rate_limit_enabled.return_value = False
         mock_config.get_max_retries.return_value = 3
         mock_config.get_retry_initial_delay.return_value = 1.0
@@ -366,6 +369,7 @@ class TestSkopeoClientRateLimiting:
         mock_config.get_repository.return_value = "myrepo"
         mock_config.get_domino_platform_namespace.return_value = "domino-platform"
         mock_config.get_output_dir.return_value = "/tmp/output"
+        mock_config.auth_file = "/tmp/.registry-auth.json"
         mock_config.get_skopeo_rate_limit_enabled.return_value = True
         mock_config.get_skopeo_rate_limit_rps.return_value = 10.0
         mock_config.get_skopeo_rate_limit_burst.return_value = 5
@@ -421,6 +425,7 @@ class TestSkopeoClientRegistryDeletion:
         mock_config.get_repository.return_value = "myrepo"
         mock_config.get_domino_platform_namespace.return_value = "domino-platform"
         mock_config.get_output_dir.return_value = "/tmp/output"
+        mock_config.auth_file = "/tmp/.registry-auth.json"
         mock_config.get_skopeo_rate_limit_enabled.return_value = False
         mock_config.get_max_retries.return_value = 3
         mock_config.get_retry_initial_delay.return_value = 1.0
@@ -510,6 +515,7 @@ class TestSkopeoClientLogin:
         mock.get_repository.return_value = "myrepo"
         mock.get_domino_platform_namespace.return_value = "domino-platform"
         mock.get_output_dir.return_value = "/tmp/output"
+        mock.auth_file = "/tmp/.registry-auth.json"
         mock.get_skopeo_rate_limit_enabled.return_value = False
         mock.get_max_retries.return_value = 3
         mock.get_retry_initial_delay.return_value = 1.0
@@ -575,6 +581,7 @@ class TestSkopeoClientCommandBuilding:
         mock_config.get_repository.return_value = "myrepo"
         mock_config.get_domino_platform_namespace.return_value = "domino-platform"
         mock_config.get_output_dir.return_value = "/tmp/output"
+        mock_config.auth_file = "/tmp/.registry-auth.json"
         mock_config.get_skopeo_rate_limit_enabled.return_value = False
         mock_config.get_max_retries.return_value = 3
         mock_config.get_retry_initial_delay.return_value = 1.0
