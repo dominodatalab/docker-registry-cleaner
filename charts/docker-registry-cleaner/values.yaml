@@ -9,11 +9,7 @@ dominoPlatformNamespace: domino-platform
 # ── Backend container configuration ──────────────────
 image:
   repository: quay.io/domino/docker-registry-cleaner
-<<<<<<< HEAD
   tag: v0.4.1
-=======
-  tag: v0.4.1
->>>>>>> f4caf4b (Frontend Fixes from Testing (#56))
   pullPolicy: Always
 
 resources:

@@ -72,11 +72,7 @@ docker rm registry-cleaner-ui
 
 ```bash
 # Build with version tag
-<<<<<<< HEAD
 VERSION=v0.4.1
-=======
-VERSION=v0.4.1
->>>>>>> f4caf4b (Frontend Fixes from Testing (#56))
 docker build -f frontend/Dockerfile \
   -t quay.io/domino/docker-registry-cleaner-frontend:${VERSION} \
   -t quay.io/domino/docker-registry-cleaner-frontend:latest \
@@ -101,11 +97,7 @@ frontend:
   enabled: true
   image:
     repository: quay.io/domino/docker-registry-cleaner-frontend
-<<<<<<< HEAD
     tag: v0.4.1
-=======
-    tag: v0.4.1
->>>>>>> f4caf4b (Frontend Fixes from Testing (#56))
     pullPolicy: Always
 ```
 
