@@ -1,13 +1,21 @@
+# Public URL of the Domino deployment — used for clickable links in reports and
+# to derive the ingress hostname.  Set to the external URL of your deployment,
+# e.g. https://domino.example.com
+dominoUrl: "https://domino.example.com"
+
+# Kubernetes namespace where Domino platform services run (mongodb, keycloak, …)
+dominoPlatformNamespace: domino-platform
+
+# ── Backend container configuration ──────────────────
 image:
   repository: quay.io/domino/docker-registry-cleaner
+<<<<<<< HEAD
   tag: v0.3.5
+=======
+  tag: v0.4.0
+>>>>>>> f4caf4b (Frontend Fixes from Testing (#56))
   pullPolicy: Always
 
-# fsGroup makes the PVC at /data/reports writable by nonroot (65532)
-podSecurityContext:
-  fsGroup: 65532
-
-# Resource requests and limits for the container
 resources:
   requests:
     cpu: 100m
@@ -16,15 +24,74 @@ resources:
     cpu: 1000m
     memory: 1Gi
 
+# Set to "json" to enable structured JSON logging (one JSON object per line).
+# Useful for log aggregators such as Datadog or ELK that ingest pod logs.
+# Leave empty for the default human-readable format.
+logFormat: ""
+
 # Optional env overrides for external registries (ECR, Quay, GCR, ACR, etc.)
-# Registry URL is set via config.registry.url below.
+# Registry URL is set via config.registry.url above.
 env:
   registryAuthSecret: ""  # Name of a K8s secret with .dockerconfigjson for secure credential storage
   azureClientId: ""       # Client ID of the managed identity for ACR auth
   azureTenantId: ""       # Azure AD tenant ID for ACR auth
 
+# Additional environment variables injected into the main container.
+# Supports the full Kubernetes env entry syntax, including valueFrom.
+extraEnv: []
+# - name: AWS_DEFAULT_REGION
+#   value: us-west-2
+# - name: MY_SECRET
+#   valueFrom:
+#     secretKeyRef:
+#       name: my-secret
+#       key: value
+
+# ── Frontend container configuration ──────────────────
+frontend:
+  enabled: true
+  image:
+    repository: quay.io/domino/docker-registry-cleaner-frontend
+    tag: v0.4.0
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  service:
+    type: ClusterIP
+    port: 8080
+    targetPort: 8080
+  # Subpath under the Domino hostname where the UI will be served.
+  basePath: /registry-cleaner
+  ingress:
+    enabled: true
+    className: nginx
+    # Nginx rewrites /registry-cleaner/foo → /foo before forwarding to Flask.
+    # FLASK_BASE_PATH (= frontend.basePath) tells Flask its SCRIPT_NAME so that
+    # url_for() generates correct prefixed URLs — no configuration-snippet needed.
+    annotations:
+      nginx.ingress.kubernetes.io/rewrite-target: /$2
+      nginx.ingress.kubernetes.io/use-regex: "true"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    tls: []
+  networkPolicy:
+    enabled: true
+    # Label on the namespace that contains the nginx ingress controller.
+    # Traffic is allowed from any pod in a namespace bearing this label.
+    ingressNamespaceLabel:
+      domino-platform: "true"
+
+# ── StatefulSet pod configuration ──────────────────
 imagePullSecrets:
   - name: domino-quay-repos
+
+# fsGroup makes the PVC at /data/reports writable by nonroot (65532)
+podSecurityContext:
+  fsGroup: 65532
 
 serviceAccount:
   create: true
@@ -32,25 +99,24 @@ serviceAccount:
   # Optional: override full name; by default uses release-name + chart name
   fullnameOverride: ""
 
-dominoPlatformNamespace: domino-platform
-
-# Set to "json" to enable structured JSON logging (one JSON object per line).
-# Useful for log aggregators such as Datadog or ELK that ingest pod logs.
-# Leave empty for the default human-readable format.
-logFormat: ""
-
-# Domino API configuration for admin authentication.
-# The frontend validates each request by forwarding the user's dominoAuth
-# cookie to the nucleus-frontend service and checking isAdmin on the principal.
-# Override apiUrl only if your nucleus-frontend service uses a non-standard
-# address; by default it is derived from dominoPlatformNamespace above.
-domino:
-  apiUrl: ""  # e.g. http://nucleus-frontend.domino-platform.svc.cluster.local
-
 persistence:
   enabled: true
   size: 10Gi
   storageClass: "dominodisk"  # Use default storage class if empty
+
+# Backend API configuration
+# The backend container exposes a REST API on port 8081 for the frontend sidecar.
+# Port 8081 is also the Prometheus /metrics scrape endpoint.
+# This port is NOT exposed by any Kubernetes Service — it is reachable via
+# kubectl port-forward, or from a Prometheus scraper allowed by metrics.networkPolicy.
+backendApi:
+  port: 8081
+  # Name of the Kubernetes Secret that holds the API key used to authenticate
+  # frontend→backend requests. The chart creates this secret automatically with a
+  # random 32-character key on first install and preserves it across upgrades and
+  # reinstalls (helm.sh/resource-policy: keep). Override apiKeySecret to use a
+  # pre-existing secret instead.
+  apiKeySecret: "registry-cleaner-api-key"
 
 # Prometheus metrics scraping configuration
 # The backend exposes GET /metrics on port 8081 (backendApi.port).
@@ -75,64 +141,7 @@ metrics:
     # e.g. prometheusNamespaceLabel: { kubernetes.io/metadata.name: monitoring }
     prometheusNamespaceLabel: {}
 
-# Backend API configuration
-# The backend container exposes a REST API on port 8081 for the frontend sidecar.
-# Port 8081 is also the Prometheus /metrics scrape endpoint.
-# This port is NOT exposed by any Kubernetes Service — it is reachable via
-# kubectl port-forward, or from a Prometheus scraper allowed by metrics.networkPolicy.
-backendApi:
-  port: 8081
-  # Name of the Kubernetes Secret that holds the API key used to authenticate
-  # frontend→backend requests. The chart creates this secret automatically with a
-  # random 32-character key on first install and preserves it across upgrades and
-  # reinstalls (helm.sh/resource-policy: keep). Override apiKeySecret to use a
-  # pre-existing secret instead.
-  apiKeySecret: "registry-cleaner-api-key"
-
-# Frontend web UI configuration (runs as sidecar in StatefulSet)
-frontend:
-  enabled: true
-  networkPolicy:
-    enabled: true
-    # Label on the namespace that contains the nginx ingress controller.
-    # Traffic is allowed from any pod in a namespace bearing this label.
-    ingressNamespaceLabel:
-      domino-platform: "true"
-  image:
-    repository: quay.io/domino/docker-registry-cleaner-frontend
-    tag: v0.3.5
-    pullPolicy: Always
-  resources:
-    requests:
-      cpu: 50m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-  service:
-    type: ClusterIP
-    port: 8080
-    targetPort: 8080
-  # Subpath under the Domino hostname where the UI will be served.
-  # Must match the path in ingress.hosts and the nginx rewrite rule.
-  basePath: /registry-cleaner
-  ingress:
-    enabled: true
-    className: nginx
-    # Nginx rewrites /registry-cleaner/foo → /foo before forwarding to Flask.
-    # FLASK_BASE_PATH (= frontend.basePath) tells Flask its SCRIPT_NAME so that
-    # url_for() generates correct prefixed URLs — no configuration-snippet needed.
-    annotations:
-      nginx.ingress.kubernetes.io/rewrite-target: /$2
-      nginx.ingress.kubernetes.io/use-regex: "true"
-      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-    hosts:
-      - host: "domino.example.com"
-        paths:
-          - path: /registry-cleaner(/|$)(.*)
-            pathType: ImplementationSpecific
-    tls: []
-
+# ── Application configuration ──────────────────
 config:
   # Inline config.yaml content mounted into the container
   registry:
@@ -175,14 +184,8 @@ config:
   reports:
     archived_tags: "archived-tags.json"
     deletion_analysis: "deletion-analysis.json"
-    filtered_layers: "filtered-layers.json"
-    image_analysis: "final-report.json"
-    images_report: "images-report"
-    layers_and_sizes: "layers-and-sizes.json"
-    mongodb_usage: "mongodb_usage_report.json"
-    tags_per_layer: "tags-per-layer.json"
-    tag_sums: "tag-sums.json"
-    unused_references: "unused-references.json"
+    unused_environments: "unused-environments.json"
+    old_revisions: "old-revisions.json"
   security:
     dry_run_by_default: true
     require_confirmation: true

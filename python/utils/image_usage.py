@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, TypedDict, Union
 
 from utils.config_manager import config_manager
-from utils.mongo_utils import bson_to_jsonable, get_mongo_client
+from utils.mongo_utils import get_mongo_client
 from utils.report_utils import save_json
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,7 @@ class RunInfo(TypedDict, total=False):
     project_name: str
     project_owner_id: str
     project_owner_name: str
+    project_owner_login: str
     status: str
     started: Optional[str]
     completed: Optional[str]
@@ -50,6 +51,7 @@ class WorkspaceInfo(TypedDict, total=False):
     workspace_id: str
     workspace_name: str
     project_name: str
+    user_login: str
     usage_type: str
     workspace_last_change: Optional[str]
 
@@ -59,6 +61,7 @@ class ModelInfo(TypedDict, total=False):
 
     model_id: str
     model_name: str
+    model_owner_login: str
     version_id: str
 
 
@@ -346,13 +349,9 @@ class ImageUsageService:
         """
         results = self.run_aggregations(target)
 
-        # Convert all results to JSON-serializable format
         consolidated = {}
         for key in ["runs", "workspaces", "models", "projects", "scheduler_jobs", "organizations", "app_versions"]:
-            if key in results:
-                consolidated[key] = bson_to_jsonable(results[key])
-            else:
-                consolidated[key] = []
+            consolidated[key] = results.get(key, [])
 
         # Save to consolidated file with timestamp
         save_json(
@@ -493,6 +492,7 @@ class ImageUsageService:
                     "project_name": record.get("project_name", "unknown"),
                     "project_owner_id": record.get("project_owner_id", "unknown"),
                     "project_owner_name": record.get("project_owner_name", "unknown"),
+                    "project_owner_login": record.get("project_owner_login", ""),
                     "status": record.get("status", "unknown"),
                     "started": record.get("started") or record.get("any_started"),
                     "completed": record.get("completed") or record.get("any_completed") or record.get("last_used"),
@@ -526,10 +526,15 @@ class ImageUsageService:
                             "organizations": [],
                             "app_versions": [],
                         }
+                    # Skip if this workspace is already recorded for this tag (same image
+                    # can appear in multiple tag fields, e.g. environment + project_default)
+                    if any(w["workspace_id"] == workspace_id for w in usage_info[tag]["workspaces"]):
+                        continue
                     workspace_usage = {
                         "workspace_id": workspace_id,
                         "workspace_name": workspace_name,
                         "project_name": project_name,
+                        "user_login": record.get("user_login", ""),
                         "usage_type": usage_type,
                         "workspace_last_change": record.get("workspace_last_change"),
                     }
@@ -563,6 +568,7 @@ class ImageUsageService:
                     model_info = {
                         "model_id": model_id,
                         "model_name": model_name,
+                        "model_owner_login": record.get("model_owner_login", ""),
                         "version_id": version_id,
                     }
                     usage_info[tag]["models"].append(model_info)
@@ -586,6 +592,7 @@ class ImageUsageService:
                     "_id": str(record.get("project_id", "")),
                     "name": record.get("project_name", "unknown"),
                     "ownerId": str(record.get("owner_id", "")) if record.get("owner_id") else "unknown",
+                    "owner_login": record.get("owner_login", ""),
                 }
                 usage_info[tag]["projects"].append(project_info)
 

@@ -6,9 +6,9 @@ This script analyzes workload usage patterns and safely deletes unused Docker im
 from the registry while preserving all actively used ones.
 
 Configuration:
-  Registry password is sourced from (in priority order):
+  Registry password is sourced from:
   1. REGISTRY_PASSWORD environment variable
-  2. config.yaml registry.password field
+  For K8s secret-based auth, set REGISTRY_AUTH_SECRET (handled by SkopeoClient directly).
 
 Usage examples:
   # Delete a specific image (dry-run)
@@ -1073,7 +1073,7 @@ class IntelligentImageDeleter(BaseDeletionScript):
             log_exception(self.logger, "Error calculating freed space", exc_info=e)
             return 0, {}
 
-    def generate_deletion_report(self, analysis: WorkloadAnalysis, output_file: str = "deletion-analysis.json") -> None:
+    def generate_deletion_report(self, analysis: WorkloadAnalysis, output_file: str = "deletion-analysis.json") -> str:
         """Generate a detailed deletion analysis report"""
         report = {
             "summary": {
@@ -1120,8 +1120,6 @@ class IntelligentImageDeleter(BaseDeletionScript):
             if matching_stats:
                 size_bytes = matching_stats.get("size", 0)
                 usage = matching_stats.get("usage", {})
-                # Include only summary info - counts and why_cannot_delete
-                # Full usage details removed to reduce file size (available in unused_images if needed)
                 used_entry = {
                     "tag": image_tag,
                     "size_bytes": size_bytes,
@@ -1134,15 +1132,18 @@ class IntelligentImageDeleter(BaseDeletionScript):
                     "projects_count": len(usage.get("projects", [])),
                     "organizations_count": len(usage.get("organizations", [])),
                     "app_versions_count": len(usage.get("app_versions", [])),
+                    "usage": usage,
                     "why_cannot_delete": self._generate_usage_summary(usage),
                 }
                 report["used_images"].append(used_entry)
 
         try:
-            save_json(output_file, report)
-            self.logger.info(f"Deletion analysis report saved to: {output_file}")
+            saved_path = save_json(output_file, report, timestamp=True)
+            self.logger.info(f"Deletion analysis report saved to: {saved_path}")
+            return saved_path
         except Exception as e:
             self.logger.error(f"Failed to save deletion report: {e}")
+            return output_file
 
         # Log summary
         self.logger.info("\n📊 Deletion Analysis Summary:")
@@ -1714,8 +1715,8 @@ def main():
             f"Filtering images by ObjectIDs from file '{args.input}': environment={len(env_ids)}, environmentRevision={len(env_rev_ids)}, model={len(model_ids)}, modelVersion={len(model_ver_ids)}"
         )
 
-    # Get password from env var or config
-    password = os.environ.get("REGISTRY_PASSWORD") or config_manager.get_registry_password()
+    # Get password from env var (auth via K8s secret is handled by SkopeoClient directly)
+    password = os.environ.get("REGISTRY_PASSWORD")
 
     # Default to dry-run unless --apply is specified
     dry_run = not args.apply

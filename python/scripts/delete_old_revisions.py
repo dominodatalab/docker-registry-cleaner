@@ -589,7 +589,7 @@ def main() -> None:
 
     registry_url = args.registry_url or config_manager.get_registry_url()
     repository = args.repository or config_manager.get_repository()
-    output_file = args.output or str(Path(config_manager.get_output_dir()) / "old-revisions.json")
+    output_file = args.output or config_manager.get_old_revisions_report_path()
 
     try:
         cleaner = OldRevisionCleaner(

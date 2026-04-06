@@ -25,6 +25,10 @@ FLASK_BASE_PATH = os.environ.get("FLASK_BASE_PATH", "")
 # and verifying that the caller is a system administrator.  Leave unset to
 # disable auth (useful for local development).
 DOMINO_API_URL = os.environ.get("DOMINO_API_URL", "")
+# Public URL of the Domino deployment, used to build clickable links to assets
+# (runs, workspaces, projects, etc.) in reports.  Should be the external hostname,
+# e.g. https://my-domino.example.com.
+DOMINO_URL = os.environ.get("DOMINO_URL", "")
 
 
 # Flask app setup
@@ -129,6 +133,16 @@ def _backend_headers() -> Dict[str, str]:
     return headers
 
 
+_USER_FACING_REPORT_PREFIXES = (
+    "deletion-analysis",
+    "archived-tags",
+    "unused-environments",
+    "old-revisions",
+    "image-size-report",
+    "user-size-report",
+)
+
+
 def get_report_files() -> List[Dict]:
     """Get list of report files with metadata"""
     if not REPORTS_DIR.exists():
@@ -136,7 +150,7 @@ def get_report_files() -> List[Dict]:
 
     reports = []
     for file_path in sorted(
-        REPORTS_DIR.glob("*.json"),
+        (p for p in REPORTS_DIR.glob("*.json") if p.name.startswith(_USER_FACING_REPORT_PREFIXES)),
         key=lambda x: x.stat().st_mtime,
         reverse=True,
     ):
@@ -222,8 +236,13 @@ def view_report(filename):
     elif "final-report" in filename:
         report_type = "final_report"
 
+    domino_url = DOMINO_URL.rstrip("/") if DOMINO_URL else ""
     return render_template(
-        "report.html", filename=filename, report_type=report_type, report_data=json.dumps(report_data, indent=2)
+        "report.html",
+        filename=filename,
+        report_type=report_type,
+        report_data=json.dumps(report_data, indent=2),
+        domino_url=domino_url,
     )
 
 

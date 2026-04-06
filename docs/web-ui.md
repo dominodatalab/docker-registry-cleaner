@@ -23,15 +23,13 @@ The frontend is designed to be served at `/registry-cleaner` on your existing Do
 
 Enable in your Helm values:
 ```yaml
+dominoUrl: "https://domino.example.com"  # your Domino instance URL
 frontend:
-  enabled: true
   ingress:
     enabled: true
-    hosts:
-      - host: domino.example.com  # your Domino instance hostname
 ```
 
-This exposes the UI at `https://domino.example.com/registry-cleaner`. The default annotations rewrite paths and forward `X-Forwarded-Prefix` so all links work correctly.
+This exposes the UI at `https://domino.example.com/registry-cleaner`. The hostname is derived automatically from `dominoUrl`. The default annotations rewrite paths and forward `X-Forwarded-Prefix` so all links work correctly.
 
 ## Architecture
 
@@ -42,11 +40,12 @@ The frontend runs as a **sidecar container** in the same StatefulSet pod as the 
 Key `values.yaml` options:
 
 ```yaml
+dominoUrl: "https://domino.example.com"  # your Domino instance URL
 frontend:
   enabled: true  # Set to false to disable
   image:
     repository: quay.io/domino/docker-registry-cleaner-frontend
-    tag: v0.3.5
+    tag: v0.4.0
   resources:
     requests:
       cpu: 50m
@@ -58,9 +57,7 @@ frontend:
     type: ClusterIP
     port: 8080
   ingress:
-    enabled: false
-    hosts:
-      - host: domino.example.com  # your Domino hostname
+    enabled: true
 ```
 
 ## Local Development
@@ -76,7 +73,7 @@ python app.py
 
 ## Security
 
-The UI does not implement authentication — it relies on Kubernetes RBAC and network access controls. Destructive operations are blocked at the API level. For production deployments, restrict access via NetworkPolicies or add an authenticating proxy.
+Access requires Domino system administrator privileges. Every request is authenticated by forwarding the user's session cookie to the nucleus-frontend service (`/v4/auth/principal`) and verifying `isAdmin`. Unauthenticated requests receive a 401; authenticated non-admins receive a 403. Authentication is skipped when `DOMINO_API_URL` is not set (local dev mode).
 
 ## Troubleshooting
 
