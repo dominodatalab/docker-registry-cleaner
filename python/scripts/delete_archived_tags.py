@@ -1852,7 +1852,9 @@ def main():
             logger.info(f"\nDetailed report saved to: {output_file}")
 
             if archived_tags:
-                logger.warning(f"\n⚠️  Found {len(archived_tags)} archived {processing_str} tags that may need cleanup!")
+                logger.warning(
+                    f"\n⚠️  Found {len(archived_tags)} archived {processing_str} tags that may need cleanup!"
+                )
                 logger.info(
                     "Review the detailed report to identify which Docker images are associated with archived records."
                 )
