@@ -42,7 +42,7 @@ logger = get_logger(__name__)
 def generate_required_reports() -> None:
     """Generate required metadata reports by calling extract_metadata and image_data_analysis"""
     logger.info("Generating required metadata reports...")
-    ensure_all_reports()
+    ensure_all_reports(force=True)
 
 
 def load_metadata_files() -> tuple:

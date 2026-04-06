@@ -1043,7 +1043,7 @@ def main():
     # Get configuration
     registry_url = args.registry_url or config_manager.get_registry_url()
     repository = args.repository or config_manager.get_repository()
-    output_file = args.output or os.path.join(config_manager.get_output_dir(), "deactivated-user-envs.json")
+    output_file = args.output or config_manager.get_deactivated_user_envs_report_path()
 
     try:
         # Determine operation mode

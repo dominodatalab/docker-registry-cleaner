@@ -162,6 +162,46 @@
 <script>
 const reportData = {{ report_data | safe }};
 const reportType = "{{ report_type }}";
+const dominoUrl = {{ domino_url | tojson }};
+
+// ── Domino link helpers ──────────────────────────────────────────────────────
+
+function link(url, text) {
+    const display = text || url || '—';
+    if (!url) return display;
+    return `<a href="${url}" target="_blank" rel="noopener">${display}</a>`;
+}
+
+function runUrl(ownerLogin, projectName, runId) {
+    if (!dominoUrl || !ownerLogin || !projectName || !runId) return null;
+    return `${dominoUrl}/jobs/${encodeURIComponent(ownerLogin)}/${encodeURIComponent(projectName)}/${encodeURIComponent(runId)}/details?status=all`;
+}
+
+function workspaceUrl(ownerLogin, projectName, wsId) {
+    if (!dominoUrl || !ownerLogin || !projectName || !wsId) return null;
+    return `${dominoUrl}/workspace/${encodeURIComponent(ownerLogin)}/${encodeURIComponent(projectName)}?wsId=${encodeURIComponent(wsId)}&sharedView=true`;
+}
+
+function modelVersionUrl(modelId, versionId, ownerLogin) {
+    if (!dominoUrl || !modelId || !versionId) return null;
+    const q = ownerLogin ? `?ownerName=${encodeURIComponent(ownerLogin)}` : '';
+    return `${dominoUrl}/models/${encodeURIComponent(modelId)}/versions/${encodeURIComponent(versionId)}${q}`;
+}
+
+function projectUrl(ownerLogin, projectName) {
+    if (!dominoUrl || !ownerLogin || !projectName) return null;
+    return `${dominoUrl}/u/${encodeURIComponent(ownerLogin)}/${encodeURIComponent(projectName)}/overview`;
+}
+
+function orgUrl(name) {
+    if (!dominoUrl || !name) return null;
+    return `${dominoUrl}/u/${encodeURIComponent(name)}#environment`;
+}
+
+function appVersionUrl(appId, versionId) {
+    if (!dominoUrl || !appId || !versionId) return null;
+    return `${dominoUrl}/global-apps/${encodeURIComponent(appId)}/${encodeURIComponent(versionId)}/details/overview`;
+}
 
 function switchTab(tabName, event) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -206,6 +246,109 @@ function table(headers, rows) {
 
 function sectionTitle(text) {
     return `<div class="section-title">${text}</div>`;
+}
+
+// ── Shared usage details renderer ───────────────────────────────────────────
+// Renders a UsageInfo-shaped object (runs/workspaces/models/organizations/app_versions)
+// as HTML tables with Domino links. Used by both the MongoDB usage report and the
+// deletion results report.
+function renderUsageDetails(usage) {
+    let html = '';
+
+    const runs = usage.runs || [];
+    const runsCount = usage.runs_count || runs.length;
+    if (runsCount > 0) {
+        const suffix = runs.length > 0 && runsCount > runs.length ? ` — showing ${runs.length} of ${runsCount}` : '';
+        html += sectionTitle(`Runs (${runsCount}${suffix})`);
+        if (runs.length) {
+            const rows = runs.map(r => {
+                const owner = r.project_owner_login || r.project_owner_name || '';
+                const url = runUrl(r.project_owner_login, r.project_name, r.run_id);
+                const label = r.project_name ? `${owner ? owner + ' / ' : ''}${r.project_name}` : r.run_id;
+                return [link(url, label), r.status || '—', r.run_id || '—'];
+            });
+            html += table(['Project', 'Status', 'Run ID'], rows);
+        } else {
+            html += `<p style="color:#888;font-style:italic;margin:4px 0 12px;">Re-run Extract Metadata to populate run details and links.</p>`;
+        }
+    }
+
+    const workspaces = usage.workspaces || [];
+    const wsCount = usage.workspaces_count || workspaces.length;
+    if (wsCount > 0) {
+        const suffix = workspaces.length > 0 && wsCount > workspaces.length ? ` — showing ${workspaces.length} of ${wsCount}` : '';
+        html += sectionTitle(`Workspaces (${wsCount}${suffix})`);
+        if (workspaces.length) {
+            const rows = workspaces.map(ws => {
+                const wsId = ws.workspace_id || ws._id;
+                const url = workspaceUrl(ws.user_login, ws.project_name, wsId);
+                return [link(url, ws.workspace_name || wsId || '—'), ws.project_name || '—'];
+            });
+            html += table(['Workspace', 'Project'], rows);
+        } else {
+            html += `<p style="color:#888;font-style:italic;margin:4px 0 12px;">Re-run Extract Metadata to populate workspace details and links.</p>`;
+        }
+    }
+
+    const models = usage.models || [];
+    const modelsCount = usage.models_count || models.length;
+    if (modelsCount > 0) {
+        const suffix = models.length > 0 && modelsCount > models.length ? ` — showing ${models.length} of ${modelsCount}` : '';
+        html += sectionTitle(`Models (${modelsCount}${suffix})`);
+        if (models.length) {
+            const rows = models.map(m => {
+                const vId = m.version_id || m._version_id;
+                const url = modelVersionUrl(m.model_id, vId, m.model_owner_login);
+                return [link(url, m.model_name || m.model_id || '—'), m.model_owner || m.model_owner_login || '—', vId || '—'];
+            });
+            html += table(['Model', 'Owner', 'Version ID'], rows);
+        } else {
+            html += `<p style="color:#888;font-style:italic;margin:4px 0 12px;">Re-run Extract Metadata to populate model details and links.</p>`;
+        }
+    }
+
+    const schedulerJobs = usage.scheduler_jobs || [];
+    if (schedulerJobs.length) {
+        html += sectionTitle(`Scheduler Jobs (${schedulerJobs.length})`);
+        const rows = schedulerJobs.map(j => [
+            j.jobName || j._id || '—',
+            j.projectId || '—',
+        ]);
+        html += table(['Job Name', 'Project ID'], rows);
+    }
+
+    const projects = usage.projects || [];
+    if (projects.length) {
+        html += sectionTitle(`Projects (${projects.length})`);
+        const rows = projects.map(p => {
+            const url = projectUrl(p.owner_login, p.name);
+            return [link(url, p.name || p._id || '—'), p.owner_login || p.ownerId || '—'];
+        });
+        html += table(['Project', 'Owner'], rows);
+    }
+
+    const orgs = usage.organizations || [];
+    if (orgs.length) {
+        html += sectionTitle(`Organizations (${orgs.length})`);
+        const rows = orgs.map(o => {
+            const name = o.name || o.organization_name;
+            return [link(orgUrl(name), name || o._id || '—')];
+        });
+        html += table(['Organization'], rows);
+    }
+
+    const appVersions = usage.app_versions || [];
+    if (appVersions.length) {
+        html += sectionTitle(`App Versions (${appVersions.length})`);
+        const rows = appVersions.map(a => {
+            const vId = a._id || a.app_version_id;
+            const url = appVersionUrl(a.appId || a.app_id, vId);
+            return [link(url, `v${a.versionNumber ?? a.version_number ?? '?'} — App ${a.appId || a.app_id || '—'}`)];
+        });
+        html += table(['App Version'], rows);
+    }
+
+    return html;
 }
 
 // ── Report renderers ────────────────────────────────────────────────────────
@@ -274,7 +417,52 @@ function renderArchivedTagsReport(data) {
 }
 
 function renderMongoDBUsageReport(data) {
+    // Group assets by docker tag (mirrors Python's extract_docker_tags_with_usage_info)
+    const usageByTag = {};
+
+    function ensureTag(tag) {
+        if (!tag) return false;
+        if (!usageByTag[tag]) usageByTag[tag] = { runs: [], workspaces: [], models: [], organizations: [], app_versions: [] };
+        return true;
+    }
+
+    (data.runs || []).forEach(r => {
+        if (ensureTag(r.environment_docker_tag)) usageByTag[r.environment_docker_tag].runs.push(r);
+    });
+
+    const WS_TAG_FIELDS = [
+        'environment_docker_tag',
+        'project_default_environment_docker_tag',
+        'compute_environment_docker_tag',
+        'session_environment_docker_tag',
+        'session_compute_environment_docker_tag',
+    ];
+    (data.workspaces || []).forEach(ws => {
+        WS_TAG_FIELDS.forEach(field => {
+            if (ensureTag(ws[field])) usageByTag[ws[field]].workspaces.push({ ...ws, _usage_field: field });
+        });
+    });
+
+    (data.models || []).forEach(m => {
+        (m.model_active_versions || []).forEach(v => {
+            ['model_environment_tag', 'base_environment_tag'].forEach(f => {
+                if (ensureTag(v[f])) usageByTag[v[f]].models.push({ ...m, _version_id: v.model_version_id });
+            });
+        });
+    });
+
+    (data.organizations || []).forEach(o => {
+        if (ensureTag(o.environment_docker_tag)) usageByTag[o.environment_docker_tag].organizations.push(o);
+    });
+
+    (data.app_versions || []).forEach(a => {
+        if (ensureTag(a.environment_docker_tag)) usageByTag[a.environment_docker_tag].app_versions.push(a);
+    });
+
+    const allTags = Object.keys(usageByTag).sort();
+
     let html = '<div class="stats-grid">';
+    html += stat('In-Use Images', allTags.length);
     html += stat('Runs', (data.runs || []).length);
     html += stat('Workspaces', (data.workspaces || []).length);
     html += stat('Models', (data.models || []).length);
@@ -282,16 +470,75 @@ function renderMongoDBUsageReport(data) {
     html += stat('App Versions', (data.app_versions || []).length);
     html += '</div>';
 
-    if ((data.runs || []).length) {
-        html += sectionTitle('Recent Runs (top 50)');
-        const rows = (data.runs || []).slice(0, 50).map(r => [
-            r.project_name || r.project_id || '—',
-            r.project_owner_name || r.project_owner_id || '—',
-            r.status || '—',
-            r.environment_docker_tag || '—',
-        ]);
-        html += table(['Project', 'Owner', 'Status', 'Environment Tag'], rows);
-    }
+    if (!allTags.length) return html;
+
+    html += sectionTitle(`In-Use Images (${allTags.length})`);
+
+    allTags.forEach(tag => {
+        const usage = usageByTag[tag];
+        const shortTag = tag.length > 80 ? tag.slice(0, 77) + '…' : tag;
+        const totalAssets = usage.runs.length + usage.workspaces.length + usage.models.length
+            + usage.organizations.length + usage.app_versions.length;
+        const badge = `<span style="float:right;color:#888;font-size:0.8em;font-family:sans-serif;">${totalAssets} asset${totalAssets !== 1 ? 's' : ''}</span>`;
+
+        html += `<details style="margin-bottom:8px;border:1px solid #e5e7eb;border-radius:4px;">
+            <summary style="padding:10px 14px;cursor:pointer;background:#f9fafb;border-radius:4px;font-family:monospace;font-size:0.82rem;list-style:none;display:flex;justify-content:space-between;align-items:center;">
+                <span>${shortTag}</span>${badge}
+            </summary>
+            <div style="padding:8px 14px 14px;">`;
+
+        if (usage.runs.length) {
+            html += sectionTitle(`Runs (${usage.runs.length})`);
+            const rows = usage.runs.map(r => {
+                const owner = r.project_owner_login || r.project_owner_name || '';
+                const url = runUrl(r.project_owner_login, r.project_name, r.run_id);
+                const label = r.project_name ? `${owner ? owner + ' / ' : ''}${r.project_name}` : r.run_id;
+                return [link(url, label), r.status || '—', r.run_id || '—'];
+            });
+            html += table(['Project', 'Status', 'Run ID'], rows);
+        }
+
+        if (usage.workspaces.length) {
+            html += sectionTitle(`Workspaces (${usage.workspaces.length})`);
+            const rows = usage.workspaces.map(ws => {
+                const wsId = ws._id || ws.workspace_id;
+                const url = workspaceUrl(ws.user_login, ws.project_name, wsId);
+                const usageType = (ws._usage_field || '').replace('_docker_tag', '').replace(/_/g, ' ').trim() || '—';
+                return [link(url, ws.workspace_name || wsId || '—'), ws.project_name || '—', usageType];
+            });
+            html += table(['Workspace', 'Project', 'Usage Type'], rows);
+        }
+
+        if (usage.models.length) {
+            html += sectionTitle(`Models (${usage.models.length})`);
+            const rows = usage.models.map(m => {
+                const url = modelVersionUrl(m.model_id, m._version_id, m.model_owner_login);
+                return [link(url, m.model_name || m.model_id || '—'), m.model_owner || '—', m._version_id || '—'];
+            });
+            html += table(['Model', 'Owner', 'Version ID'], rows);
+        }
+
+        if (usage.organizations.length) {
+            html += sectionTitle(`Organizations (${usage.organizations.length})`);
+            const rows = usage.organizations.map(o => {
+                const url = orgUrl(o.organization_name);
+                return [link(url, o.organization_name || o.organization_id || '—')];
+            });
+            html += table(['Organization'], rows);
+        }
+
+        if (usage.app_versions.length) {
+            html += sectionTitle(`App Versions (${usage.app_versions.length})`);
+            const rows = usage.app_versions.map(a => {
+                const url = appVersionUrl(a.app_id, a.app_version_id);
+                return [link(url, `v${a.version_number ?? '?'} — App ${a.app_id || '—'}`)];
+            });
+            html += table(['App Version'], rows);
+        }
+
+        html += '</div></details>';
+    });
+
     return html;
 }
 
@@ -374,6 +621,63 @@ function renderDeletionResultsReport(data) {
         ]);
         html += table(['Tag', 'Size'], rows);
     }
+
+    const usedImages = data.used_images || [];
+    if (usedImages.length) {
+        html += sectionTitle(`Protected Images — In Use (${usedImages.length})`);
+        usedImages.forEach(img => {
+            const shortTag = (img.tag || '').length > 80 ? img.tag.slice(0, 77) + '…' : (img.tag || '—');
+            const usage = img.usage || {};
+
+            // Build inline linked asset items for the summary line (first 5 across all types)
+            const summaryItems = [];
+            (usage.runs || []).forEach(r => {
+                const url = runUrl(r.project_owner_login, r.project_name, r.run_id);
+                const label = r.project_name
+                    ? `${r.project_owner_login || r.project_owner_name || ''}/${r.project_name}`
+                    : r.run_id;
+                summaryItems.push(`<span style="font-size:0.75em;color:#666;font-family:sans-serif;">Run:</span> ${link(url, label)}`);
+            });
+            (usage.workspaces || []).forEach(ws => {
+                const wsId = ws.workspace_id || ws._id;
+                const url = workspaceUrl(ws.user_login, ws.project_name, wsId);
+                summaryItems.push(`<span style="font-size:0.75em;color:#666;font-family:sans-serif;">Workspace:</span> ${link(url, ws.workspace_name || wsId || '—')}`);
+            });
+            (usage.models || []).forEach(m => {
+                const vId = m.version_id || m._version_id;
+                const url = modelVersionUrl(m.model_id, vId, m.model_owner_login);
+                summaryItems.push(`<span style="font-size:0.75em;color:#666;font-family:sans-serif;">Model:</span> ${link(url, m.model_name || m.model_id || '—')}`);
+            });
+            (usage.organizations || []).forEach(o => {
+                const name = o.name || o.organization_name;
+                summaryItems.push(`<span style="font-size:0.75em;color:#666;font-family:sans-serif;">Org:</span> ${link(orgUrl(name), name || '—')}`);
+            });
+            (usage.app_versions || []).forEach(a => {
+                const vId = a._id || a.app_version_id;
+                const url = appVersionUrl(a.appId || a.app_id, vId);
+                summaryItems.push(`<span style="font-size:0.75em;color:#666;font-family:sans-serif;">App:</span> ${link(url, `v${a.versionNumber ?? a.version_number ?? '?'}`)}`);
+            });
+
+            const INLINE_LIMIT = 5;
+            const visibleItems = summaryItems.slice(0, INLINE_LIMIT);
+            const overflow = summaryItems.length - visibleItems.length;
+            const inlineLinks = visibleItems.join('<span style="color:#ccc;margin:0 6px;">·</span>');
+            const overflowNote = overflow > 0
+                ? `<span style="color:#888;font-size:0.8em;font-family:sans-serif;"> +${overflow} more</span>`
+                : '';
+
+            html += `<details style="margin-bottom:8px;border:1px solid #fde68a;border-radius:4px;">
+                <summary style="padding:10px 14px;cursor:pointer;background:#fefce8;border-radius:4px;list-style:none;">
+                    <div style="font-family:monospace;font-size:0.82rem;margin-bottom:${summaryItems.length ? '6px' : '0'};">${shortTag}</div>
+                    ${summaryItems.length ? `<div style="font-size:0.85rem;">${inlineLinks}${overflowNote}</div>` : ''}
+                </summary>
+                <div style="padding:8px 14px 14px;">
+                    ${renderUsageDetails(usage) || `<p style="color:#888;font-style:italic;margin:8px 0;">${img.why_cannot_delete || 'Usage detail not available in this report — re-run Extract Metadata to populate.'}</p>`}
+                </div>
+            </details>`;
+        });
+    }
+
     return html;
 }
 

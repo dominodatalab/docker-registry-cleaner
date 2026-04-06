@@ -29,18 +29,14 @@ spec:
     {{- end }}
   {{- end }}
   rules:
-    {{- range .Values.frontend.ingress.hosts }}
-    - host: {{ .host | quote }}
+    - host: {{ (urlParse .Values.dominoUrl).host | quote }}
       http:
         paths:
-          {{- range .paths }}
-          - path: {{ .path }}
-            pathType: {{ .pathType }}
+          - path: {{ .Values.frontend.basePath }}(/|$)(.*)
+            pathType: ImplementationSpecific
             backend:
               service:
-                name: {{ include "docker-registry-cleaner.fullname" $ }}-frontend
+                name: {{ include "docker-registry-cleaner.fullname" . }}-frontend
                 port:
-                  number: {{ $.Values.frontend.service.port }}
-          {{- end }}
-    {{- end }}
+                  number: {{ .Values.frontend.service.port }}
 {{- end }}

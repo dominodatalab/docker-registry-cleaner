@@ -288,16 +288,17 @@ def is_report_fresh(report_name: str, max_age_hours: int = 24) -> bool:
     return False
 
 
-def ensure_mongodb_reports(max_age_hours: int = 24) -> None:
+def ensure_mongodb_reports(max_age_hours: int = 24, force: bool = False) -> None:
     """
     Ensure MongoDB usage reports are fresh, generating them if needed.
 
     Args:
         max_age_hours: Maximum age in hours before report is considered stale (default: 24)
+        force: If True, regenerate even if the report is fresh (default: False)
     """
     report_name = "mongodb_usage_report.json"
 
-    if is_report_fresh(report_name, max_age_hours):
+    if not force and is_report_fresh(report_name, max_age_hours):
         logger.debug(f"MongoDB usage report is fresh (less than {max_age_hours} hours old)")
         return
 
@@ -313,7 +314,7 @@ def ensure_mongodb_reports(max_age_hours: int = 24) -> None:
         raise
 
 
-def ensure_image_analysis_reports(max_age_hours: int = 24) -> None:
+def ensure_image_analysis_reports(max_age_hours: int = 24, force: bool = False) -> None:
     """
     Ensure image analysis reports are fresh, generating them if needed.
 
@@ -321,13 +322,14 @@ def ensure_image_analysis_reports(max_age_hours: int = 24) -> None:
 
     Args:
         max_age_hours: Maximum age in hours before report is considered stale (default: 24)
+        force: If True, regenerate even if the reports are fresh (default: False)
     """
     # Check if any of the key reports are fresh
     # Note: images-report is a directory, not a file, so we check tag-sums and layers-and-sizes
     key_reports = ["tag-sums.json", "layers-and-sizes.json"]
     any_fresh = any(is_report_fresh(report, max_age_hours) for report in key_reports)
 
-    if any_fresh:
+    if not force and any_fresh:
         logger.debug(f"Image analysis reports are fresh (less than {max_age_hours} hours old)")
         return
 
@@ -355,12 +357,13 @@ def ensure_image_analysis_reports(max_age_hours: int = 24) -> None:
         raise
 
 
-def ensure_all_reports(max_age_hours: int = 24) -> None:
+def ensure_all_reports(max_age_hours: int = 24, force: bool = False) -> None:
     """
     Ensure all reports (MongoDB and image analysis) are fresh.
 
     Args:
         max_age_hours: Maximum age in hours before reports are considered stale (default: 24)
+        force: If True, regenerate even if reports are fresh (default: False)
     """
-    ensure_mongodb_reports(max_age_hours)
-    ensure_image_analysis_reports(max_age_hours)
+    ensure_mongodb_reports(max_age_hours, force=force)
+    ensure_image_analysis_reports(max_age_hours, force=force)
