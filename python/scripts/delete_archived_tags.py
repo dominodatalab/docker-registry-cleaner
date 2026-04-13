@@ -85,6 +85,7 @@ class ArchivedTagInfo:
     full_image: str
     size_bytes: int = 0
     record_type: Optional[str] = None  # 'environment', 'revision', 'model', or 'version'
+    name: str = ""  # Environment or model name
 
 
 class ArchivedTagsFinder(BaseDeletionScript):
@@ -205,12 +206,20 @@ class ArchivedTagsFinder(BaseDeletionScript):
 
     def fetch_archived_object_ids(
         self,
-    ) -> Tuple[List[str], Dict[str, str], Dict[str, List[str]], Dict[str, List[str]], Dict[str, List[Tuple[str, str]]]]:
+    ) -> Tuple[
+        List[str],
+        Dict[str, str],
+        Dict[str, str],
+        Dict[str, List[str]],
+        Dict[str, List[str]],
+        Dict[str, List[Tuple[str, str]]],
+    ]:
         """Fetch archived ObjectIDs from MongoDB
 
         Returns:
-            Tuple of (all_archived_ids, id_to_type_map, environment_to_revisions, model_to_versions, model_tag_to_version).
+            Tuple of (all_archived_ids, id_to_type_map, id_to_name_map, environment_to_revisions, model_to_versions, model_tag_to_version).
             id_to_type_map maps ObjectID to record type.
+            id_to_name_map maps ObjectID to display name (environment/model name; revisions/versions inherit parent name).
             environment_to_revisions maps environment ID -> list of revision IDs.
             model_to_versions maps model ID -> list of version IDs.
             model_tag_to_version maps model ID -> list of (stored_tag, version_id) for resolving registry tags like modelId-vX-timestamp-UID.
@@ -218,6 +227,7 @@ class ArchivedTagsFinder(BaseDeletionScript):
         mongo_client = get_mongo_client()
         all_archived_ids = []
         id_to_type_map = {}  # Maps ObjectID to 'environment', 'revision', 'model', or 'version'
+        id_to_name_map: Dict[str, str] = {}  # Maps ObjectID to display name
         revision_to_cloned_revision = {}  # Maps revision ID to cloned revision ID
         revision_to_environment = {}  # Maps revision ID to environment ID
         environment_to_revisions: Dict[str, List[str]] = {}
@@ -230,8 +240,9 @@ class ArchivedTagsFinder(BaseDeletionScript):
             # Process environments if requested
             if self.process_environments:
                 environments_collection = db["environments_v2"]
-                cursor = environments_collection.find({"isArchived": True}, {"_id": 1})
+                cursor = environments_collection.find({"isArchived": True}, {"_id": 1, "name": 1})
                 archived_environment_ids = []
+                env_id_to_name: Dict[str, str] = {}
 
                 for doc in cursor:
                     _id = doc.get("_id")
@@ -239,6 +250,9 @@ class ArchivedTagsFinder(BaseDeletionScript):
                         obj_id_str = str(_id)
                         archived_environment_ids.append(obj_id_str)
                         id_to_type_map[obj_id_str] = "environment"
+                        env_name = doc.get("name", "")
+                        id_to_name_map[obj_id_str] = env_name
+                        env_id_to_name[obj_id_str] = env_name
 
                 self.logger.info(f"Found {len(archived_environment_ids)} archived environment ObjectIDs")
 
@@ -266,10 +280,12 @@ class ArchivedTagsFinder(BaseDeletionScript):
                             if cloned_rev_id is not None:
                                 revision_to_cloned_revision[obj_id_str] = str(cloned_rev_id)
 
-                            # Store environment ID for this revision
+                            # Store environment ID for this revision and inherit parent env name
                             env_id = doc.get("environmentId")
                             if env_id is not None:
-                                revision_to_environment[obj_id_str] = str(env_id)
+                                env_id_str = str(env_id)
+                                revision_to_environment[obj_id_str] = env_id_str
+                                id_to_name_map[obj_id_str] = env_id_to_name.get(env_id_str, "")
 
                     self.logger.info(
                         f"Found {len(archived_revision_ids)} environment revision ObjectIDs for archived environments"
@@ -288,8 +304,9 @@ class ArchivedTagsFinder(BaseDeletionScript):
             # Process models if requested
             if self.process_models:
                 models_collection = db["models"]
-                cursor = models_collection.find({"isArchived": True}, {"_id": 1})
+                cursor = models_collection.find({"isArchived": True}, {"_id": 1, "name": 1})
                 archived_model_ids = []
+                model_id_to_name: Dict[str, str] = {}
 
                 for doc in cursor:
                     _id = doc.get("_id")
@@ -297,6 +314,9 @@ class ArchivedTagsFinder(BaseDeletionScript):
                         obj_id_str = str(_id)
                         archived_model_ids.append(obj_id_str)
                         id_to_type_map[obj_id_str] = "model"
+                        model_name = doc.get("name", "")
+                        id_to_name_map[obj_id_str] = model_name
+                        model_id_to_name[obj_id_str] = model_name
 
                 self.logger.info(f"Found {len(archived_model_ids)} archived model ObjectIDs")
 
@@ -321,11 +341,13 @@ class ArchivedTagsFinder(BaseDeletionScript):
                             if model_id_val is not None:
                                 mid = model_id_val.get("value")
                                 if mid is not None:
-                                    model_to_versions.setdefault(str(mid), []).append(obj_id_str)
+                                    mid_str = str(mid)
+                                    model_to_versions.setdefault(mid_str, []).append(obj_id_str)
+                                    id_to_name_map[obj_id_str] = model_id_to_name.get(mid_str, "")
                                     # Map stored tag (e.g. modelId-v2) -> version_id for resolving registry tags like modelId-vX-timestamp-UID
                                     stored_tag = extract_model_tag_from_version_doc(doc)
                                     if stored_tag:
-                                        model_tag_to_version.setdefault(str(mid), []).append((stored_tag, obj_id_str))
+                                        model_tag_to_version.setdefault(mid_str, []).append((stored_tag, obj_id_str))
 
                     self.logger.info(f"Found {len(archived_version_ids)} model version ObjectIDs for archived models")
 
@@ -342,7 +364,14 @@ class ArchivedTagsFinder(BaseDeletionScript):
                 )
 
             self.logger.info(f"Total archived ObjectIDs to search for: {len(unique_ids)}")
-            return unique_ids, id_to_type_map, environment_to_revisions, model_to_versions, model_tag_to_version
+            return (
+                unique_ids,
+                id_to_type_map,
+                id_to_name_map,
+                environment_to_revisions,
+                model_to_versions,
+                model_tag_to_version,
+            )
 
         finally:
             mongo_client.close()
@@ -599,6 +628,7 @@ class ArchivedTagsFinder(BaseDeletionScript):
         environment_to_revisions: Optional[Dict[str, List[str]]] = None,
         model_to_versions: Optional[Dict[str, List[str]]] = None,
         model_tag_to_version: Optional[Dict[str, List[Tuple[str, str]]]] = None,
+        id_to_name_map: Optional[Dict[str, str]] = None,
     ) -> List[ArchivedTagInfo]:
         """Find Docker tags that contain archived ObjectIDs.
 
@@ -652,6 +682,7 @@ class ArchivedTagsFinder(BaseDeletionScript):
                         tag=tag,
                         full_image=full_image,
                         record_type=id_to_type_map.get(resolved_id, record_type),
+                        name=(id_to_name_map or {}).get(obj_id, ""),
                     )
                     matching_tags.append(tag_info)
 
@@ -1380,6 +1411,7 @@ class ArchivedTagsFinder(BaseDeletionScript):
             detailed_tags.append(
                 {
                     "object_id": tag.object_id,
+                    "name": tag.name,
                     "image_type": tag.image_type,
                     "tag": tag.tag,
                     "full_image": tag.full_image,
@@ -1418,6 +1450,7 @@ class ArchivedTagsFinder(BaseDeletionScript):
             for tag_data in report.get("archived_tags", []):
                 tag = ArchivedTagInfo(
                     object_id=tag_data["object_id"],
+                    name=tag_data.get("name", ""),
                     image_type=tag_data["image_type"],
                     tag=tag_data["tag"],
                     full_image=tag_data["full_image"],
@@ -1615,6 +1648,7 @@ def main():
             archived_tags = finder.load_archived_tags_from_file(args.input)
             archived_ids = []  # Not relevant for deletion mode
             id_to_type_map = {}
+            id_to_name_map: Dict[str, str] = {}
 
             if not archived_tags:
                 logger.warning(f"No archived tags found in {args.input}")
@@ -1623,9 +1657,14 @@ def main():
         else:
             # Mode 2: Find archived tags (and optionally delete them)
             logger.info("Fetching archived ObjectIDs from MongoDB...")
-            archived_ids, id_to_type_map, environment_to_revisions, model_to_versions, model_tag_to_version = (
-                finder.fetch_archived_object_ids()
-            )
+            (
+                archived_ids,
+                id_to_type_map,
+                id_to_name_map,
+                environment_to_revisions,
+                model_to_versions,
+                model_tag_to_version,
+            ) = finder.fetch_archived_object_ids()
 
             if not archived_ids:
                 logger.info(f"No archived {processing_str} ObjectIDs found")
@@ -1687,6 +1726,7 @@ def main():
                 environment_to_revisions=environment_to_revisions,
                 model_to_versions=model_to_versions,
                 model_tag_to_version=model_tag_to_version,
+                id_to_name_map=id_to_name_map,
             )
 
             if not archived_tags:

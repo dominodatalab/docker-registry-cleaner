@@ -367,7 +367,7 @@ function renderUnusedEnvironmentsReport(data) {
     Object.values(grouped).forEach(tags => {
         (Array.isArray(tags) ? tags : [tags]).forEach(item => {
             rows.push([
-                item.env_name || item.object_id || '—',
+                item.env_name || '(unnamed)',
                 item.image_type || '—',
                 item.tag || '—',
                 formatBytes(item.size_bytes),
@@ -406,12 +406,13 @@ function renderArchivedTagsReport(data) {
     if (items.length) {
         html += sectionTitle(`Archived Tags (${items.length} total)`);
         const rows = items.slice(0, 100).map(item => [
+            item.name || '—',
             item.image_type || '—',
             item.tag || '—',
             formatBytes(item.size_bytes),
             item.usage_summary || '—',
         ]);
-        html += table(['Type', 'Tag', 'Size', 'Usage'], rows);
+        html += table(['Name', 'Type', 'Tag', 'Size', 'Usage'], rows);
     }
     return html;
 }

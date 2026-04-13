@@ -354,7 +354,7 @@ class TestArchivedTagsFinder:
         rev_id = ObjectId()
 
         mock_env_collection = MagicMock()
-        mock_env_collection.find.return_value = [{"_id": env_id}]
+        mock_env_collection.find.return_value = [{"_id": env_id, "name": "My Environment"}]
 
         mock_rev_collection = MagicMock()
         mock_rev_collection.find.return_value = [{"_id": rev_id, "environmentId": env_id}]
@@ -370,12 +370,16 @@ class TestArchivedTagsFinder:
 
         finder = ArchivedTagsFinder(registry_url="registry:5000", repository="repo", process_environments=True)
 
-        archived_ids, id_to_type, env_to_revs, model_to_vers, model_tag_to_ver = finder.fetch_archived_object_ids()
+        archived_ids, id_to_type, id_to_name, env_to_revs, model_to_vers, model_tag_to_ver = (
+            finder.fetch_archived_object_ids()
+        )
 
         assert str(env_id) in archived_ids
         assert str(rev_id) in archived_ids
         assert id_to_type[str(env_id)] == "environment"
         assert id_to_type[str(rev_id)] == "revision"
+        assert id_to_name[str(env_id)] == "My Environment"
+        assert id_to_name[str(rev_id)] == "My Environment"  # revision inherits parent env name
 
     def test_fetch_archived_object_ids_models(self, mocker, mock_archived_tags_deps):
         """Test fetch_archived_object_ids finds archived models."""
@@ -390,7 +394,7 @@ class TestArchivedTagsFinder:
         version_id = ObjectId()
 
         mock_models_collection = MagicMock()
-        mock_models_collection.find.return_value = [{"_id": model_id}]
+        mock_models_collection.find.return_value = [{"_id": model_id, "name": "My Model"}]
 
         mock_versions_collection = MagicMock()
         mock_versions_collection.find.return_value = [
@@ -408,12 +412,16 @@ class TestArchivedTagsFinder:
 
         finder = ArchivedTagsFinder(registry_url="registry:5000", repository="repo", process_models=True)
 
-        archived_ids, id_to_type, env_to_revs, model_to_vers, model_tag_to_ver = finder.fetch_archived_object_ids()
+        archived_ids, id_to_type, id_to_name, env_to_revs, model_to_vers, model_tag_to_ver = (
+            finder.fetch_archived_object_ids()
+        )
 
         assert str(model_id) in archived_ids
         assert str(version_id) in archived_ids
         assert id_to_type[str(model_id)] == "model"
         assert id_to_type[str(version_id)] == "version"
+        assert id_to_name[str(model_id)] == "My Model"
+        assert id_to_name[str(version_id)] == "My Model"  # version inherits parent model name
 
 
 # ============================================================================
