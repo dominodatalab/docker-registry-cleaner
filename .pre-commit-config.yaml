@@ -18,7 +18,7 @@ repos:
       - id: black
         args: ["--config", "pyproject.toml"]
         files: ^(python|tests|frontend)/
-        language_version: python3.11
+        language_version: python3.14
 
   - repo: https://github.com/pycqa/isort
     rev: 6.0.1
@@ -26,6 +26,7 @@ repos:
       - id: isort
         args: ["--settings-path", "pyproject.toml"]
         files: ^(python|tests|frontend)/
+        additional_dependencies: [setuptools]
 
   - repo: https://github.com/pycqa/flake8
     rev: 7.1.1
