@@ -61,7 +61,7 @@ dev = [
 
 [tool.black]
 line-length = 120
-target-version = ["py311", "py312"]
+target-version = ["py311", "py312", "py314"]
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -80,7 +80,7 @@ known_first_party = ["utils", "scripts"]
 sections = ["FUTURE", "STDLIB", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 warn_return_any = false  # Don't warn about functions returning Any
 warn_unused_ignores = false  # Don't warn about unused type ignores
 disallow_untyped_defs = false  # Allow functions without type hints
