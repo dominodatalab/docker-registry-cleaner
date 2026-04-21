@@ -6,8 +6,10 @@ Verifies that cross-collection references are valid:
   - environment_revisions.environmentId             → environments_v2._id
   - environment_revisions.clonedEnvironmentRevisionId → environment_revisions._id
   - model_versions.modelId.value                   → models._id
-  - runs.environmentId                             → environments_v2._id
-  - runs.environmentRevisionId                     → environment_revisions._id
+
+Runs are intentionally excluded: the --unused-since flag may delete images for
+environments that old runs still reference, so dangling run references are
+expected after cleanup and would produce false positives here.
 """
 
 import argparse
@@ -37,16 +39,14 @@ class IntegrityChecker:
             db = mongo_client[config_manager.get_mongo_db()]
             issues: List[Dict] = []
 
-            env_ids, rev_ids, rev_count = self._check_environments(db, issues)
+            env_ids, rev_count = self._check_environments(db, issues)
             model_count, version_count = self._check_models(db, issues)
-            runs_count = self._check_runs(db, env_ids, rev_ids, issues)
 
             summary: Dict = {
                 "environments_checked": len(env_ids),
                 "revisions_checked": rev_count,
                 "models_checked": model_count,
                 "versions_checked": version_count,
-                "runs_checked": runs_count,
                 "total_issues": len(issues),
                 "issues_by_type": {},
                 "generated_at": datetime.now().isoformat(),
@@ -59,7 +59,7 @@ class IntegrityChecker:
         finally:
             mongo_client.close()
 
-    def _check_environments(self, db, issues: List[Dict]) -> Tuple[Set[str], Set[str], int]:
+    def _check_environments(self, db, issues: List[Dict]) -> Tuple[Set[str], int]:
         logger.info("Loading environments from environments_v2...")
         env_ids: Set[str] = set()
         for doc in db["environments_v2"].find({}, {"_id": 1}):
@@ -110,7 +110,7 @@ class IntegrityChecker:
                     }
                 )
 
-        return env_ids, rev_ids, len(rev_docs)
+        return env_ids, len(rev_docs)
 
     def _check_models(self, db, issues: List[Dict]) -> Tuple[int, int]:
         logger.info("Loading models...")
@@ -152,42 +152,6 @@ class IntegrityChecker:
         logger.info(f"  {versions_checked} model versions checked")
         return len(model_ids), versions_checked
 
-    def _check_runs(self, db, env_ids: Set[str], rev_ids: Set[str], issues: List[Dict]) -> int:
-        """Check runs that reference environments or revisions for broken links."""
-        logger.info("Checking runs for broken environment references...")
-        runs_checked = 0
-        query = {"$or": [{"environmentId": {"$exists": True}}, {"environmentRevisionId": {"$exists": True}}]}
-        for doc in db["runs"].find(query, {"_id": 1, "environmentId": 1, "environmentRevisionId": 1}):
-            runs_checked += 1
-            run_id = str(doc["_id"])
-
-            env_id = doc.get("environmentId")
-            if env_id is not None and str(env_id) not in env_ids:
-                issues.append(
-                    {
-                        "collection": "runs",
-                        "document_id": run_id,
-                        "issue_type": "run_missing_environment",
-                        "referenced_id": str(env_id),
-                        "description": f"environmentId {env_id} not found in environments_v2",
-                    }
-                )
-
-            rev_id = doc.get("environmentRevisionId")
-            if rev_id is not None and str(rev_id) not in rev_ids:
-                issues.append(
-                    {
-                        "collection": "runs",
-                        "document_id": run_id,
-                        "issue_type": "run_missing_revision",
-                        "referenced_id": str(rev_id),
-                        "description": f"environmentRevisionId {rev_id} not found in environment_revisions",
-                    }
-                )
-
-        logger.info(f"  {runs_checked} runs checked")
-        return runs_checked
-
 
 def main():
     setup_logging()
@@ -207,7 +171,6 @@ def main():
     logger.info(f"Environments checked:      {summary['environments_checked']}")
     logger.info(f"Revisions checked:         {summary['revisions_checked']}")
     logger.info(f"Models checked (versions): {summary['versions_checked']}")
-    logger.info(f"Runs checked:              {summary['runs_checked']}")
     logger.info(f"Total issues found:        {summary['total_issues']}")
     if summary["issues_by_type"]:
         for issue_type, count in summary["issues_by_type"].items():

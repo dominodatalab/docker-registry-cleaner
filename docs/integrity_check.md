@@ -11,10 +11,8 @@ Queries MongoDB and verifies the following cross-collection links:
 | `environment_revisions` | `environmentId` | `environments_v2._id` |
 | `environment_revisions` | `clonedEnvironmentRevisionId` | `environment_revisions._id` |
 | `model_versions` | `modelId.value` | `models._id` |
-| `runs` | `environmentId` | `environments_v2._id` |
-| `runs` | `environmentRevisionId` | `environment_revisions._id` |
 
-Only `runs` documents that actually have an `environmentId` or `environmentRevisionId` field are checked — runs that reference no environment are skipped.
+`runs` are intentionally excluded: when images are deleted with `--unused-since`, old runs will legitimately reference environments and revisions whose images have been cleaned up. Checking runs would produce false positives with no way to distinguish expected cleanup from genuine corruption.
 
 ## Usage
 
@@ -41,11 +39,9 @@ The report contains a summary and a flat list of issues:
     "revisions_checked": 843,
     "models_checked": 45,
     "versions_checked": 210,
-    "runs_checked": 15302,
-    "total_issues": 3,
+    "total_issues": 2,
     "issues_by_type": {
-      "orphaned_revision": 2,
-      "run_missing_revision": 1
+      "orphaned_revision": 2
     }
   },
   "issues": [
@@ -69,8 +65,6 @@ The report contains a summary and a flat list of issues:
 | `broken_clone_reference` | An `environment_revisions` document's `clonedEnvironmentRevisionId` points to a revision that no longer exists |
 | `orphaned_model_version` | A `model_versions` document references a model that no longer exists |
 | `missing_model_id` | A `model_versions` document has no `modelId.value` field |
-| `run_missing_environment` | A `runs` document's `environmentId` points to an environment that no longer exists |
-| `run_missing_revision` | A `runs` document's `environmentRevisionId` points to a revision that no longer exists |
 
 ## Notes
 
