@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """
-Find and optionally delete old environment revisions, keeping only the most recent N per environment.
+Find and optionally delete old environment revisions and model versions, keeping only the most
+recent N per environment/model.
 
-This script queries MongoDB to find all environment revisions grouped by parent environment,
-identifies revisions that are not among the N most recent, and optionally deletes their
-Docker images from the registry.
+This script queries MongoDB to find all environment revisions (and optionally model versions)
+grouped by their parent, identifies items that are not among the N most recent, and optionally
+deletes their Docker images from the registry.
 
-Before any deletion, a real-time usage check is performed to ensure no revision being
-deleted is currently in use by any workspace, run, model, scheduled job, project, or app version.
+Before any deletion, a real-time usage check is performed to ensure no item being deleted is
+currently in use by any workspace, run, model, scheduled job, project, or app version.
 
 Workflow:
-- Query MongoDB environment_revisions, grouped by environmentId
-- Sort revisions within each group by creation time (ObjectId order)
-- Mark all but the latest N revisions per environment as candidates for deletion
-- Filter out revisions with no Docker image (e.g., failed builds)
-- Filter out revisions that are cloned from by a kept revision (build chain protection)
-- Perform a real-time usage check and skip any revision currently in use
-- Generate a report of old revisions
+- Query MongoDB environment_revisions (and model_versions if model IDs provided), grouped by parent
+- Sort within each group by creation time (ObjectId order)
+- Mark all but the latest N per parent as candidates for deletion
+- Filter out items with no Docker image (e.g., failed builds)
+- For environment revisions: filter out revisions cloned from by a kept revision (build chain protection)
+- Perform a real-time usage check and skip any item currently in use
+- Generate a report of old revisions/versions
 - Optionally delete Docker images and clean up MongoDB records (with --apply)
 
 Usage examples:
@@ -38,7 +39,7 @@ Usage examples:
   # Generate fresh usage reports before analysis
   python delete_old_revisions.py --generate-reports
 
-  # Restrict to specific environments from a file
+  # Restrict to specific environments/models from a file (supports environment: and model: prefixes)
   python delete_old_revisions.py --input my-envs.txt
 
   # Override registry settings
@@ -62,10 +63,11 @@ if str(_parent_dir) not in sys.path:
 from utils.config_manager import config_manager
 from utils.deletion_base import BaseDeletionScript
 from utils.image_data_analysis import ImageAnalyzer
+from utils.image_metadata import extract_model_tag_from_version_doc
 from utils.image_usage import ImageUsageService
 from utils.logging_utils import get_logger, setup_logging
 from utils.mongo_utils import get_mongo_client
-from utils.object_id_utils import read_object_ids_from_file
+from utils.object_id_utils import read_typed_object_ids_from_file
 from utils.report_utils import ensure_mongodb_reports, save_json
 
 logger = get_logger(__name__)
@@ -221,6 +223,116 @@ class OldRevisionCleaner(BaseDeletionScript):
         finally:
             mongo_client.close()
 
+    def find_old_model_versions(self, model_ids: Optional[Set[str]] = None) -> List[OldRevisionInfo]:
+        """Find model versions that are not among the N most recent per model.
+
+        Queries MongoDB for all model versions, groups by parent model, then identifies
+        the older ones to delete (all but the latest `keep_revisions` per model).
+        Only versions with a built Docker image are included.
+
+        Args:
+            model_ids: Optional set of model ObjectId strings to restrict processing to.
+                When provided, only those models are examined.
+
+        Returns:
+            List of OldRevisionInfo objects (image_type="model") for versions to be deleted.
+        """
+        mongo_client = get_mongo_client()
+        try:
+            db = mongo_client[config_manager.get_mongo_db()]
+            model_versions_coll = db["model_versions"]
+            models_coll = db["models"]
+
+            # Build model name lookup
+            model_names: Dict[str, str] = {}
+            for doc in models_coll.find({}, {"_id": 1, "name": 1}):
+                model_names[str(doc["_id"])] = doc.get("name", "")
+
+            # Fetch all model versions that have a built Docker image, sorted oldest-first
+            query: dict = {"metadata.builds.slug.image.tag": {"$exists": True, "$ne": None}}
+            if model_ids:
+                query["modelId.value"] = {"$in": [ObjectId(mid) for mid in model_ids if len(mid) == 24]}
+                self.logger.info(f"Filtering to {len(model_ids)} model(s) from --input")
+
+            all_versions = list(
+                model_versions_coll.find(
+                    query,
+                    {
+                        "_id": 1,
+                        "modelId.value": 1,
+                        "metadata.builds": 1,
+                    },
+                    sort=[("_id", 1)],
+                )
+            )
+
+            self.logger.info(f"Found {len(all_versions)} built model versions in MongoDB")
+
+            # Group by model
+            by_model: Dict[str, List[dict]] = {}
+            for ver in all_versions:
+                model_id_field = ver.get("modelId")
+                if isinstance(model_id_field, dict):
+                    model_id = str(model_id_field.get("value", ""))
+                else:
+                    model_id = str(model_id_field) if model_id_field else ""
+                if not model_id:
+                    continue
+                by_model.setdefault(model_id, []).append(ver)
+
+            self.logger.info(
+                f"Grouped into {len(by_model)} models " f"(keeping {self.keep_revisions} most recent per model)"
+            )
+
+            # Identify old versions (all but the latest N per model)
+            old_versions: List[OldRevisionInfo] = []
+
+            for model_id, versions in by_model.items():
+                total = len(versions)
+                if total <= self.keep_revisions:
+                    continue
+
+                to_delete = versions[: total - self.keep_revisions]
+                model_name = model_names.get(model_id, "")
+
+                for ver in to_delete:
+                    ver_id = str(ver["_id"])
+                    docker_tag = extract_model_tag_from_version_doc(ver)
+
+                    if not docker_tag:
+                        self.logger.debug(f"Model version {ver_id} has no Docker tag, skipping")
+                        continue
+
+                    full_image = f"{self.registry_url}/{self.repository}/model:{docker_tag}"
+                    old_versions.append(
+                        OldRevisionInfo(
+                            revision_id=ver_id,
+                            environment_id=model_id,
+                            environment_name=model_name,
+                            docker_tag=docker_tag,
+                            full_image=full_image,
+                            image_type="model",
+                        )
+                    )
+
+            self.logger.info(f"Found {len(old_versions)} old model version(s) in MongoDB eligible for deletion")
+
+            # Filter to only versions whose Docker image actually exists in the registry
+            self.logger.info("Checking registry for existing model tags...")
+            existing_tags = set(self.skopeo_client.list_tags(f"{self.repository}/model"))
+            before = len(old_versions)
+            old_versions = [v for v in old_versions if v.docker_tag in existing_tags]
+            filtered = before - len(old_versions)
+            if filtered:
+                self.logger.info(
+                    f"Filtered out {filtered} model version(s) whose Docker image no longer exists in the registry"
+                )
+            self.logger.info(f"Found {len(old_versions)} old model version(s) eligible for deletion")
+            return old_versions
+
+        finally:
+            mongo_client.close()
+
     def _filter_cloned_by_kept_revisions(self, old_revisions: List[OldRevisionInfo]) -> List[OldRevisionInfo]:
         """Remove revisions that a kept revision was cloned from.
 
@@ -324,7 +436,7 @@ class OldRevisionCleaner(BaseDeletionScript):
                 else:
                     self.logger.info("  All revision tags confirmed as unused")
 
-                deleted_revision_ids: Set[str] = set()
+                deleted_revision_ids: Set[tuple] = set()
 
                 for rev in old_revisions:
                     if rev.docker_tag in in_use_tags:
@@ -336,11 +448,11 @@ class OldRevisionCleaner(BaseDeletionScript):
 
                     try:
                         self.logger.info(f"  Deleting: {rev.full_image}")
-                        success = self.skopeo_client.delete_image(f"{self.repository}/environment", rev.docker_tag)
+                        success = self.skopeo_client.delete_image(f"{self.repository}/{rev.image_type}", rev.docker_tag)
                         if success:
                             self.logger.info("    Deleted successfully")
                             deletion_results["docker_images_deleted"] += 1
-                            deleted_revision_ids.add(rev.revision_id)
+                            deleted_revision_ids.add((rev.revision_id, rev.image_type))
                         else:
                             self.logger.warning("    Failed to delete")
                             deletion_results["failed"] += 1
@@ -350,46 +462,48 @@ class OldRevisionCleaner(BaseDeletionScript):
 
                 # MongoDB cleanup - only for successfully deleted images
                 if mongo_cleanup and deleted_revision_ids:
+                    deleted_env_ids = {rid for rid, rtype in deleted_revision_ids if rtype == "environment"}
                     self.logger.info(
-                        f"Cleaning up MongoDB records for {len(deleted_revision_ids)} deleted revision(s)..."
+                        f"Cleaning up MongoDB records for {len(deleted_env_ids)} deleted environment revision(s)..."
                     )
-                    mongo_client = get_mongo_client()
-                    try:
-                        db = mongo_client[config_manager.get_mongo_db()]
-                        revisions_coll = db["environment_revisions"]
-                        model_versions_coll = db["model_versions"]
-                        models_coll = db["models"]
+                    if deleted_env_ids:
+                        mongo_client = get_mongo_client()
+                        try:
+                            db = mongo_client[config_manager.get_mongo_db()]
+                            revisions_coll = db["environment_revisions"]
+                            model_versions_coll = db["model_versions"]
+                            models_coll = db["models"]
 
-                        for rev_id_str in deleted_revision_ids:
-                            try:
-                                rev_oid = ObjectId(rev_id_str)
+                            for rev_id_str in deleted_env_ids:
+                                try:
+                                    rev_oid = ObjectId(rev_id_str)
 
-                                # Skip if an unarchived model version references this revision
-                                model_ids = model_versions_coll.distinct(
-                                    "modelId.value", {"environmentRevisionId": rev_oid}
-                                )
-                                if model_ids:
-                                    unarchived = models_coll.count_documents(
-                                        {"_id": {"$in": model_ids}, "isArchived": False},
-                                        limit=1,
+                                    # Skip if an unarchived model version references this revision
+                                    model_ids_ref = model_versions_coll.distinct(
+                                        "modelId.value", {"environmentRevisionId": rev_oid}
                                     )
-                                    if unarchived > 0:
-                                        self.logger.info(
-                                            f"  Skipping MongoDB record {rev_id_str} "
-                                            "(referenced by versions of unarchived models)"
+                                    if model_ids_ref:
+                                        unarchived = models_coll.count_documents(
+                                            {"_id": {"$in": model_ids_ref}, "isArchived": False},
+                                            limit=1,
                                         )
-                                        continue
+                                        if unarchived > 0:
+                                            self.logger.info(
+                                                f"  Skipping MongoDB record {rev_id_str} "
+                                                "(referenced by versions of unarchived models)"
+                                            )
+                                            continue
 
-                                result = revisions_coll.delete_one({"_id": rev_oid})
-                                if result.deleted_count > 0:
-                                    self.logger.info(f"  Deleted environment_revision: {rev_id_str}")
-                                    deletion_results["mongo_revisions_cleaned"] += 1
-                                else:
-                                    self.logger.warning(f"  Revision not found in MongoDB: {rev_id_str}")
-                            except Exception as e:
-                                self.logger.error(f"  Error deleting MongoDB record {rev_id_str}: {e}")
-                    finally:
-                        mongo_client.close()
+                                    result = revisions_coll.delete_one({"_id": rev_oid})
+                                    if result.deleted_count > 0:
+                                        self.logger.info(f"  Deleted environment_revision: {rev_id_str}")
+                                        deletion_results["mongo_revisions_cleaned"] += 1
+                                    else:
+                                        self.logger.warning(f"  Revision not found in MongoDB: {rev_id_str}")
+                                except Exception as e:
+                                    self.logger.error(f"  Error deleting MongoDB record {rev_id_str}: {e}")
+                        finally:
+                            mongo_client.close()
 
             finally:
                 if registry_enabled:
@@ -426,11 +540,11 @@ class OldRevisionCleaner(BaseDeletionScript):
 
             # Set per-revision size (what would be freed by deleting just that one image)
             for rev in old_revisions:
-                image_id = f"environment:{rev.docker_tag}"
+                image_id = f"{rev.image_type}:{rev.docker_tag}"
                 rev.size_bytes = analyzer.freed_space_if_deleted([image_id])
 
             # Total freed if all candidates deleted together (deduplicated)
-            unique_image_ids = list(dict.fromkeys(f"environment:{r.docker_tag}" for r in old_revisions))
+            unique_image_ids = list(dict.fromkeys(f"{r.image_type}:{r.docker_tag}" for r in old_revisions))
             total_freed = analyzer.freed_space_if_deleted(unique_image_ids)
             self.logger.info(f"Total space that would be freed: {total_freed / (1024 ** 3):.2f} GB")
             return total_freed
@@ -451,25 +565,30 @@ class OldRevisionCleaner(BaseDeletionScript):
         Returns:
             Report dict with summary and per-environment details.
         """
-        # Group by environment
-        by_env: Dict[str, List[OldRevisionInfo]] = {}
+        # Group by parent (environment or model)
+        by_parent: Dict[str, List[OldRevisionInfo]] = {}
         for rev in old_revisions:
-            by_env.setdefault(rev.environment_id, []).append(rev)
+            by_parent.setdefault(rev.environment_id, []).append(rev)
+
+        env_count = len({r.environment_id for r in old_revisions if r.image_type == "environment"})
+        model_count = len({r.environment_id for r in old_revisions if r.image_type == "model"})
 
         summary = {
             "total_old_revisions": len(old_revisions),
-            "environments_affected": len(by_env),
+            "environments_affected": env_count,
+            "models_affected": model_count,
             "keep_revisions": self.keep_revisions,
             "total_size_bytes": total_freed_bytes,
             "total_size_gb": round(total_freed_bytes / (1024**3), 2),
         }
 
         grouped: Dict[str, list] = {}
-        for env_id, revisions in by_env.items():
-            grouped[env_id] = [
+        for parent_id, revisions in by_parent.items():
+            grouped[parent_id] = [
                 {
                     "revision_id": r.revision_id,
-                    "environment_name": r.environment_name,
+                    "image_type": r.image_type,
+                    "parent_name": r.environment_name,
                     "docker_tag": r.docker_tag,
                     "full_image": r.full_image,
                     "size_bytes": r.size_bytes,
@@ -479,7 +598,7 @@ class OldRevisionCleaner(BaseDeletionScript):
 
         return {
             "summary": summary,
-            "grouped_by_environment": grouped,
+            "grouped_by_parent": grouped,
             "metadata": {
                 "registry_url": self.registry_url,
                 "repository": self.repository,
@@ -514,7 +633,13 @@ Examples:
   # Force-regenerate usage reports before analysis
   python delete_old_revisions.py --generate-reports
 
-  # Restrict to specific environments from a file
+  # Scan only environment revisions (not model versions)
+  python delete_old_revisions.py --environment
+
+  # Scan only model versions (not environment revisions)
+  python delete_old_revisions.py --model
+
+  # Restrict to specific environments/models from a file (overrides --environment/--model)
   python delete_old_revisions.py --input my-envs.txt --apply
 
   # Full workflow: regenerate reports, keep 3, delete without confirmation
@@ -529,7 +654,27 @@ Examples:
     parser.add_argument(
         "--input",
         metavar="FILE",
-        help="File of environment ObjectIDs to restrict processing to (one per line; supports environment: prefix)",
+        help=(
+            "File of ObjectIDs to restrict processing to (one per line). "
+            "Supports environment:<id> and model:<id> prefixes. "
+            "When provided, --environment and --model flags are ignored — "
+            "the file contents dictate which types are scanned."
+        ),
+    )
+
+    type_group = parser.add_argument_group(
+        "type filters (ignored when --input is set)",
+        "Restrict scanning to one image type. If neither flag is given, both types are scanned.",
+    )
+    type_group.add_argument(
+        "--environment",
+        action="store_true",
+        help="Scan environment revisions only",
+    )
+    type_group.add_argument(
+        "--model",
+        action="store_true",
+        help="Scan model versions only",
     )
 
     parser.add_argument(
@@ -602,44 +747,66 @@ def main() -> None:
 
         logger.info("=" * 60)
         if args.apply:
-            logger.info("   Delete Old Environment Revisions (DELETE MODE)")
+            logger.info("   Delete Old Revisions / Model Versions (DELETE MODE)")
         else:
-            logger.info("   Delete Old Environment Revisions (DRY RUN)")
+            logger.info("   Delete Old Revisions / Model Versions (DRY RUN)")
         logger.info("=" * 60)
         logger.info(f"Registry:        {registry_url}")
         logger.info(f"Repository:      {repository}")
-        logger.info(f"Keep revisions:  {args.keep_revisions} most recent per environment")
+        logger.info(f"Keep revisions:  {args.keep_revisions} most recent per environment/model")
         logger.info(f"Mode:            {'DELETE' if args.apply else 'DRY RUN'}")
         if args.input:
             logger.info(f"Input file:      {args.input}")
         logger.info("=" * 60)
 
-        # Load environment ID filter from --input if provided
+        # Load typed ID filters from --input if provided
         environment_ids: Optional[Set[str]] = None
+        model_ids: Optional[Set[str]] = None
         if args.input:
-            ids = read_object_ids_from_file(args.input)
-            if not ids:
-                logger.error(f"No valid environment ObjectIDs found in {args.input}")
+            typed_ids = read_typed_object_ids_from_file(args.input)
+            if not typed_ids:
+                logger.error(f"No valid ObjectIDs found in {args.input}")
                 sys.exit(1)
-            environment_ids = set(ids)
-            logger.info(f"Loaded {len(environment_ids)} environment ID(s) from {args.input}")
+            if "environment" in typed_ids:
+                environment_ids = set(typed_ids["environment"])
+                logger.info(f"Loaded {len(environment_ids)} environment ID(s) from {args.input}")
+            if "model" in typed_ids:
+                model_ids = set(typed_ids["model"])
+                logger.info(f"Loaded {len(model_ids)} model ID(s) from {args.input}")
+            if not environment_ids and not model_ids:
+                logger.error(
+                    f"No environment: or model: prefixed IDs found in {args.input}. "
+                    "Use environment:<id> or model:<id> prefixes."
+                )
+                sys.exit(1)
 
         # Optionally regenerate usage reports
         if args.generate_reports:
             cleaner.generate_required_reports()
 
-        # Find old revisions
-        old_revisions = cleaner.find_old_revisions(environment_ids=environment_ids)
+        # Decide which types to scan:
+        # --input overrides --environment/--model — the file contents dictate types.
+        # Without --input: scan both unless exactly one flag is set.
+        if args.input:
+            scan_environments = bool(environment_ids)
+            scan_models = bool(model_ids)
+        else:
+            scan_environments = args.environment or not args.model
+            scan_models = args.model or not args.environment
+
+        env_revisions = []
+        if scan_environments:
+            env_revisions = cleaner.find_old_revisions(environment_ids=environment_ids)
+            env_revisions = cleaner._filter_cloned_by_kept_revisions(env_revisions)
+
+        model_versions = []
+        if scan_models:
+            model_versions = cleaner.find_old_model_versions(model_ids=model_ids)
+
+        old_revisions = env_revisions + model_versions
 
         if not old_revisions:
             logger.info("No old revisions found - nothing to do.")
-            sys.exit(0)
-
-        # Filter out revisions that are cloned from by a kept revision
-        old_revisions = cleaner._filter_cloned_by_kept_revisions(old_revisions)
-
-        if not old_revisions:
-            logger.info("No deletable old revisions after build-chain filtering - nothing to do.")
             sys.exit(0)
 
         # Calculate freed space (populates per-revision size_bytes and returns combined total)
@@ -653,9 +820,10 @@ def main() -> None:
         # Print summary
         summary = report["summary"]
         logger.info("\nSummary:")
-        logger.info(f"  Old revisions found:     {summary['total_old_revisions']}")
-        logger.info(f"  Environments affected:   {summary['environments_affected']}")
-        logger.info(f"  Keeping per environment: {summary['keep_revisions']} most recent")
+        logger.info(f"  Old revisions/versions found: {summary['total_old_revisions']}")
+        logger.info(f"  Environments affected:        {summary['environments_affected']}")
+        logger.info(f"  Models affected:              {summary['models_affected']}")
+        logger.info(f"  Keeping per parent:           {summary['keep_revisions']} most recent")
 
         if not args.apply:
             logger.info("\nDRY RUN complete - no images were deleted.")
