@@ -51,6 +51,10 @@ spec:
             - name: LOG_FORMAT
               value: {{ .Values.logFormat | quote }}
             {{- end }}
+            {{- if .Values.jobTimeoutSeconds }}
+            - name: JOB_TIMEOUT_SECONDS
+              value: {{ .Values.jobTimeoutSeconds | quote }}
+            {{- end }}
             {{- if and .Values.env .Values.env.registryAuthSecret }}
             - name: REGISTRY_AUTH_SECRET
               value: {{ .Values.env.registryAuthSecret | quote }}
