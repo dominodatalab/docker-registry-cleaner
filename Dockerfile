@@ -9,9 +9,13 @@ FROM cgr.dev/dominodatalab.com/python:3.14.3-dev AS dev
 WORKDIR /app
 RUN python -m venv venv
 ENV PATH="/app/venv/bin:${PATH}"
-COPY pyproject.toml .
+COPY requirements.lock pyproject.toml ./
 COPY python python
-RUN pip install --no-cache-dir -e .
+# Install pinned transitive deps from the lock file, then the package itself
+# (--no-deps avoids overriding the pinned versions with unpinned ranges).
+# To regenerate requirements.lock: pip-compile --annotation-style=line --no-emit-index-url --output-file=requirements.lock --strip-extras pyproject.toml
+RUN pip install --no-cache-dir -r requirements.lock && \
+    pip install --no-cache-dir --no-deps -e .
 
 # 2) Source hardened skopeo binary from dedicated image
 FROM cgr.dev/dominodatalab.com/skopeo:1.22.0 AS skopeo
