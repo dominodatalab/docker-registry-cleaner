@@ -81,6 +81,7 @@ docker-registry-cleaner delete_archived_tags --environment --apply --backup --s3
 | `delete_unused_private_environments` | Delete environments owned by deactivated Keycloak users | [docs](docs/delete_unused_private_environments.md) |
 | `delete_all_unused_environments` | Run all unused environment cleanup steps in sequence | [docs](docs/delete_all_unused_environments.md) |
 | `delete_unused_references` | Remove MongoDB records referencing non-existent Docker images | [docs](docs/delete_unused_references.md) |
+| `mongo_cleanup` | Delete specific MongoDB records by tag or ObjectID, skipping any still referenced in Domino | [docs](docs/mongo_cleanup.md) |
 | `delete_image` | Delete a specific image or analyze/delete unused images from reports | [docs](docs/delete_image.md) |
 
 ### Analysis
@@ -92,6 +93,7 @@ docker-registry-cleaner delete_archived_tags --environment --apply --backup --s3
 | `image_size_report` | Report of largest images by total size and potential freed space | [docs](docs/reports.md#image_size_report) |
 | `user_size_report` | Report of registry space usage grouped by user | [docs](docs/reports.md#user_size_report) |
 | `find_environment_usage` | Show all places a specific environment is used | [docs](docs/find_environment_usage.md) |
+| `integrity_check` | Check MongoDB referential integrity across environment, model, and run collections | [docs](docs/integrity_check.md) |
 | `run_registry_gc` | Run Docker registry garbage collection (internal registries only) | [docs](docs/reports.md#run_registry_gc) |
 | `reset_default_environments` | Unset default environment references in MongoDB | [docs](docs/reports.md#reset_default_environments) |
 

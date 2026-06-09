@@ -140,6 +140,7 @@ _USER_FACING_REPORT_PREFIXES = (
     "old-revisions",
     "image-size-report",
     "user-size-report",
+    "integrity-check",
 )
 
 
@@ -231,6 +232,8 @@ def view_report(filename):
         report_type = "archived_tags"
     elif "unused-environments" in filename:
         report_type = "unused_environments"
+    elif "integrity-check" in filename:
+        report_type = "integrity_check"
     elif "deletion" in filename:
         report_type = "deletion_results"
     elif "final-report" in filename:

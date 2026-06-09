@@ -716,6 +716,66 @@ function renderGenericReport(data) {
     return html;
 }
 
+function renderIntegrityCheckReport(data) {
+    const s = data.summary || {};
+    let html = '<div class="stats-grid">';
+    html += stat('Environments', s.environments_checked);
+    html += stat('Revisions', s.revisions_checked);
+    html += stat('Models', s.models_checked);
+    html += stat('Model Versions', s.versions_checked);
+    html += stat('Issues Found', s.total_issues, s.total_issues > 0);
+    if (s.orphaned_with_image !== undefined) {
+        html += stat('Orphaned (has image)', s.orphaned_with_image, s.orphaned_with_image > 0);
+        html += stat('Orphaned (no image)', s.orphaned_without_image);
+    }
+    html += '</div>';
+
+    const byType = s.issues_by_type || {};
+    if (Object.keys(byType).length) {
+        html += sectionTitle('Issues by Type');
+        html += '<div class="breakdown-grid">';
+        Object.entries(byType).forEach(([type, count]) => {
+            html += `<div class="breakdown-item"><strong>${count}</strong><span class="breakdown-label">${type.replace(/_/g, ' ')}</span></div>`;
+        });
+        html += '</div>';
+    }
+
+    const orphanedTypes = new Set(['orphaned_revision', 'orphaned_model_version']);
+    const issues = data.issues || [];
+    if (issues.length) {
+        const hasOrphaned = issues.some(i => orphanedTypes.has(i.issue_type));
+        html += sectionTitle(`Integrity Issues (${issues.length} total)`);
+        const headers = ['Collection', 'Issue Type', 'Document ID', 'Referenced ID', 'Description'];
+        if (hasOrphaned) headers.push('Has Image?');
+        const rows = issues.map(issue => {
+            const row = [
+                issue.collection || '—',
+                issue.issue_type ? issue.issue_type.replace(/_/g, ' ') : '—',
+                issue.document_id || '—',
+                issue.referenced_id || '—',
+                issue.description || '—',
+            ];
+            if (hasOrphaned) {
+                if (!orphanedTypes.has(issue.issue_type)) {
+                    row.push('—');
+                } else if (issue.has_image === true) {
+                    row.push('<span style="color:var(--warning,orange);font-weight:600">Yes — investigate</span>');
+                } else if (issue.has_image === false) {
+                    row.push('<span style="color:var(--success,green)">No — safe to clean</span>');
+                } else {
+                    row.push('<span style="color:var(--muted,grey)">Unknown</span>');
+                }
+            }
+            return row;
+        });
+        html += table(headers, rows);
+    } else {
+        html += `<p style="color: var(--success, green); margin-top: 1rem;">No integrity issues found.</p>`;
+    }
+
+    return html;
+}
+
 // ── Bootstrap ───────────────────────────────────────────────────────────────
 
 function renderSummary() {
@@ -727,6 +787,7 @@ function renderSummary() {
     else if (reportType === 'unused_environments')   html = renderUnusedEnvironmentsReport(reportData);
     else if (reportType === 'deletion_results')      html = renderDeletionResultsReport(reportData);
     else if (reportType === 'final_report')          html = renderFinalReport(reportData);
+    else if (reportType === 'integrity_check')       html = renderIntegrityCheckReport(reportData);
     else                                             html = renderGenericReport(reportData);
     summaryDiv.innerHTML = html;
 }

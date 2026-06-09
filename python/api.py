@@ -155,6 +155,11 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
             },
         ],
     },
+    "integrity_check": {
+        "description": "Check MongoDB referential integrity across environment_revisions, model_versions, and their parent collections",
+        "destructive": False,
+        "params": [],
+    },
     "user_size_report": {
         "description": "Generate a report of image sizes grouped by user/owner",
         "destructive": False,
