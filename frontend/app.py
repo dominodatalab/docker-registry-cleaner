@@ -258,6 +258,12 @@ def operations():
     return render_template("operations.html")
 
 
+@app.route("/schedule")
+def schedule():
+    """Schedule page — view and monitor configured CronJobs"""
+    return render_template("schedule.html")
+
+
 # ── Backend API proxy routes ───────────────────────────────────────────────────
 # The browser cannot reach localhost:8081 directly (it is inside the pod).
 # These routes forward requests from the browser to the backend API.
@@ -313,6 +319,30 @@ def proxy_cancel_job(job_id):
     """Proxy: DELETE /api/jobs/{job_id} → backend"""
     try:
         resp = httpx.delete(f"{BACKEND_API_URL}/api/jobs/{job_id}", headers=_backend_headers(), timeout=10)
+        return jsonify(resp.json()), resp.status_code
+    except httpx.ConnectError:
+        return jsonify({"error": "Backend API is unavailable"}), 503
+
+
+@app.route("/api/cronjobs")
+def proxy_list_cronjobs():
+    """Proxy: GET /api/cronjobs → backend"""
+    try:
+        resp = httpx.get(f"{BACKEND_API_URL}/api/cronjobs", headers=_backend_headers(), timeout=10)
+        return jsonify(resp.json()), resp.status_code
+    except httpx.ConnectError:
+        return jsonify({"error": "Backend API is unavailable"}), 503
+
+
+@app.route("/api/cronjobs/<cronjob_name>/runs")
+def proxy_list_cronjob_runs(cronjob_name):
+    """Proxy: GET /api/cronjobs/{name}/runs → backend"""
+    try:
+        resp = httpx.get(
+            f"{BACKEND_API_URL}/api/cronjobs/{cronjob_name}/runs",
+            headers=_backend_headers(),
+            timeout=10,
+        )
         return jsonify(resp.json()), resp.status_code
     except httpx.ConnectError:
         return jsonify({"error": "Backend API is unavailable"}), 503

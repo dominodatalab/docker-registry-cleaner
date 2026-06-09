@@ -36,6 +36,7 @@ def load_script_paths() -> Dict[str, Optional[str]]:
         "reset_default_environments": "scripts/reset_default_environments.py",
         "run_registry_gc": "scripts/run_registry_gc.py",
         "user_size_report": "scripts/user_size_report.py",
+        "ensure_reports": None,  # Special: run reports if stale
     }
 
 
@@ -58,6 +59,7 @@ def get_script_descriptions() -> Dict[str, str]:
         "reset_default_environments": "Unset default environments for users and organizations (userPreferences.defaultEnvironmentId, organizations.defaultV2EnvironmentId)",
         "run_registry_gc": "Run Docker registry garbage collection inside the registry pod",
         "user_size_report": "Generate a report of image sizes grouped by user/owner, showing who is using the most space",
+        "ensure_reports": "Run 'reports' if the latest report is older than --max-age-hours (default 24h); used as a CronJob pre-step",
     }
 
 
@@ -382,6 +384,15 @@ Safety Notes:
         "and MongoDB usage reports before running, even if fresh reports already exist on disk.",
     )
 
+    parser.add_argument(
+        "--max-age-hours",
+        dest="max_age_hours",
+        type=int,
+        default=24,
+        metavar="N",
+        help="For ensure_reports: run reports if the latest report is older than N hours (default: 24)",
+    )
+
     parser.add_argument("--config", action="store_true", help="Show current configuration and exit")
 
     parser.add_argument("additional_args", nargs=argparse.REMAINDER, help="Additional arguments for the script")
@@ -404,6 +415,38 @@ Safety Notes:
         results = health_checker.run_all_checks(skip_optional=False)
         all_healthy = health_checker.print_health_report(results)
         sys.exit(0 if all_healthy else 1)
+
+    # Special handling for ensure_reports: run reports only if stale or missing
+    if args.script_keyword == "ensure_reports":
+        import time
+
+        from utils.report_utils import get_reports_dir
+
+        reports_dir = get_reports_dir()
+        final_report = reports_dir / "final-report.json"
+        max_age_hours = args.max_age_hours
+
+        # REMAINDER nargs captures flags placed after the subcommand (e.g.
+        # `ensure_reports --max-age-hours 6`), so also scan additional_args.
+        for i, arg in enumerate(args.additional_args or []):
+            if arg == "--max-age-hours" and i + 1 < len(args.additional_args):
+                try:
+                    max_age_hours = int(args.additional_args[i + 1])
+                except (ValueError, IndexError):
+                    pass
+
+        if final_report.exists():
+            age_hours = (time.time() - final_report.stat().st_mtime) / 3600
+            if age_hours < max_age_hours:
+                logging.info(f"Reports are fresh ({age_hours:.1f}h old, threshold {max_age_hours}h). Skipping.")
+                sys.exit(0)
+            logging.info(f"Reports are {age_hours:.1f}h old (threshold {max_age_hours}h). Running reports.")
+        else:
+            logging.info(f"No reports found at {final_report}. Running reports.")
+
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        run_script(os.path.join(script_dir, "scripts/reports.py"), [], dry_run=False)
+        sys.exit(0)
 
     # Special handling for delete_all_unused_environments (runs multiple scripts)
     if args.script_keyword == "delete_all_unused_environments":

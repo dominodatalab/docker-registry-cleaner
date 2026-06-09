@@ -815,3 +815,95 @@ def cancel_job(job_id: str) -> Dict[str, str]:
         _jobs[job_id]["finished_at"] = datetime.now(timezone.utc).isoformat()
 
     return {"message": "Job marked as cancelled"}
+
+
+# ── CronJob status endpoints ───────────────────────────────────────────────────
+
+
+def _get_k8s_batch_client():
+    from kubernetes import client as k8s_client
+    from kubernetes.config import ConfigException, load_incluster_config, load_kube_config
+
+    try:
+        load_incluster_config()
+    except ConfigException:
+        load_kube_config()
+    return k8s_client.BatchV1Api()
+
+
+@app.get("/api/cronjobs", dependencies=[Depends(_check_api_key)])
+def list_cronjobs() -> List[Dict[str, Any]]:
+    """List CronJobs managed by this chart, with their schedule and last-run status."""
+    try:
+        batch = _get_k8s_batch_client()
+        from utils.config_manager import config_manager
+
+        ns = config_manager.get_domino_platform_namespace()
+        cj_list = batch.list_namespaced_cron_job(
+            ns,
+            label_selector="app.kubernetes.io/name=docker-registry-cleaner",
+        )
+        result = []
+        for cj in cj_list.items:
+            result.append(
+                {
+                    "name": cj.metadata.name,
+                    "schedule": cj.spec.schedule,
+                    "suspend": cj.spec.suspend or False,
+                    "last_schedule_time": (
+                        cj.status.last_schedule_time.isoformat() if cj.status.last_schedule_time else None
+                    ),
+                    "last_successful_time": (
+                        cj.status.last_successful_time.isoformat() if cj.status.last_successful_time else None
+                    ),
+                    "active": len(cj.status.active or []),
+                }
+            )
+        result.sort(key=lambda x: x["name"])
+        return result
+    except Exception as e:
+        logging.warning(f"Could not list CronJobs from K8s API: {e}")
+        return []
+
+
+@app.get("/api/cronjobs/{cronjob_name}/runs", dependencies=[Depends(_check_api_key)])
+def list_cronjob_runs(cronjob_name: str) -> List[Dict[str, Any]]:
+    """List the 20 most recent Job runs for a given CronJob, newest first."""
+    try:
+        batch = _get_k8s_batch_client()
+        from utils.config_manager import config_manager
+
+        ns = config_manager.get_domino_platform_namespace()
+        job_list = batch.list_namespaced_job(
+            ns,
+            label_selector=f"registry-cleaner-cronjob={cronjob_name}",
+        )
+        runs = []
+        for job in job_list.items:
+            conditions = job.status.conditions or []
+            if any(c.type == "Complete" and c.status == "True" for c in conditions):
+                job_status = "succeeded"
+            elif any(c.type == "Failed" and c.status == "True" for c in conditions):
+                job_status = "failed"
+            else:
+                job_status = "running"
+
+            start = job.status.start_time
+            end = job.status.completion_time
+            duration = int((end - start).total_seconds()) if start and end else None
+
+            runs.append(
+                {
+                    "name": job.metadata.name,
+                    "started_at": start.isoformat() if start else None,
+                    "finished_at": end.isoformat() if end else None,
+                    "duration_seconds": duration,
+                    "status": job_status,
+                }
+            )
+
+        runs.sort(key=lambda x: x["started_at"] or "", reverse=True)
+        return runs[:20]
+    except Exception as e:
+        logging.warning(f"Could not list runs for CronJob {cronjob_name}: {e}")
+        return []

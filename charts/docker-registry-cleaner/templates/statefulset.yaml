@@ -101,6 +101,7 @@ spec:
             {{- if .Values.persistence.enabled }}
             - name: reports-storage
               mountPath: /data/reports
+              subPath: {{ .Values.persistence.subPath }}
             {{- end }}
         {{- if .Values.frontend.enabled }}
         - name: frontend
@@ -149,6 +150,7 @@ spec:
             {{- if .Values.persistence.enabled }}
             - name: reports-storage
               mountPath: /app/reports
+              subPath: {{ .Values.persistence.subPath }}
               readOnly: true
             {{- end }}
         {{- end }}
@@ -156,18 +158,10 @@ spec:
         - name: docker-registry-cleaner-config
           configMap:
             name: {{ include "docker-registry-cleaner.fullname" . }}-config
-  {{- if .Values.persistence.enabled }}
-  volumeClaimTemplates:
-    - metadata:
-        name: reports-storage
-      spec:
-        accessModes: [ "ReadWriteOnce" ]
-        {{- if .Values.persistence.storageClass }}
-        storageClassName: {{ .Values.persistence.storageClass }}
+        {{- if .Values.persistence.enabled }}
+        - name: reports-storage
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.pvcName }}
         {{- end }}
-        resources:
-          requests:
-            storage: {{ .Values.persistence.size }}
-  {{- end }}
   updateStrategy:
     type: RollingUpdate

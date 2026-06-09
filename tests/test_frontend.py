@@ -233,3 +233,49 @@ class TestBackendProxy:
         mocker.patch("app.httpx.delete", side_effect=_httpx.ConnectError("refused"))
         r = client.delete("/api/jobs/abc")
         assert r.status_code == 503
+
+    def test_cronjobs_list_proxied(self, client, mocker):
+        cjs = [{"name": "docker-registry-cleaner-reports", "schedule": "0 2 * * *", "active": 0}]
+        mocker.patch("app.httpx.get", return_value=_mock_httpx_response(cjs))
+        r = client.get("/api/cronjobs")
+        assert r.status_code == 200
+        assert len(r.get_json()) == 1
+        assert r.get_json()[0]["name"] == "docker-registry-cleaner-reports"
+
+    def test_cronjobs_list_503_when_backend_down(self, client, mocker):
+        import httpx as _httpx
+
+        mocker.patch("app.httpx.get", side_effect=_httpx.ConnectError("refused"))
+        r = client.get("/api/cronjobs")
+        assert r.status_code == 503
+
+    def test_cronjob_runs_proxied(self, client, mocker):
+        runs = [{"name": "run-abc", "status": "succeeded", "duration_seconds": 120}]
+        mocker.patch("app.httpx.get", return_value=_mock_httpx_response(runs))
+        r = client.get("/api/cronjobs/my-cj/runs")
+        assert r.status_code == 200
+        assert r.get_json()[0]["status"] == "succeeded"
+
+    def test_cronjob_runs_503_when_backend_down(self, client, mocker):
+        import httpx as _httpx
+
+        mocker.patch("app.httpx.get", side_effect=_httpx.ConnectError("refused"))
+        r = client.get("/api/cronjobs/my-cj/runs")
+        assert r.status_code == 503
+
+
+# ── Schedule page ──────────────────────────────────────────────────────────────
+
+
+class TestSchedulePage:
+    def test_schedule_returns_200(self, client):
+        r = client.get("/schedule")
+        assert r.status_code == 200
+
+    def test_schedule_page_in_nav(self, client):
+        r = client.get("/")
+        assert b"schedule" in r.data.lower()
+
+    def test_schedule_is_active_on_schedule_page(self, client):
+        r = client.get("/schedule")
+        assert b"active" in r.data

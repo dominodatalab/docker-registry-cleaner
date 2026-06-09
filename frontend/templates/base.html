@@ -16,6 +16,7 @@
             <ul class="navbar-menu">
                 <li><a href="{{ url_for('index') }}" class="{% if request.endpoint == 'index' %}active{% endif %}">Reports</a></li>
                 <li><a href="{{ url_for('operations') }}" class="{% if request.endpoint == 'operations' %}active{% endif %}">Operations</a></li>
+                <li><a href="{{ url_for('schedule') }}" class="{% if request.endpoint == 'schedule' %}active{% endif %}">Schedule</a></li>
                 {% if domino_username %}<li class="navbar-user">{{ domino_username }}</li>{% endif %}
             </ul>
         </div>
