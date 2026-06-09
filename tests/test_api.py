@@ -626,3 +626,125 @@ class TestListCronjobRuns:
         client.get("/api/cronjobs/my-specific-cj/runs")
         call_kwargs = mock_batch.list_namespaced_job.call_args
         assert "registry-cleaner-cronjob=my-specific-cj" in str(call_kwargs)
+
+
+# ── Job persistence ────────────────────────────────────────────────────────────
+
+
+class TestJobPersistence:
+    @pytest.fixture(autouse=True)
+    def jobs_dir(self, tmp_path, monkeypatch):
+        d = tmp_path / "jobs"
+        d.mkdir()
+        monkeypatch.setattr(api_module, "JOBS_DIR", d)
+        return d
+
+    def _submit(self, client):
+        with patch("api.subprocess.Popen", return_value=_mock_popen()):
+            r = client.post("/api/jobs", json={"operation": "health_check"})
+        return r.json()["job_id"]
+
+    def test_job_file_created_on_submission(self, client, jobs_dir):
+        job_id = self._submit(client)
+        assert (jobs_dir / f"{job_id}.json").exists()
+
+    def test_persisted_file_has_no_input_tmp_path_key(self, client, jobs_dir):
+        job_id = self._submit(client)
+        import json as _json
+
+        data = _json.loads((jobs_dir / f"{job_id}.json").read_text())
+        assert "input_tmp_path" not in data
+
+    def test_final_state_written_after_completion(self, client, jobs_dir):
+        import json as _json
+
+        job_id = self._submit(client)
+        _wait_for_terminal(job_id)
+        data = _json.loads((jobs_dir / f"{job_id}.json").read_text())
+        assert data["status"] == "completed"
+        assert data["finished_at"] is not None
+
+    def test_failed_job_persisted_as_failed(self, client, jobs_dir):
+        import json as _json
+
+        with patch("api.subprocess.Popen", return_value=_mock_popen(returncode=1)):
+            job_id = client.post("/api/jobs", json={"operation": "health_check"}).json()["job_id"]
+        _wait_for_terminal(job_id)
+        data = _json.loads((jobs_dir / f"{job_id}.json").read_text())
+        assert data["status"] == "failed"
+
+    def test_cancelled_job_persisted_as_cancelled(self, client, jobs_dir):
+        import json as _json
+
+        job_id = self._submit(client)
+        _wait_for_terminal(job_id)  # let it finish first so pid is gone
+        with _jobs_lock:
+            _jobs[job_id]["status"] = "pending"  # force back to cancellable state
+        client.delete(f"/api/jobs/{job_id}")
+        data = _json.loads((jobs_dir / f"{job_id}.json").read_text())
+        assert data["status"] == "cancelled"
+
+    def test_load_restores_completed_jobs(self, client, jobs_dir):
+        job_id = self._submit(client)
+        _wait_for_terminal(job_id)
+
+        # Simulate restart: clear memory, reload from disk
+        with _jobs_lock:
+            _jobs.clear()
+        api_module._load_persisted_jobs()
+
+        with _jobs_lock:
+            assert job_id in _jobs
+            assert _jobs[job_id]["status"] == "completed"
+
+    def test_load_marks_dangling_running_jobs_as_failed(self, jobs_dir):
+        import json as _json
+
+        job_id = str(uuid.uuid4())
+        record = _make_job_record(job_id, status="running")
+        record["finished_at"] = None
+        (jobs_dir / f"{job_id}.json").write_text(_json.dumps(record))
+
+        with _jobs_lock:
+            _jobs.clear()
+        api_module._load_persisted_jobs()
+
+        with _jobs_lock:
+            job = _jobs[job_id]
+        assert job["status"] == "failed"
+        assert job["finished_at"] is not None
+        assert any("restart" in line for line in job["logs"])
+
+    def test_load_marks_dangling_pending_jobs_as_failed(self, jobs_dir):
+        import json as _json
+
+        job_id = str(uuid.uuid4())
+        record = _make_job_record(job_id, status="pending")
+        (jobs_dir / f"{job_id}.json").write_text(_json.dumps(record))
+
+        with _jobs_lock:
+            _jobs.clear()
+        api_module._load_persisted_jobs()
+
+        with _jobs_lock:
+            assert _jobs[job_id]["status"] == "failed"
+
+    def test_trimmed_job_file_is_deleted(self, client, jobs_dir):
+        original = api_module.MAX_JOBS
+        try:
+            api_module.MAX_JOBS = 2
+            ids = [self._submit(client) for _ in range(4)]
+            assert not (jobs_dir / f"{ids[0]}.json").exists()
+            assert not (jobs_dir / f"{ids[1]}.json").exists()
+            assert (jobs_dir / f"{ids[2]}.json").exists()
+            assert (jobs_dir / f"{ids[3]}.json").exists()
+        finally:
+            api_module.MAX_JOBS = original
+
+    def test_load_skips_corrupt_file(self, jobs_dir):
+        (jobs_dir / "bad.json").write_text("not valid json {{{")
+        with _jobs_lock:
+            _jobs.clear()
+        api_module._load_persisted_jobs()  # must not raise
+        with _jobs_lock:
+            assert len(_jobs) == 0
