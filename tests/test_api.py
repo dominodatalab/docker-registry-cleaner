@@ -677,9 +677,10 @@ class TestJobPersistence:
         import json as _json
 
         job_id = self._submit(client)
-        _wait_for_terminal(job_id)  # let it finish first so pid is gone
+        _wait_for_terminal(job_id)
         with _jobs_lock:
-            _jobs[job_id]["status"] = "pending"  # force back to cancellable state
+            _jobs[job_id]["status"] = "pending"
+            _jobs[job_id]["pid"] = None  # avoid os.kill on a real PID in CI
         client.delete(f"/api/jobs/{job_id}")
         data = _json.loads((jobs_dir / f"{job_id}.json").read_text())
         assert data["status"] == "cancelled"
