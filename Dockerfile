@@ -5,7 +5,7 @@
 # ------------------------------------------------
 
 # 1) Build Python dependencies and app into a venv
-FROM cgr.dev/dominodatalab.com/python:3.14.3-dev AS dev
+FROM cgr.dev/dominodatalab.com/python:3.14.5-dev AS dev
 WORKDIR /app
 RUN python -m venv venv
 ENV PATH="/app/venv/bin:${PATH}"
@@ -18,10 +18,10 @@ RUN pip install --no-cache-dir -r requirements.lock && \
     pip install --no-cache-dir --no-deps -e .
 
 # 2) Source hardened skopeo binary from dedicated image
-FROM cgr.dev/dominodatalab.com/skopeo:1.22.0 AS skopeo
+FROM cgr.dev/dominodatalab.com/skopeo:1.23.0 AS skopeo
 
 # 3) Final runtime: minimal Python + app + skopeo
-FROM cgr.dev/dominodatalab.com/python:3.14.3
+FROM cgr.dev/dominodatalab.com/python:3.14.5
 WORKDIR /app
 
 # Copy app + venv from dev stage, owned by nonroot
