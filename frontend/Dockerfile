@@ -8,15 +8,10 @@ WORKDIR /frontend
 RUN python -m venv venv
 ENV PATH="/frontend/venv/bin:${PATH}"
 
-# Copy pyproject.toml and install only the [frontend] extras.
-# tomllib is built into Python 3.11+, so no extra tooling is needed.
-# This avoids pulling in the heavy backend dependencies (kubernetes, pymongo, boto3, etc.).
-COPY pyproject.toml .
-RUN python -c "\
-import tomllib, subprocess, sys; \
-data = tomllib.load(open('pyproject.toml', 'rb')); \
-deps = data['project']['optional-dependencies']['frontend']; \
-subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-cache-dir'] + deps, check=True)"
+# Install pinned dependencies from the lock file (Flask, httpx, waitress + their transitive deps).
+# To regenerate frontend/requirements.lock: pip-compile --annotation-style=line --no-emit-index-url --output-file=frontend/requirements.lock frontend/requirements.in
+COPY frontend/requirements.lock .
+RUN pip install --no-cache-dir -r requirements.lock
 
 # 2) Final runtime: minimal Python + app
 FROM cgr.dev/dominodatalab.com/python:3.14.3

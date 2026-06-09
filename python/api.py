@@ -40,6 +40,7 @@ _API_KEY_HEADER: Optional[str] = Header(default=None)
 BACKEND_API_KEY: str = os.environ.get("BACKEND_API_KEY", "")
 _MAIN_PY: Path = Path(__file__).parent / "main.py"
 MAX_JOBS: int = 50
+JOB_TIMEOUT_SECONDS: int = int(os.environ.get("JOB_TIMEOUT_SECONDS", "3600"))
 OUTPUT_DIR: Path = Path(os.environ.get("OUTPUT_DIR", "/data/reports"))
 
 # Detect once at startup whether the Docker registry is running inside the cluster.
@@ -551,16 +552,34 @@ def _run_job(job_id: str, cli_args: List[str]) -> None:
             _jobs[job_id]["pid"] = process.pid
             _jobs[job_id]["status"] = "running"
 
-        for line in process.stdout:  # type: ignore[union-attr]
-            with _jobs_lock:
-                _jobs[job_id]["logs"].append(line.rstrip("\n"))
+        timed_out = False
+
+        def _kill_on_timeout() -> None:
+            nonlocal timed_out
+            timed_out = True
+            logging.error("Job timed out", extra={"job_id": job_id, "timeout": JOB_TIMEOUT_SECONDS})
+            process.kill()
+
+        timer = threading.Timer(JOB_TIMEOUT_SECONDS, _kill_on_timeout)
+        timer.daemon = True
+        timer.start()
+        try:
+            for line in process.stdout:  # type: ignore[union-attr]
+                with _jobs_lock:
+                    _jobs[job_id]["logs"].append(line.rstrip("\n"))
+        finally:
+            timer.cancel()
 
         process.wait()
         return_code = process.returncode
 
         with _jobs_lock:
             _jobs[job_id]["returncode"] = return_code
-            _jobs[job_id]["status"] = "completed" if return_code == 0 else "failed"
+            if timed_out:
+                _jobs[job_id]["status"] = "failed"
+                _jobs[job_id]["logs"].append(f"[api] Job killed after {JOB_TIMEOUT_SECONDS}s timeout")
+            else:
+                _jobs[job_id]["status"] = "completed" if return_code == 0 else "failed"
             _jobs[job_id]["finished_at"] = datetime.now(timezone.utc).isoformat()
 
     except Exception as exc:

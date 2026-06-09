@@ -25,6 +25,11 @@ resources:
 # Leave empty for the default human-readable format.
 logFormat: ""
 
+# Maximum wall-clock seconds a background job is allowed to run before the API
+# server kills it with SIGKILL. A hung subprocess would otherwise hold its slot
+# indefinitely until the pod is restarted. Default: 3600 (1 hour).
+jobTimeoutSeconds: 3600
+
 # Optional env overrides for external registries (ECR, Quay, GCR, ACR, etc.)
 # Registry URL is set via config.registry.url above.
 env:
@@ -136,6 +141,16 @@ metrics:
     # For cross-namespace Prometheus: set this instead of prometheusPodLabels.
     # e.g. prometheusNamespaceLabel: { kubernetes.io/metadata.name: monitoring }
     prometheusNamespaceLabel: {}
+
+# ── Docker registry access ──────────────────
+# Names of the Docker registry pod(s) that the cleaner's service account is
+# permitted to exec into (used by the run_registry_gc operation).  The RBAC
+# Role grants pods/exec only for these specific pod names, limiting blast
+# radius if the service account is ever compromised.
+# Default matches a single-replica StatefulSet named "docker-registry".
+registry:
+  execPodNames:
+    - docker-registry-0
 
 # ── Application configuration ──────────────────
 config:
