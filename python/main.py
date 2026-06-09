@@ -31,6 +31,7 @@ def load_script_paths() -> Dict[str, Optional[str]]:
         "migrate_registry": "scripts/migrate_registry.py",
         "health_check": None,  # Special: runs health checks
         "image_size_report": "scripts/image_size_report.py",
+        "integrity_check": "scripts/integrity_check.py",
         "mongo_cleanup": "scripts/mongo_cleanup.py",
         "reports": "scripts/reports.py",
         "reset_default_environments": "scripts/reset_default_environments.py",
@@ -53,6 +54,7 @@ def get_script_descriptions() -> Dict[str, str]:
         "migrate_registry": "Migrate Docker images from one registry to another using skopeo copy, with optional MongoDB metadata update",
         "health_check": "Run health checks and verify system connectivity (registry, MongoDB, Kubernetes, S3)",
         "image_size_report": "Generate a report of the largest images sorted by total size, showing space that would be freed if deleted",
+        "integrity_check": "Check MongoDB referential integrity across environment_revisions, model_versions, and their parent collections",
         "mongo_cleanup": "Simple tag/ObjectID-based Mongo cleanup (consider using delete_unused_references for advanced features)",
         "reports": "Generate tag usage reports from analysis data (auto-generates metadata)",
         "reset_default_environments": "Unset default environments for users and organizations (userPreferences.defaultEnvironmentId, organizations.defaultV2EnvironmentId)",

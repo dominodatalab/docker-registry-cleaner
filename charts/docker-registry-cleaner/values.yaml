@@ -9,7 +9,7 @@ dominoPlatformNamespace: domino-platform
 # ── Backend container configuration ──────────────────
 image:
   repository: quay.io/domino/docker-registry-cleaner
-  tag: v0.4.1
+  tag: v0.4.2
   pullPolicy: Always
 
 resources:
@@ -48,7 +48,7 @@ frontend:
   enabled: true
   image:
     repository: quay.io/domino/docker-registry-cleaner-frontend
-    tag: v0.4.1
+    tag: v0.4.2
     pullPolicy: Always
   resources:
     requests:

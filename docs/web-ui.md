@@ -45,7 +45,7 @@ frontend:
   enabled: true  # Set to false to disable
   image:
     repository: quay.io/domino/docker-registry-cleaner-frontend
-    tag: v0.4.1
+    tag: v0.4.2
   resources:
     requests:
       cpu: 50m

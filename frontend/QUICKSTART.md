@@ -72,7 +72,7 @@ docker rm registry-cleaner-ui
 
 ```bash
 # Build with version tag
-VERSION=v0.4.1
+VERSION=v0.4.2
 docker build -f frontend/Dockerfile \
   -t quay.io/domino/docker-registry-cleaner-frontend:${VERSION} \
   -t quay.io/domino/docker-registry-cleaner-frontend:latest \
@@ -97,7 +97,7 @@ frontend:
   enabled: true
   image:
     repository: quay.io/domino/docker-registry-cleaner-frontend
-    tag: v0.4.1
+    tag: v0.4.2
     pullPolicy: Always
 ```
 
@@ -228,7 +228,7 @@ podSecurityContext:
 **Solution**: Verify image exists and pull secrets are configured
 ```bash
 # Check if image exists
-docker pull quay.io/domino/docker-registry-cleaner-frontend:v0.4.1
+docker pull quay.io/domino/docker-registry-cleaner-frontend:v0.4.2
 
 # Verify pull secrets
 kubectl get secret domino-quay-repos -n domino-platform
