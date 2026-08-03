@@ -40,7 +40,7 @@ from scripts.delete_unused_environments import UnusedEnvInfo, UnusedEnvironments
 from utils.config_manager import config_manager
 from utils.logging_utils import get_logger, setup_logging
 from utils.mongo_utils import get_mongo_client
-from utils.report_utils import save_json
+from utils.report_utils import save_json, sizeof_fmt
 
 logger = get_logger(__name__)
 
@@ -100,10 +100,15 @@ Examples:
     return parser.parse_args()
 
 
-def find_unused_environment_docs(recent_days: int | None, generate_reports: bool) -> List[UnusedEnvInfo]:
+def find_unused_environment_docs(
+    recent_days: int | None, generate_reports: bool
+) -> tuple[UnusedEnvironmentsFinder, List[UnusedEnvInfo]]:
     """
     Use UnusedEnvironmentsFinder to determine which environment/revision IDs are unused,
     then filter to only environments that exist in environments_v2 and are not already archived.
+
+    Returns the finder instance alongside the results so callers can reuse it (e.g. to calculate
+    potential freed space via find_matching_tags/calculate_freed_space).
     """
     registry_url = config_manager.get_registry_url()
     repository = config_manager.get_repository()
@@ -129,7 +134,7 @@ def find_unused_environment_docs(recent_days: int | None, generate_reports: bool
     unused_envs = finder.find_unused_environments()
     if not unused_envs:
         logger.info("No unused environments (or revisions) found by UnusedEnvironmentsFinder")
-        return []
+        return finder, []
 
     # Filter to only environments that actually exist in environments_v2 and are not already archived
     mongo_client = get_mongo_client()
@@ -152,7 +157,7 @@ def find_unused_environment_docs(recent_days: int | None, generate_reports: bool
 
         if not valid_object_ids:
             logger.info("No valid ObjectIDs among unused environment candidates")
-            return []
+            return finder, []
 
         cursor = envs_collection.find(
             {"_id": {"$in": valid_object_ids}},
@@ -186,9 +191,25 @@ def find_unused_environment_docs(recent_days: int | None, generate_reports: bool
             )
 
         logger.info(f"Found {len(result)} unused environments eligible for archiving (not already archived)")
-        return result
+        return finder, result
     finally:
         mongo_client.close()
+
+
+def calculate_potential_freed_space(finder: UnusedEnvironmentsFinder, envs: List[UnusedEnvInfo]) -> int:
+    """Calculate registry space that could be freed if the given environments were archived and then deleted.
+
+    Reuses UnusedEnvironmentsFinder's tag-matching and shared-layer-aware size calculation
+    (the same logic delete_unused_environments.py uses before actually deleting images).
+    """
+    if not envs:
+        return 0
+
+    matching_tags = finder.find_matching_tags(envs)
+    if not matching_tags:
+        return 0
+
+    return finder.calculate_freed_space(matching_tags)
 
 
 def archive_environments(envs_to_archive: List[UnusedEnvInfo], apply: bool) -> int:
@@ -246,7 +267,7 @@ def main():
     logger.info("=" * 60)
 
     try:
-        unused_env_docs = find_unused_environment_docs(
+        finder, unused_env_docs = find_unused_environment_docs(
             recent_days=args.days,
             generate_reports=args.generate_reports,
         )
@@ -259,6 +280,8 @@ def main():
                     "total_candidates": 0,
                     "would_archive": 0,
                     "actually_archived": 0,
+                    "potential_freed_space_bytes": 0,
+                    "potential_freed_space_gb": 0,
                 },
                 "environments": [],
             }
@@ -281,6 +304,12 @@ def main():
             logger.info(f"  - {env.object_id}  {env.env_name}")
         if len(unused_env_docs) > 20:
             logger.info(f"  ... and {len(unused_env_docs) - 20} more")
+
+        logger.info(
+            "Calculating potential space that could be freed if these environments are archived and later deleted..."
+        )
+        potential_freed_space_bytes = calculate_potential_freed_space(finder, unused_env_docs)
+        logger.info(f"Potential space that could be freed: {sizeof_fmt(potential_freed_space_bytes)}")
 
         # Confirmation prompt for apply mode (unless --force)
         actually_archived = 0
@@ -306,6 +335,8 @@ def main():
                 "total_candidates": len(env_summaries),
                 "would_archive": len(env_summaries),
                 "actually_archived": actually_archived,
+                "potential_freed_space_bytes": potential_freed_space_bytes,
+                "potential_freed_space_gb": round(potential_freed_space_bytes / (1024**3), 2),
             },
             "environments": env_summaries,
         }

@@ -50,11 +50,14 @@ _parent_dir = Path(__file__).parent.parent.absolute()
 if str(_parent_dir) not in sys.path:
     sys.path.insert(0, str(_parent_dir))
 
+from scripts.delete_unused_environments import UnusedEnvInfo, UnusedEnvironmentsFinder  # noqa: E402
 from utils.config_manager import config_manager  # noqa: E402
 from utils.image_metadata import lookup_user_names_and_logins  # noqa: E402
+from utils.image_usage import ImageUsageService  # noqa: E402
 from utils.logging_utils import get_logger, setup_logging  # noqa: E402
 from utils.mongo_utils import get_mongo_client  # noqa: E402
 from utils.object_id_utils import validate_object_id  # noqa: E402
+from utils.report_utils import sizeof_fmt  # noqa: E402
 
 logger = get_logger(__name__)
 
@@ -103,6 +106,67 @@ def load_environment_ids_from_file(file_path: str) -> List[str]:
     else:
         logger.info(f"Loaded {len(env_ids)} environment IDs from {file_path}")
     return env_ids
+
+
+def calculate_potential_freed_space(env_ids: List[str]) -> Dict[str, object]:
+    """
+    Estimate registry space that could be freed if the given environments were deleted once
+    their user/organization/project default references are cleared.
+
+    An environment only counts toward the estimate if it has no other known usage (runs,
+    workspaces, models, scheduled jobs, or app versions) - i.e. clearing the default references
+    would leave it fully unused and eligible for deletion by delete_unused_environments.py.
+
+    Returns a dict with 'freeable_environment_ids' and 'freed_space_bytes'.
+    """
+    result: Dict[str, object] = {"freeable_environment_ids": [], "freed_space_bytes": 0}
+    if not env_ids:
+        return result
+
+    env_id_set = set(env_ids)
+    service = ImageUsageService()
+    reports = service.load_mongodb_usage_reports()
+
+    usage_by_id = service.find_usage_for_environment_ids(env_id_set, reports)
+    direct_usage_by_id = service.find_direct_environment_id_usage(env_id_set)
+
+    freeable_ids = []
+    for env_id in env_ids:
+        usage = usage_by_id.get(env_id, {})
+        direct_usage = direct_usage_by_id.get(env_id, {})
+        # projects/organizations usage is excluded here since it's exactly what this script
+        # resets; scheduler jobs and app versions are unaffected by this script and still
+        # block deletion if present.
+        has_other_usage = (
+            bool(usage.get("workspaces"))
+            or bool(usage.get("runs"))
+            or bool(usage.get("models"))
+            or bool(direct_usage.get("scheduler_jobs"))
+            or bool(direct_usage.get("app_versions"))
+        )
+        if not has_other_usage:
+            freeable_ids.append(env_id)
+
+    if not freeable_ids:
+        logger.info("No archived environments would become fully unused after resetting default references.")
+        return result
+
+    logger.info(
+        f"{len(freeable_ids)} of {len(env_ids)} environment(s) have no other known usage "
+        "(runs/workspaces/models/scheduled jobs/app versions) and would be eligible for deletion "
+        "once default references are cleared."
+    )
+
+    registry_url = config_manager.get_registry_url()
+    repository = config_manager.get_repository()
+    finder = UnusedEnvironmentsFinder(registry_url=registry_url, repository=repository)
+    env_infos = [UnusedEnvInfo(object_id=eid) for eid in freeable_ids]
+    matching_tags = finder.find_matching_tags(env_infos)
+    freed_space_bytes = finder.calculate_freed_space(matching_tags) if matching_tags else 0
+
+    result["freeable_environment_ids"] = freeable_ids
+    result["freed_space_bytes"] = freed_space_bytes
+    return result
 
 
 def reset_default_environments(
@@ -509,6 +573,10 @@ def main() -> None:
         reset_project=reset_project,
     )
 
+    logger.info("\nCalculating potential space that could be freed if these environments become fully unused...")
+    freed_space_info = calculate_potential_freed_space(env_ids)
+    freed_space_bytes = freed_space_info["freed_space_bytes"]
+
     logger.info("\nSummary:")
     logger.info(f"  Environment IDs provided: {len(env_ids)}")
     logger.info(
@@ -526,6 +594,11 @@ def main() -> None:
     )
     logger.info(f"  Matched projects: {summary['matched_projects']}")
     logger.info(f"  Updated projects: {summary['updated_projects']}")
+    logger.info(
+        f"  Environments eligible for deletion once defaults are cleared: "
+        f"{len(freed_space_info['freeable_environment_ids'])}"
+    )
+    logger.info(f"  Potential space that could be freed: {sizeof_fmt(freed_space_bytes)}")
 
 
 if __name__ == "__main__":
