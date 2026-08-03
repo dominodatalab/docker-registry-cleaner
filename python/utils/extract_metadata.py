@@ -30,6 +30,27 @@ PipelineStage = Dict[str, Any]
 Pipeline = List[PipelineStage]
 
 
+def _built_env_revision_lookup(local_field: str, as_name: str, *, is_array: bool = False) -> PipelineStage:
+    """Build a $lookup into environment_revisions that excludes revisions with
+    metadata.isBuilt == False - failed/pending builds have no corresponding Docker
+    image in the registry, so joining them in just produces tags reports.py can
+    never find.
+
+    Set is_array=True when local_field holds an array of revision ObjectIDs
+    rather than a single ObjectID.
+    """
+    let_var = "rev_ids" if is_array else "rev_id"
+    match_expr = {"$in": ["$_id", f"$${let_var}"]} if is_array else {"$eq": ["$_id", f"$${let_var}"]}
+    return {
+        "$lookup": {
+            "from": "environment_revisions",
+            "let": {let_var: f"${local_field}"},
+            "pipeline": [{"$match": {"$expr": match_expr, "metadata.isBuilt": {"$ne": False}}}],
+            "as": as_name,
+        }
+    }
+
+
 def model_env_usage_pipeline() -> Pipeline:
     """Generate aggregation pipeline for model environment usage.
 
@@ -102,14 +123,7 @@ def model_env_usage_pipeline() -> Pipeline:
                 "sagas_id.isCompleted": {"$eq": True},
             }
         },
-        {
-            "$lookup": {
-                "from": "environment_revisions",
-                "localField": "model_versions_id.environmentRevisionId",
-                "foreignField": "_id",
-                "as": "environment_revisions_id",
-            }
-        },
+        _built_env_revision_lookup("model_versions_id.environmentRevisionId", "environment_revisions_id"),
         {
             "$project": {
                 "model_id": "$model_id",
@@ -313,41 +327,15 @@ def workspace_env_usage_pipeline() -> Pipeline:
                 },
             }
         },
-        {
-            "$lookup": {
-                "from": "environment_revisions",
-                "localField": "user_active_revision_id",
-                "foreignField": "_id",
-                "as": "environment_revision_id",
-            }
-        },
+        _built_env_revision_lookup("user_active_revision_id", "environment_revision_id"),
         # Resolve docker tags for any session-provided revision ids (both user and compute cluster)
-        {
-            "$lookup": {
-                "from": "environment_revisions",
-                "localField": "session_env_rev_ids",
-                "foreignField": "_id",
-                "as": "session_environment_revisions",
-            }
-        },
-        {
-            "$lookup": {
-                "from": "environment_revisions",
-                "localField": "session_compute_env_rev_ids",
-                "foreignField": "_id",
-                "as": "session_compute_environment_revisions",
-            }
-        },
+        _built_env_revision_lookup("session_env_rev_ids", "session_environment_revisions", is_array=True),
+        _built_env_revision_lookup(
+            "session_compute_env_rev_ids", "session_compute_environment_revisions", is_array=True
+        ),
         # Resolve compute cluster environment active revision (use activeRevisionId)
         {"$addFields": {"compute_active_revision_id": {"$first": "$compute_environment_id.activeRevisionId"}}},
-        {
-            "$lookup": {
-                "from": "environment_revisions",
-                "localField": "compute_active_revision_id",
-                "foreignField": "_id",
-                "as": "compute_environment_revision_id",
-            }
-        },
+        _built_env_revision_lookup("compute_active_revision_id", "compute_environment_revision_id"),
         {
             "$lookup": {
                 "from": "environments_v2",
@@ -435,14 +423,7 @@ def workspace_env_usage_pipeline() -> Pipeline:
                 },
             }
         },
-        {
-            "$lookup": {
-                "from": "environment_revisions",
-                "localField": "default_active_revision_id",
-                "foreignField": "_id",
-                "as": "default_environment_revision_id",
-            }
-        },
+        _built_env_revision_lookup("default_active_revision_id", "default_environment_revision_id"),
         {
             "$project": {
                 "workspace_name": "$workspace_name",
@@ -490,14 +471,7 @@ def runs_env_usage_pipeline() -> Pipeline:
                 "volumeSpecification._t": {"$ne": "RunReusableVolumeSpecification"},
             }
         },
-        {
-            "$lookup": {
-                "from": "environment_revisions",
-                "localField": "environmentRevisionId",
-                "foreignField": "_id",
-                "as": "env_rev",
-            }
-        },
+        _built_env_revision_lookup("environmentRevisionId", "env_rev"),
         {
             "$project": {
                 "run_id": "$_id",
@@ -608,14 +582,7 @@ def projects_env_usage_pipeline() -> Pipeline:
                 "active_revision_id": {"$first": "$environment.activeRevisionId"},
             }
         },
-        {
-            "$lookup": {
-                "from": "environment_revisions",
-                "localField": "active_revision_id",
-                "foreignField": "_id",
-                "as": "environment_revision",
-            }
-        },
+        _built_env_revision_lookup("active_revision_id", "environment_revision"),
         {
             "$project": {
                 "project_id": "$project_id",
@@ -690,14 +657,7 @@ def scheduler_jobs_env_usage_pipeline() -> Pipeline:
                 "active_revision_id": {"$first": "$environment.activeRevisionId"},
             }
         },
-        {
-            "$lookup": {
-                "from": "environment_revisions",
-                "localField": "active_revision_id",
-                "foreignField": "_id",
-                "as": "environment_revision",
-            }
-        },
+        _built_env_revision_lookup("active_revision_id", "environment_revision"),
         {
             "$project": {
                 "job_id": "$job_id",
@@ -746,14 +706,7 @@ def organizations_env_usage_pipeline() -> Pipeline:
                 "active_revision_id": {"$first": "$environment.activeRevisionId"},
             }
         },
-        {
-            "$lookup": {
-                "from": "environment_revisions",
-                "localField": "active_revision_id",
-                "foreignField": "_id",
-                "as": "environment_revision",
-            }
-        },
+        _built_env_revision_lookup("active_revision_id", "environment_revision"),
         {
             "$project": {
                 "organization_id": "$organization_id",
@@ -803,14 +756,7 @@ def app_versions_env_usage_pipeline() -> Pipeline:
                 "active_revision_id": {"$first": "$environment.activeRevisionId"},
             }
         },
-        {
-            "$lookup": {
-                "from": "environment_revisions",
-                "localField": "active_revision_id",
-                "foreignField": "_id",
-                "as": "environment_revision",
-            }
-        },
+        _built_env_revision_lookup("active_revision_id", "environment_revision"),
         {
             "$project": {
                 "app_version_id": "$app_version_id",
