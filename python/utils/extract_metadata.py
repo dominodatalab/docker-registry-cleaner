@@ -38,13 +38,18 @@ def _built_env_revision_lookup(local_field: str, as_name: str, *, is_array: bool
 
     Set is_array=True when local_field holds an array of revision ObjectIDs
     rather than a single ObjectID.
+
+    local_field may be absent on some documents (e.g. stripped by an earlier
+    $project, or simply unset) - $ifNull guards against that so the $in/$eq
+    below never sees a "missing" value, which $in rejects outright.
     """
     let_var = "rev_ids" if is_array else "rev_id"
+    default: Any = [] if is_array else None
     match_expr = {"$in": ["$_id", f"$${let_var}"]} if is_array else {"$eq": ["$_id", f"$${let_var}"]}
     return {
         "$lookup": {
             "from": "environment_revisions",
-            "let": {let_var: f"${local_field}"},
+            "let": {let_var: {"$ifNull": [f"${local_field}", default]}},
             "pipeline": [{"$match": {"$expr": match_expr, "metadata.isBuilt": {"$ne": False}}}],
             "as": as_name,
         }
