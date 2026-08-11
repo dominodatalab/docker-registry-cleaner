@@ -1,0 +1,112 @@
+{{- $saName := default (include "docker-registry-cleaner.fullname" .) .Values.serviceAccount.name -}}
+{{- range .Values.cronjobs }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "docker-registry-cleaner.fullname" $ }}-{{ .name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "docker-registry-cleaner.name" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    helm.sh/chart: {{ include "docker-registry-cleaner.chart" $ }}
+spec:
+  schedule: {{ .schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "docker-registry-cleaner.name" $ }}
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+        # Used by GET /api/cronjobs/{name}/runs to list Jobs for this CronJob
+        registry-cleaner-cronjob: {{ .name | quote }}
+    spec:
+      backoffLimit: {{ .backoffLimit | default 1 }}
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: {{ include "docker-registry-cleaner.name" $ }}
+            app.kubernetes.io/instance: {{ $.Release.Name }}
+            docker-registry-client: "true"
+            mongodb-replicaset-client: "true"
+            keycloak-client: "true"
+        spec:
+          restartPolicy: OnFailure
+          nodeSelector:
+            dominodatalab.com/node-pool: platform
+          securityContext:
+            fsGroup: {{ ($.Values.podSecurityContext | default dict).fsGroup | default 65532 }}
+          serviceAccountName: {{ $saName }}
+          imagePullSecrets:
+          {{- range $.Values.imagePullSecrets }}
+            - name: {{ .name }}
+          {{- end }}
+          containers:
+            - name: cleaner
+              image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+              imagePullPolicy: {{ $.Values.image.pullPolicy }}
+              env:
+                - name: CONFIG_FILE
+                  value: /config.yaml
+                - name: KEYCLOAK_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: keycloak-http
+                      key: password
+                - name: MONGODB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: mongodb-replicaset-admin
+                      key: password
+                {{- if and $.Values.env $.Values.env.azureClientId }}
+                - name: AZURE_CLIENT_ID
+                  value: {{ $.Values.env.azureClientId | quote }}
+                {{- end }}
+                {{- if and $.Values.env $.Values.env.azureTenantId }}
+                - name: AZURE_TENANT_ID
+                  value: {{ $.Values.env.azureTenantId | quote }}
+                {{- end }}
+                {{- if $.Values.extraEnv }}
+                {{- toYaml $.Values.extraEnv | nindent 16 }}
+                {{- end }}
+              {{- if .ensureFreshReports }}
+              command:
+                - bash
+                - -c
+                - {{ printf "python main.py ensure_reports && %s" (.command | join " ") | quote }}
+              {{- else }}
+              command: {{ .command | toJson }}
+              {{- end }}
+              resources:
+                {{- if .resources }}
+                {{- toYaml .resources | nindent 16 }}
+                {{- else }}
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+                {{- end }}
+              volumeMounts:
+                - name: docker-registry-cleaner-config
+                  mountPath: /config.yaml
+                  subPath: config.yaml
+                {{- if $.Values.persistence.enabled }}
+                - name: reports-storage
+                  mountPath: /data/reports
+                  subPath: {{ $.Values.persistence.subPath }}
+                {{- end }}
+          volumes:
+            - name: docker-registry-cleaner-config
+              configMap:
+                name: {{ include "docker-registry-cleaner.fullname" $ }}-config
+            {{- if $.Values.persistence.enabled }}
+            - name: reports-storage
+              persistentVolumeClaim:
+                claimName: {{ $.Values.persistence.pvcName }}
+            {{- end }}
+{{- end }}

@@ -9,7 +9,7 @@ dominoPlatformNamespace: domino-platform
 # ── Backend container configuration ──────────────────
 image:
   repository: quay.io/domino/docker-registry-cleaner
-  tag: v0.4.2
+  tag: v0.5.0
   pullPolicy: Always
 
 resources:
@@ -53,7 +53,7 @@ frontend:
   enabled: true
   image:
     repository: quay.io/domino/docker-registry-cleaner-frontend
-    tag: v0.4.2
+    tag: v0.5.0
     pullPolicy: Always
   resources:
     requests:
@@ -102,8 +102,11 @@ serviceAccount:
 
 persistence:
   enabled: true
-  size: 10Gi
-  storageClass: "dominodisk"  # Use default storage class if empty
+  # Name of the pre-existing RWX PVC shared across Domino services (domino-shared-store).
+  # CronJob pods can land on any node and still mount this volume.
+  pvcName: "domino-shared-store"
+  # Subdirectory within the shared PVC used exclusively by this service.
+  subPath: "registry-cleaner"
 
 # Backend API configuration
 # The backend container exposes a REST API on port 8081 for the frontend sidecar.
@@ -200,3 +203,45 @@ config:
   security:
     dry_run_by_default: true
     require_confirmation: true
+
+# ── Scheduled CronJobs ────────────────────────────────────────────────────────
+# Each entry creates a Kubernetes CronJob that shares the image, config, secrets,
+# and service account of the StatefulSet.
+#
+# Fields:
+#   name              – unique short name; becomes part of the CronJob K8s name
+#   schedule          – standard 5-field cron expression (UTC)
+#   command           – container command list, passed to python main.py
+#   ensureFreshReports – if true, run `python main.py ensure_reports` before the
+#                        command so reports are no older than 24 h (useful for
+#                        deletion jobs that depend on up-to-date report data)
+#   backoffLimit      – number of retries on failure (default: 1)
+#   resources         – container resource requests/limits (uses chart defaults if omitted)
+#
+# Example:
+# cronjobs:
+#   - name: reports
+#     schedule: "0 2 * * *"
+#     command: ["python", "main.py", "reports"]
+#
+#   - name: delete-archived-tags
+#     schedule: "0 2 * * 0"
+#     ensureFreshReports: true
+#     command: ["python", "main.py", "delete_archived_tags", "--environment", "--model", "--apply"]
+#     resources:
+#       requests: { cpu: 100m, memory: 256Mi }
+#       limits:   { cpu: 1000m, memory: 1Gi }
+#
+#   - name: delete-unused-environments
+#     schedule: "0 3 * * 0"
+#     ensureFreshReports: true
+#     command: ["python", "main.py", "delete_unused_environments", "--unused-since-days", "90"]
+#
+#   - name: delete-unused-references
+#     schedule: "0 4 1 * *"
+#     command: ["python", "main.py", "delete_unused_references", "--apply"]
+#
+#   - name: run-registry-gc
+#     schedule: "0 5 * * 0"
+#     command: ["python", "main.py", "run_registry_gc"]
+cronjobs: []

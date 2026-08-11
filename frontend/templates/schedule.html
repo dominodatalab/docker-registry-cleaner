@@ -1,0 +1,227 @@
+{% extends "base.html" %}
+
+{% block title %}Schedule - Docker Registry Cleaner{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Scheduled CronJobs</h2>
+    <p class="subtitle">Kubernetes CronJobs managed by the docker-registry-cleaner Helm chart</p>
+</div>
+
+<div class="card">
+    <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+        <h3>CronJob Status</h3>
+        <button class="btn btn-secondary btn-sm" onclick="loadCronjobs()">Refresh</button>
+    </div>
+    <div class="card-body" style="padding:0;">
+        <div id="cronjob-list">
+            <div class="loading">Loading scheduled jobs…</div>
+        </div>
+    </div>
+</div>
+
+<!-- Run detail panel (shown when a row is expanded) -->
+<div id="runs-panel" class="card mt-3" style="display:none;">
+    <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+        <h3>Recent Runs: <span id="runs-panel-name"></span></h3>
+        <button class="btn btn-secondary btn-sm" onclick="closeRunsPanel()">Close</button>
+    </div>
+    <div class="card-body" style="padding:0;">
+        <div id="runs-list">
+            <div class="loading">Loading runs…</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// ── Cron helpers ───────────────────────────────────────────────────────────────
+function humanCron(expr) {
+    const parts = expr.trim().split(/\s+/);
+    if (parts.length !== 5) return expr;
+    const [min, hour, dom, month, dow] = parts;
+    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const hhmm = `${hour.padStart(2, "0")}:${min.padStart(2, "0")} UTC`;
+
+    if (dom === "*" && month === "*" && dow === "*") {
+        return `Daily at ${hhmm}`;
+    }
+    if (dom === "*" && month === "*" && dow !== "*") {
+        const day = /^\d+$/.test(dow) ? (dayNames[parseInt(dow)] ?? dow) : dow;
+        return `Weekly on ${day} at ${hhmm}`;
+    }
+    if (dom !== "*" && month === "*" && dow === "*") {
+        const d = parseInt(dom);
+        const sfx = d === 1 ? "st" : d === 2 ? "nd" : d === 3 ? "rd" : "th";
+        return `Monthly on ${d}${sfx} at ${hhmm}`;
+    }
+    return expr;
+}
+
+function relativeTime(isoStr) {
+    if (!isoStr) return "—";
+    const diffMs = Date.now() - new Date(isoStr).getTime();
+    if (diffMs < 0) return "in the future";
+    const mins = Math.floor(diffMs / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return days === 1 ? "1 day ago" : `${days} days ago`;
+}
+
+function cronStatusBadge(cj) {
+    if (cj.suspend)              return {cls: "status-cancelled", text: "Suspended"};
+    if (cj.active > 0)           return {cls: "status-running",   text: "Running"};
+    if (!cj.last_schedule_time)  return {cls: "status-pending",   text: "Not scheduled"};
+    if (!cj.last_successful_time) return {cls: "status-failed",   text: "Never succeeded"};
+    return                              {cls: "status-completed",  text: "Healthy"};
+}
+
+function fmtDuration(secs) {
+    if (secs == null) return "—";
+    if (secs < 60) return `${secs}s`;
+    const m = Math.floor(secs / 60), s = secs % 60;
+    return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+// Strip the chart release prefix so names are readable
+function shortName(fullName) {
+    return fullName.replace(/^docker-registry-cleaner-/, "");
+}
+
+// ── Load CronJobs ──────────────────────────────────────────────────────────────
+let _expandedCronjob = null;
+
+document.addEventListener("DOMContentLoaded", loadCronjobs);
+
+async function loadCronjobs() {
+    const container = document.getElementById("cronjob-list");
+    container.innerHTML = '<div class="loading">Loading…</div>';
+    try {
+        const resp = await fetch(API_BASE + "/api/cronjobs");
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const jobs = await resp.json();
+
+        if (!jobs.length) {
+            container.innerHTML =
+                '<div class="loading">No CronJobs found. Add entries to <code>cronjobs:</code> in your Helm values to create scheduled jobs.</div>';
+            return;
+        }
+
+        container.innerHTML = "";
+        const table = document.createElement("table");
+        table.className = "data-table";
+        table.innerHTML = `
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Schedule</th>
+                    <th>Status</th>
+                    <th>Last Scheduled</th>
+                    <th>Last Successful</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="cj-tbody"></tbody>
+        `;
+        container.appendChild(table);
+
+        const tbody = document.getElementById("cj-tbody");
+        jobs.forEach(cj => tbody.appendChild(buildCronjobRow(cj)));
+    } catch (e) {
+        container.innerHTML = `<div class="loading">Could not load CronJobs: ${e.message}</div>`;
+    }
+}
+
+function buildCronjobRow(cj) {
+    const badge = cronStatusBadge(cj);
+    const row = document.createElement("tr");
+    row.dataset.name = cj.name;
+    row.innerHTML = `
+        <td><strong>${shortName(cj.name)}</strong></td>
+        <td>
+            <code>${cj.schedule}</code>
+            <br><small style="color: #6b7280; font-size: 0.85em;">${humanCron(cj.schedule)}</small>
+        </td>
+        <td><span class="job-status-badge ${badge.cls}">${badge.text}</span></td>
+        <td title="${cj.last_schedule_time || ''}">${relativeTime(cj.last_schedule_time)}</td>
+        <td title="${cj.last_successful_time || ''}">${relativeTime(cj.last_successful_time)}</td>
+        <td>
+            <button class="btn btn-secondary btn-sm" onclick="toggleRuns('${cj.name}')">View runs</button>
+        </td>
+    `;
+    return row;
+}
+
+// ── Run history panel ──────────────────────────────────────────────────────────
+async function toggleRuns(cronjobName) {
+    const panel = document.getElementById("runs-panel");
+    if (_expandedCronjob === cronjobName && panel.style.display !== "none") {
+        closeRunsPanel();
+        return;
+    }
+    _expandedCronjob = cronjobName;
+    panel.style.display = "block";
+    document.getElementById("runs-panel-name").textContent = shortName(cronjobName);
+    document.getElementById("runs-list").innerHTML = '<div class="loading">Loading runs…</div>';
+    panel.scrollIntoView({behavior: "smooth", block: "start"});
+
+    try {
+        const resp = await fetch(`${API_BASE}/api/cronjobs/${cronjobName}/runs`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const runs = await resp.json();
+        renderRuns(runs);
+    } catch (e) {
+        document.getElementById("runs-list").innerHTML =
+            `<div class="loading">Could not load runs: ${e.message}</div>`;
+    }
+}
+
+function closeRunsPanel() {
+    _expandedCronjob = null;
+    document.getElementById("runs-panel").style.display = "none";
+}
+
+function renderRuns(runs) {
+    const container = document.getElementById("runs-list");
+    if (!runs.length) {
+        container.innerHTML = '<div class="loading">No runs recorded yet.</div>';
+        return;
+    }
+
+    const table = document.createElement("table");
+    table.className = "data-table";
+    table.innerHTML = `
+        <thead>
+            <tr>
+                <th>Run</th>
+                <th>Status</th>
+                <th>Started</th>
+                <th>Finished</th>
+                <th>Duration</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    `;
+
+    const tbody = table.querySelector("tbody");
+    runs.forEach(run => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+            <td><small style="color: #6b7280; font-size: 0.85em;">${run.name}</small></td>
+            <td><span class="job-status-badge status-${run.status}">${run.status}</span></td>
+            <td title="${run.started_at || ''}">${relativeTime(run.started_at)}</td>
+            <td title="${run.finished_at || ''}">${relativeTime(run.finished_at)}</td>
+            <td>${fmtDuration(run.duration_seconds)}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+
+    container.innerHTML = "";
+    container.appendChild(table);
+}
+</script>
+{% endblock %}

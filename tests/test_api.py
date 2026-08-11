@@ -454,3 +454,298 @@ class TestJobTrimming:
             assert submitted[3] in present
         finally:
             api_module.MAX_JOBS = original
+
+
+# ── CronJob helpers ────────────────────────────────────────────────────────────
+
+
+def _make_mock_cj(name, schedule, last_schedule=None, last_successful=None, active=0, suspend=False):
+    cj = MagicMock()
+    cj.metadata.name = name
+    cj.spec.schedule = schedule
+    cj.spec.suspend = suspend
+    cj.status.active = [MagicMock()] * active
+    cj.status.last_schedule_time = datetime.fromisoformat(last_schedule) if last_schedule else None
+    cj.status.last_successful_time = datetime.fromisoformat(last_successful) if last_successful else None
+    return cj
+
+
+def _make_mock_job(name, start=None, end=None, complete=False, failed=False):
+    job = MagicMock()
+    job.metadata.name = name
+    job.status.start_time = datetime.fromisoformat(start) if start else None
+    job.status.completion_time = datetime.fromisoformat(end) if end else None
+    conditions = []
+    if complete:
+        c = MagicMock()
+        c.type = "Complete"
+        c.status = "True"
+        conditions.append(c)
+    if failed:
+        c = MagicMock()
+        c.type = "Failed"
+        c.status = "True"
+        conditions.append(c)
+    job.status.conditions = conditions or None
+    return job
+
+
+# ── GET /api/cronjobs ──────────────────────────────────────────────────────────
+
+
+class TestListCronjobs:
+    @pytest.fixture
+    def mock_batch(self, mocker):
+        batch = MagicMock()
+        mocker.patch("api._get_k8s_batch_client", return_value=batch)
+        return batch
+
+    def test_returns_empty_list_on_k8s_error(self, client, mocker):
+        mocker.patch("api._get_k8s_batch_client", side_effect=Exception("k8s unavailable"))
+        resp = client.get("/api/cronjobs")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_returns_cronjob_fields(self, client, mock_batch):
+        cj = _make_mock_cj(
+            "docker-registry-cleaner-reports",
+            "0 2 * * *",
+            last_schedule="2024-01-15T02:00:00+00:00",
+            last_successful="2024-01-15T02:05:00+00:00",
+        )
+        mock_batch.list_namespaced_cron_job.return_value.items = [cj]
+        data = client.get("/api/cronjobs").json()
+        assert len(data) == 1
+        assert data[0]["name"] == "docker-registry-cleaner-reports"
+        assert data[0]["schedule"] == "0 2 * * *"
+        assert data[0]["active"] == 0
+        assert data[0]["last_schedule_time"] is not None
+        assert data[0]["last_successful_time"] is not None
+
+    def test_null_timestamps_returned_as_none(self, client, mock_batch):
+        mock_batch.list_namespaced_cron_job.return_value.items = [
+            _make_mock_cj("docker-registry-cleaner-reports", "0 2 * * *")
+        ]
+        data = client.get("/api/cronjobs").json()
+        assert data[0]["last_schedule_time"] is None
+        assert data[0]["last_successful_time"] is None
+
+    def test_active_count_reflects_running_jobs(self, client, mock_batch):
+        mock_batch.list_namespaced_cron_job.return_value.items = [
+            _make_mock_cj("docker-registry-cleaner-reports", "0 2 * * *", active=2)
+        ]
+        assert client.get("/api/cronjobs").json()[0]["active"] == 2
+
+    def test_suspend_flag_forwarded(self, client, mock_batch):
+        mock_batch.list_namespaced_cron_job.return_value.items = [
+            _make_mock_cj("docker-registry-cleaner-reports", "0 2 * * *", suspend=True)
+        ]
+        assert client.get("/api/cronjobs").json()[0]["suspend"] is True
+
+    def test_results_sorted_by_name(self, client, mock_batch):
+        mock_batch.list_namespaced_cron_job.return_value.items = [
+            _make_mock_cj("docker-registry-cleaner-z", "0 3 * * *"),
+            _make_mock_cj("docker-registry-cleaner-a", "0 2 * * *"),
+        ]
+        names = [d["name"] for d in client.get("/api/cronjobs").json()]
+        assert names == ["docker-registry-cleaner-a", "docker-registry-cleaner-z"]
+
+    def test_uses_correct_label_selector(self, client, mock_batch):
+        mock_batch.list_namespaced_cron_job.return_value.items = []
+        client.get("/api/cronjobs")
+        call_kwargs = mock_batch.list_namespaced_cron_job.call_args
+        assert "app.kubernetes.io/name=docker-registry-cleaner" in str(call_kwargs)
+
+
+# ── GET /api/cronjobs/{name}/runs ──────────────────────────────────────────────
+
+
+class TestListCronjobRuns:
+    @pytest.fixture
+    def mock_batch(self, mocker):
+        batch = MagicMock()
+        mocker.patch("api._get_k8s_batch_client", return_value=batch)
+        return batch
+
+    def test_returns_empty_list_on_k8s_error(self, client, mocker):
+        mocker.patch("api._get_k8s_batch_client", side_effect=Exception("k8s unavailable"))
+        resp = client.get("/api/cronjobs/some-cj/runs")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_succeeded_job_status(self, client, mock_batch):
+        mock_batch.list_namespaced_job.return_value.items = [
+            _make_mock_job("run-abc", start="2024-01-15T02:00:00+00:00", complete=True)
+        ]
+        data = client.get("/api/cronjobs/my-cj/runs").json()
+        assert data[0]["status"] == "succeeded"
+
+    def test_failed_job_status(self, client, mock_batch):
+        mock_batch.list_namespaced_job.return_value.items = [
+            _make_mock_job("run-abc", start="2024-01-15T02:00:00+00:00", failed=True)
+        ]
+        assert client.get("/api/cronjobs/my-cj/runs").json()[0]["status"] == "failed"
+
+    def test_running_job_has_no_condition(self, client, mock_batch):
+        mock_batch.list_namespaced_job.return_value.items = [
+            _make_mock_job("run-abc", start="2024-01-15T02:00:00+00:00")
+        ]
+        assert client.get("/api/cronjobs/my-cj/runs").json()[0]["status"] == "running"
+
+    def test_duration_calculated_correctly(self, client, mock_batch):
+        mock_batch.list_namespaced_job.return_value.items = [
+            _make_mock_job(
+                "run-abc",
+                start="2024-01-15T02:00:00+00:00",
+                end="2024-01-15T02:05:30+00:00",
+                complete=True,
+            )
+        ]
+        assert client.get("/api/cronjobs/my-cj/runs").json()[0]["duration_seconds"] == 330
+
+    def test_null_start_gives_null_duration(self, client, mock_batch):
+        mock_batch.list_namespaced_job.return_value.items = [_make_mock_job("run-abc")]
+        assert client.get("/api/cronjobs/my-cj/runs").json()[0]["duration_seconds"] is None
+
+    def test_sorted_newest_first(self, client, mock_batch):
+        mock_batch.list_namespaced_job.return_value.items = [
+            _make_mock_job("run-old", start="2024-01-14T02:00:00+00:00", complete=True),
+            _make_mock_job("run-new", start="2024-01-15T02:00:00+00:00", complete=True),
+        ]
+        names = [r["name"] for r in client.get("/api/cronjobs/my-cj/runs").json()]
+        assert names == ["run-new", "run-old"]
+
+    def test_limited_to_20_results(self, client, mock_batch):
+        mock_batch.list_namespaced_job.return_value.items = [
+            _make_mock_job(f"run-{i}", start=f"2024-01-{i+1:02d}T00:00:00+00:00", complete=True) for i in range(25)
+        ]
+        assert len(client.get("/api/cronjobs/my-cj/runs").json()) == 20
+
+    def test_label_selector_includes_cronjob_name(self, client, mock_batch):
+        mock_batch.list_namespaced_job.return_value.items = []
+        client.get("/api/cronjobs/my-specific-cj/runs")
+        call_kwargs = mock_batch.list_namespaced_job.call_args
+        assert "registry-cleaner-cronjob=my-specific-cj" in str(call_kwargs)
+
+
+# ── Job persistence ────────────────────────────────────────────────────────────
+
+
+class TestJobPersistence:
+    @pytest.fixture(autouse=True)
+    def jobs_dir(self, tmp_path, monkeypatch):
+        d = tmp_path / "jobs"
+        d.mkdir()
+        monkeypatch.setattr(api_module, "JOBS_DIR", d)
+        return d
+
+    def _submit(self, client):
+        with patch("api.subprocess.Popen", return_value=_mock_popen()):
+            r = client.post("/api/jobs", json={"operation": "health_check"})
+        return r.json()["job_id"]
+
+    def test_job_file_created_on_submission(self, client, jobs_dir):
+        job_id = self._submit(client)
+        assert (jobs_dir / f"{job_id}.json").exists()
+
+    def test_persisted_file_has_no_input_tmp_path_key(self, client, jobs_dir):
+        job_id = self._submit(client)
+        import json as _json
+
+        data = _json.loads((jobs_dir / f"{job_id}.json").read_text())
+        assert "input_tmp_path" not in data
+
+    def test_final_state_written_after_completion(self, client, jobs_dir):
+        import json as _json
+
+        job_id = self._submit(client)
+        _wait_for_terminal(job_id)
+        data = _json.loads((jobs_dir / f"{job_id}.json").read_text())
+        assert data["status"] == "completed"
+        assert data["finished_at"] is not None
+
+    def test_failed_job_persisted_as_failed(self, client, jobs_dir):
+        import json as _json
+
+        with patch("api.subprocess.Popen", return_value=_mock_popen(returncode=1)):
+            job_id = client.post("/api/jobs", json={"operation": "health_check"}).json()["job_id"]
+        _wait_for_terminal(job_id)
+        data = _json.loads((jobs_dir / f"{job_id}.json").read_text())
+        assert data["status"] == "failed"
+
+    def test_cancelled_job_persisted_as_cancelled(self, client, jobs_dir):
+        import json as _json
+
+        job_id = self._submit(client)
+        _wait_for_terminal(job_id)
+        with _jobs_lock:
+            _jobs[job_id]["status"] = "pending"
+            _jobs[job_id]["pid"] = None  # avoid os.kill on a real PID in CI
+        client.delete(f"/api/jobs/{job_id}")
+        data = _json.loads((jobs_dir / f"{job_id}.json").read_text())
+        assert data["status"] == "cancelled"
+
+    def test_load_restores_completed_jobs(self, client, jobs_dir):
+        job_id = self._submit(client)
+        _wait_for_terminal(job_id)
+
+        # Simulate restart: clear memory, reload from disk
+        with _jobs_lock:
+            _jobs.clear()
+        api_module._load_persisted_jobs()
+
+        with _jobs_lock:
+            assert job_id in _jobs
+            assert _jobs[job_id]["status"] == "completed"
+
+    def test_load_marks_dangling_running_jobs_as_failed(self, jobs_dir):
+        import json as _json
+
+        job_id = str(uuid.uuid4())
+        record = _make_job_record(job_id, status="running")
+        record["finished_at"] = None
+        (jobs_dir / f"{job_id}.json").write_text(_json.dumps(record))
+
+        with _jobs_lock:
+            _jobs.clear()
+        api_module._load_persisted_jobs()
+
+        with _jobs_lock:
+            job = _jobs[job_id]
+        assert job["status"] == "failed"
+        assert job["finished_at"] is not None
+        assert any("restart" in line for line in job["logs"])
+
+    def test_load_marks_dangling_pending_jobs_as_failed(self, jobs_dir):
+        import json as _json
+
+        job_id = str(uuid.uuid4())
+        record = _make_job_record(job_id, status="pending")
+        (jobs_dir / f"{job_id}.json").write_text(_json.dumps(record))
+
+        with _jobs_lock:
+            _jobs.clear()
+        api_module._load_persisted_jobs()
+
+        with _jobs_lock:
+            assert _jobs[job_id]["status"] == "failed"
+
+    def test_trimmed_job_file_is_deleted(self, client, jobs_dir):
+        original = api_module.MAX_JOBS
+        try:
+            api_module.MAX_JOBS = 2
+            ids = [self._submit(client) for _ in range(4)]
+            assert not (jobs_dir / f"{ids[0]}.json").exists()
+            assert not (jobs_dir / f"{ids[1]}.json").exists()
+            assert (jobs_dir / f"{ids[2]}.json").exists()
+            assert (jobs_dir / f"{ids[3]}.json").exists()
+        finally:
+            api_module.MAX_JOBS = original
+
+    def test_load_skips_corrupt_file(self, jobs_dir):
+        (jobs_dir / "bad.json").write_text("not valid json {{{")
+        with _jobs_lock:
+            _jobs.clear()
+        api_module._load_persisted_jobs()  # must not raise
+        with _jobs_lock:
+            assert len(_jobs) == 0

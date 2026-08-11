@@ -10,9 +10,11 @@ Authentication: every request (except GET /health) must include an
 header matching the BACKEND_API_KEY environment variable. If the variable is
 unset, auth is skipped (useful for local development).
 
-Jobs are tracked in memory; the last MAX_JOBS entries are kept. Restarting the
-container clears the history — that is intentional for a single-replica
-StatefulSet.
+Jobs are tracked in memory and persisted to JOBS_DIR (OUTPUT_DIR/jobs/) so that
+history survives pod restarts. On startup, existing job files are loaded back
+into the in-memory store; any job that was still running or pending at restart
+time is marked as failed. The last MAX_JOBS entries are kept (both in memory
+and on disk).
 """
 
 import json
@@ -42,6 +44,7 @@ _MAIN_PY: Path = Path(__file__).parent / "main.py"
 MAX_JOBS: int = 50
 JOB_TIMEOUT_SECONDS: int = int(os.environ.get("JOB_TIMEOUT_SECONDS", "3600"))
 OUTPUT_DIR: Path = Path(os.environ.get("OUTPUT_DIR", "/data/reports"))
+JOBS_DIR: Path = OUTPUT_DIR / "jobs"
 
 # Detect once at startup whether the Docker registry is running inside the cluster.
 # Operations that require exec'ing into the registry pod (run_registry_gc) are only
@@ -491,16 +494,63 @@ def _write_validated_input(raw: str) -> str:
     return path
 
 
-# ── In-memory job store ────────────────────────────────────────────────────────
+# ── Job store (in-memory + PVC-backed) ────────────────────────────────────────
 
 _jobs: OrderedDict[str, Dict[str, Any]] = OrderedDict()
 _jobs_lock = threading.Lock()
 
 
+def _persist_job(job: Dict[str, Any]) -> None:
+    """Write a job snapshot to JOBS_DIR/{job_id}.json. Must be called with _jobs_lock held."""
+    try:
+        JOBS_DIR.mkdir(parents=True, exist_ok=True)
+        record = {k: v for k, v in job.items() if k != "input_tmp_path"}
+        tmp = JOBS_DIR / f"{job['job_id']}.tmp"
+        tmp.write_text(json.dumps(record))
+        tmp.rename(JOBS_DIR / f"{job['job_id']}.json")
+    except OSError as exc:
+        logging.warning(f"Could not persist job {job['job_id']}: {exc}")
+
+
+def _try_delete_job_file(job_id: str) -> None:
+    try:
+        (JOBS_DIR / f"{job_id}.json").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _trim_jobs() -> None:
     """Drop oldest jobs when the store exceeds MAX_JOBS. Must be called with _jobs_lock held."""
     while len(_jobs) > MAX_JOBS:
-        _jobs.popitem(last=False)
+        _, evicted = _jobs.popitem(last=False)
+        _try_delete_job_file(evicted["job_id"])
+
+
+def _load_persisted_jobs() -> None:
+    """Load job files from JOBS_DIR into _jobs. Called once at startup."""
+    if not JOBS_DIR.exists():
+        return
+    loaded = []
+    for path in sorted(JOBS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime):
+        try:
+            data = json.loads(path.read_text())
+            if data.get("status") in ("pending", "running"):
+                data["status"] = "failed"
+                data.setdefault("logs", []).append("[api] Pod restart — job did not complete")
+                if not data.get("finished_at"):
+                    data["finished_at"] = datetime.now(timezone.utc).isoformat()
+                path.write_text(json.dumps(data))
+            data.setdefault("input_tmp_path", None)
+            loaded.append(data)
+        except Exception as exc:
+            logging.warning(f"Could not load job file {path}: {exc}")
+    with _jobs_lock:
+        for data in loaded:
+            _jobs[data["job_id"]] = data
+        _trim_jobs()
+
+
+_load_persisted_jobs()
 
 
 # ── Argument builder ───────────────────────────────────────────────────────────
@@ -581,12 +631,14 @@ def _run_job(job_id: str, cli_args: List[str]) -> None:
             else:
                 _jobs[job_id]["status"] = "completed" if return_code == 0 else "failed"
             _jobs[job_id]["finished_at"] = datetime.now(timezone.utc).isoformat()
+            _persist_job(_jobs[job_id])
 
     except Exception as exc:
         with _jobs_lock:
             _jobs[job_id]["status"] = "failed"
             _jobs[job_id]["logs"].append(f"[api] Error launching job: {exc}")
             _jobs[job_id]["finished_at"] = datetime.now(timezone.utc).isoformat()
+            _persist_job(_jobs[job_id])
 
     finally:
         if input_tmp_path:
@@ -737,6 +789,7 @@ def create_job(req: JobRequest) -> Dict[str, str]:
             "input_tmp_path": input_tmp_path,
         }
         _trim_jobs()
+        _persist_job(_jobs[job_id])
 
     thread = threading.Thread(target=_run_job, args=(job_id, cli_args), daemon=True)
     thread.start()
@@ -806,6 +859,7 @@ def cancel_job(job_id: str) -> Dict[str, str]:
                 _jobs[job_id]["status"] = "cancelled"
                 _jobs[job_id]["finished_at"] = datetime.now(timezone.utc).isoformat()
                 _jobs[job_id]["logs"].append("[api] Job cancelled by user")
+                _persist_job(_jobs[job_id])
             return {"message": "Job cancelled"}
         except ProcessLookupError:
             pass  # Process already finished
@@ -813,5 +867,98 @@ def cancel_job(job_id: str) -> Dict[str, str]:
     with _jobs_lock:
         _jobs[job_id]["status"] = "cancelled"
         _jobs[job_id]["finished_at"] = datetime.now(timezone.utc).isoformat()
+        _persist_job(_jobs[job_id])
 
     return {"message": "Job marked as cancelled"}
+
+
+# ── CronJob status endpoints ───────────────────────────────────────────────────
+
+
+def _get_k8s_batch_client():
+    from kubernetes import client as k8s_client
+    from kubernetes.config import ConfigException, load_incluster_config, load_kube_config
+
+    try:
+        load_incluster_config()
+    except ConfigException:
+        load_kube_config()
+    return k8s_client.BatchV1Api()
+
+
+@app.get("/api/cronjobs", dependencies=[Depends(_check_api_key)])
+def list_cronjobs() -> List[Dict[str, Any]]:
+    """List CronJobs managed by this chart, with their schedule and last-run status."""
+    try:
+        batch = _get_k8s_batch_client()
+        from utils.config_manager import config_manager
+
+        ns = config_manager.get_domino_platform_namespace()
+        cj_list = batch.list_namespaced_cron_job(
+            ns,
+            label_selector="app.kubernetes.io/name=docker-registry-cleaner",
+        )
+        result = []
+        for cj in cj_list.items:
+            result.append(
+                {
+                    "name": cj.metadata.name,
+                    "schedule": cj.spec.schedule,
+                    "suspend": cj.spec.suspend or False,
+                    "last_schedule_time": (
+                        cj.status.last_schedule_time.isoformat() if cj.status.last_schedule_time else None
+                    ),
+                    "last_successful_time": (
+                        cj.status.last_successful_time.isoformat() if cj.status.last_successful_time else None
+                    ),
+                    "active": len(cj.status.active or []),
+                }
+            )
+        result.sort(key=lambda x: x["name"])
+        return result
+    except Exception as e:
+        logging.warning(f"Could not list CronJobs from K8s API: {e}")
+        return []
+
+
+@app.get("/api/cronjobs/{cronjob_name}/runs", dependencies=[Depends(_check_api_key)])
+def list_cronjob_runs(cronjob_name: str) -> List[Dict[str, Any]]:
+    """List the 20 most recent Job runs for a given CronJob, newest first."""
+    try:
+        batch = _get_k8s_batch_client()
+        from utils.config_manager import config_manager
+
+        ns = config_manager.get_domino_platform_namespace()
+        job_list = batch.list_namespaced_job(
+            ns,
+            label_selector=f"registry-cleaner-cronjob={cronjob_name}",
+        )
+        runs = []
+        for job in job_list.items:
+            conditions = job.status.conditions or []
+            if any(c.type == "Complete" and c.status == "True" for c in conditions):
+                job_status = "succeeded"
+            elif any(c.type == "Failed" and c.status == "True" for c in conditions):
+                job_status = "failed"
+            else:
+                job_status = "running"
+
+            start = job.status.start_time
+            end = job.status.completion_time
+            duration = int((end - start).total_seconds()) if start and end else None
+
+            runs.append(
+                {
+                    "name": job.metadata.name,
+                    "started_at": start.isoformat() if start else None,
+                    "finished_at": end.isoformat() if end else None,
+                    "duration_seconds": duration,
+                    "status": job_status,
+                }
+            )
+
+        runs.sort(key=lambda x: x["started_at"] or "", reverse=True)
+        return runs[:20]
+    except Exception as e:
+        logging.warning(f"Could not list runs for CronJob {cronjob_name}: {e}")
+        return []
