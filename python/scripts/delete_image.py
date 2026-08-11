@@ -1766,10 +1766,10 @@ def main():
                 repository = repository_tag
 
             # Enable deletion in registry (if running in Kubernetes)
+            registry_in_cluster = deleter.skopeo_client.is_registry_in_cluster()
             registry_enabled = False
-            if not dry_run:
-                deleter.enable_deletion_of_docker_images()
-                registry_enabled = True
+            if not dry_run and registry_in_cluster:
+                registry_enabled = deleter.enable_deletion_of_docker_images()
 
             try:
                 # Delete the image
@@ -2150,10 +2150,10 @@ def main():
             deleter.generate_deletion_report(analysis, args.output)
 
             # Enable deletion in registry (if running in Kubernetes)
+            registry_in_cluster = deleter.skopeo_client.is_registry_in_cluster()
             registry_enabled = False
-            if not dry_run:
-                deleter.enable_deletion_of_docker_images()
-                registry_enabled = True
+            if not dry_run and registry_in_cluster:
+                registry_enabled = deleter.enable_deletion_of_docker_images()
 
             try:
                 # Delete unused images using SkopeoClient (same as other delete scripts)
