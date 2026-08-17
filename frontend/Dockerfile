@@ -3,7 +3,7 @@
 # ------------------------------------------------
 
 # 1) Install frontend dependencies into a venv
-FROM cgr.dev/dominodatalab.com/python:3.14.3-dev AS dev
+FROM cgr.dev/dominodatalab.com/python:3.14.7-dev AS dev
 WORKDIR /frontend
 RUN python -m venv venv
 ENV PATH="/frontend/venv/bin:${PATH}"
@@ -14,7 +14,7 @@ COPY frontend/requirements.lock .
 RUN pip install --no-cache-dir -r requirements.lock
 
 # 2) Final runtime: minimal Python + app
-FROM cgr.dev/dominodatalab.com/python:3.14.3
+FROM cgr.dev/dominodatalab.com/python:3.14.7
 WORKDIR /frontend
 
 # Copy venv from dev stage, owned by nonroot
