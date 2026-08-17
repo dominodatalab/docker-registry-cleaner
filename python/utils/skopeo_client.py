@@ -147,17 +147,24 @@ class SkopeoClient:
         self._rate_limiter = None
         self._rate_limiter_lock = Lock()
 
-        # Set up auth file — use the path config_manager already resolved (one level
-        # above output_dir so credentials don't appear alongside report files).
+        # Set up auth file — use the path config_manager already resolved (a hidden
+        # subdirectory of output_dir, so credentials stay inside the same writable
+        # volume as output_dir without appearing alongside report files).
         self.auth_file = config_manager.auth_file
         os.environ["REGISTRY_AUTH_FILE"] = self.auth_file
 
-        # Remove auth file from the old location (inside output_dir) if still present.
-        _old_auth_file = os.path.join(config_manager.get_output_dir(), ".registry-auth.json")
-        try:
-            os.remove(_old_auth_file)
-        except FileNotFoundError:
-            pass
+        # Clean up auth files from both prior locations, if still present:
+        # - flat inside output_dir (the original location, pre-dating the .auth subdir)
+        # - in dirname(output_dir) (a since-reverted attempt to move it "above" output_dir,
+        #   which broke on deployments where that parent directory isn't writable/fsGroup-covered)
+        for _old_auth_file in (
+            os.path.join(config_manager.get_output_dir(), ".registry-auth.json"),
+            os.path.join(os.path.dirname(config_manager.get_output_dir()), ".registry-auth.json"),
+        ):
+            try:
+                os.remove(_old_auth_file)
+            except OSError:
+                pass
 
         # Get credentials
         self.username = self._get_registry_username()

@@ -62,9 +62,13 @@ class TestGetReportFiles:
         assert files[0]["name"] == "deletion-analysis.json"
 
     def test_auth_file_not_in_reports_dir(self, reports_dir):
-        # .registry-auth.json lives one directory above reports; glob("*.json")
-        # should never encounter it here.
+        # .registry-auth.json lives in a hidden .auth/ subdirectory of the reports
+        # dir; glob("*.json") is non-recursive and skips dot-prefixed names, so it
+        # should never surface here.
         (reports_dir / "deletion-analysis.json").write_text("{}")
+        auth_dir = reports_dir / ".auth"
+        auth_dir.mkdir()
+        (auth_dir / ".registry-auth.json").write_text("{}")
         names = [f["name"] for f in get_report_files()]
         assert "deletion-analysis.json" in names
         assert not any(n.startswith(".") for n in names)
