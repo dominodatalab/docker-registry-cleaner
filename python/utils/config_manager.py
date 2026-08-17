@@ -58,10 +58,15 @@ class ConfigManager:
         self.config = self._load_config()
 
         # Set up skopeo auth file early (before any skopeo commands run).
-        # Stored one level above output_dir so it never appears alongside reports.
+        # Stored in a hidden subdirectory of output_dir (not output_dir itself, and not
+        # a parent of it) so it never appears alongside reports, but still lives inside
+        # the same writable/fsGroup-covered volume as output_dir. A parent of output_dir
+        # is not guaranteed to be writable — e.g. in the Helm deployment, output_dir is a
+        # PVC mount (/data/reports) and its parent (/data) is an ordinary root-owned
+        # directory outside the volume, so fsGroup never fixes up its permissions.
         output_dir = self.get_output_dir()
         os.makedirs(output_dir, exist_ok=True)
-        auth_dir = os.path.dirname(output_dir) or output_dir
+        auth_dir = os.path.join(output_dir, ".auth")
         os.makedirs(auth_dir, exist_ok=True)
         self.auth_file = os.path.join(auth_dir, ".registry-auth.json")
         os.environ["REGISTRY_AUTH_FILE"] = self.auth_file
