@@ -261,7 +261,14 @@ class IntelligentImageDeleter(BaseDeletionScript):
 
             # Handle ISO strings possibly ending with 'Z'
             ts = timestamp_str.replace("Z", "+00:00")
-            return datetime.fromisoformat(ts)
+            parsed = datetime.fromisoformat(ts)
+
+            # MongoDB may store timestamps with no explicit offset (naive ISO strings).
+            # Assume UTC so callers can safely compare against tz-aware thresholds.
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+
+            return parsed
         except Exception:
             return None
 
