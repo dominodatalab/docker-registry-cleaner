@@ -66,6 +66,12 @@ from utils.report_utils import ensure_mongodb_reports, get_timestamp_suffix, sav
 
 logger = get_logger(__name__)
 
+# Sentinel authorId that Domino's installer writes on environment revisions it seeds itself
+# (e.g. the Spark/Ray/Dask/Domino Standard quickstart environments), as opposed to a real
+# user's ObjectId. Used to automatically protect Domino-shipped environments from deletion
+# without requiring an admin-maintained allowlist.
+SYSTEM_AUTHOR_ID = ObjectId("0" * 24)
+
 
 @dataclass
 class UnusedEnvInfo:
@@ -382,7 +388,8 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
 
     def fetch_all_environments_and_defaults(self) -> tuple:
         """Fetch all environment IDs from MongoDB, project defaults, org defaults, scheduled job environments,
-        app versions, and user default environments (userPreferences.defaultEnvironmentId).
+        app versions, user default environments (userPreferences.defaultEnvironmentId), and Domino-shipped
+        system environments (identified by the SYSTEM_AUTHOR_ID sentinel on their revisions).
 
         For app versions, only includes environments from app_versions that reference unarchived model_products.
         """
@@ -406,9 +413,12 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
 
             # Get environment revisions
             revisions_collection = db["environment_revisions"]
-            revision_cursor = revisions_collection.find({}, {"_id": 1, "environmentId": 1})
+            revision_cursor = revisions_collection.find({}, {"_id": 1, "environmentId": 1, "metadata.authorId": 1})
 
             all_revision_ids = {}
+            # Maps protected object ID (revision or environment) -> environment name, so callers
+            # can report *which* environment a protected tag belongs to, not just that it's protected.
+            system_protected_ids: Dict[str, str] = {}
             for doc in revision_cursor:
                 _id = doc.get("_id")
                 env_id = doc.get("environmentId")
@@ -417,7 +427,23 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
                     parent_name = all_env_ids.get(str(env_id), "")
                     all_revision_ids[str(_id)] = parent_name
 
+                # Revisions authored by Domino's installer (rather than a real user) carry this
+                # sentinel authorId. Protect both the revision and its parent environment so
+                # Domino-shipped environments (e.g. Spark/Ray/Dask, Domino Standard Environment)
+                # are never nominated for deletion just because no one happens to be using them.
+                if (doc.get("metadata") or {}).get("authorId") == SYSTEM_AUTHOR_ID:
+                    env_name = all_env_ids.get(str(env_id), str(env_id)) if env_id is not None else ""
+                    system_protected_ids[str(_id)] = env_name
+                    if env_id is not None:
+                        system_protected_ids[str(env_id)] = env_name
+
             self.logger.info(f"Found {len(all_revision_ids)} environment revisions in MongoDB")
+            if system_protected_ids:
+                protected_names = sorted(set(system_protected_ids.values()))
+                self.logger.info(
+                    f"Protected {len(protected_names)} Domino-shipped system environment(s) from deletion: "
+                    f"{', '.join(protected_names)}"
+                )
 
             # Get project default environments (only non-archived projects count as "using" an environment)
             projects_collection = db["projects"]
@@ -537,17 +563,24 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
                 app_version_env_ids,
                 org_default_env_ids,
                 user_pref_env_ids,
+                system_protected_ids,
             )
 
         finally:
             mongo_client.close()
 
-    def find_unused_environments(self) -> List[str]:
+    def find_unused_environments(self) -> tuple:
         """Find environment and revision IDs that are not being used anywhere
 
         Note: This analysis is based on point-in-time reports. A real-time usage check
         is performed right before deletion to catch any images that became in-use
         after this analysis (e.g., new pods, runs, or workspaces).
+
+        Returns:
+            Tuple of (unused_env_list, protected_env_list). protected_env_list contains
+            Domino-shipped system environments that were excluded from unused_env_list —
+            surfaced separately so callers can report *why* they were skipped instead of
+            them just quietly not appearing.
         """
         # Load metadata files
         model_env_data, workspace_env_data, runs_env_data = self.load_metadata_files()
@@ -567,18 +600,21 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
             app_version_env_ids,
             org_default_env_ids,
             user_pref_env_ids,
+            system_protected_ids,
         ) = self.fetch_all_environments_and_defaults()
 
         # Add project defaults, scheduled job environments, org defaults, app version environments,
-        # and user default environments to used IDs
+        # user default environments, and Domino-shipped system environments to used IDs
         used_ids.update(default_env_ids)
         used_ids.update(scheduler_env_ids)
         used_ids.update(app_version_env_ids)
         used_ids.update(org_default_env_ids)
         used_ids.update(user_pref_env_ids)
+        used_ids.update(system_protected_ids)
         self.logger.info(
             "Total used IDs (including project defaults, org defaults, scheduled jobs, app versions, "
-            f"and user default environments): {len(used_ids)}"
+            "user default environments, and Domino-shipped system environments): "
+            f"{len(used_ids)}"
         )
 
         # Combine all environment and revision IDs
@@ -599,7 +635,13 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
         for obj_id, name in unused_ids.items():
             unused_env_list.append(UnusedEnvInfo(object_id=obj_id, env_name=name))
 
-        return unused_env_list
+        # Surface protected system environments separately so they can be reported as
+        # "skipped, and here's why" rather than silently absent from the unused list.
+        protected_env_list = [
+            UnusedEnvInfo(object_id=obj_id, env_name=name) for obj_id, name in system_protected_ids.items()
+        ]
+
+        return unused_env_list, protected_env_list
 
     def find_matching_tags(self, unused_envs: List[UnusedEnvInfo]) -> List[UnusedEnvInfo]:
         """Find Docker tags that contain unused environment ObjectIDs"""
@@ -1105,8 +1147,104 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
 
         return deletion_results
 
+    def _generate_usage_summary(self, usage: Dict) -> str:
+        """Generate a human-readable summary of why an image is in use
+
+        Mirrors the behavior used in delete_image/delete_archived_tags. Unlike
+        ImageUsageService.generate_usage_summary(), which assumes "no reasons found" still
+        means "in use, source unknown" (correct for its real-time in-use-check callers), this
+        version is for reporting on tags whose usage has already been independently evaluated —
+        so "no reasons found" here honestly means no usage was found, not an unknown reference.
+
+        Args:
+            usage: Usage dictionary with 'runs', 'workspaces', 'models', 'scheduler_jobs', 'projects' info
+                  Can have either count fields (runs_count, workspaces_count, models_count) or
+                  list fields (runs, workspaces, models), or both.
+
+        Returns:
+            Human-readable string describing usage
+        """
+        reasons = []
+
+        # Check runs - prefer count field, fall back to list length
+        runs_count = usage.get("runs_count", 0)
+        if runs_count == 0:
+            runs_list = usage.get("runs", [])
+            runs_count = len(runs_list) if runs_list else 0
+        if runs_count > 0:
+            reasons.append(f"{runs_count} execution{'s' if runs_count > 1 else ''} in MongoDB")
+
+        # Check workspaces - prefer count field, fall back to list length
+        workspaces_count = usage.get("workspaces_count", 0)
+        if workspaces_count == 0:
+            workspaces_list = usage.get("workspaces", [])
+            workspaces_count = len(workspaces_list) if workspaces_list else 0
+        if workspaces_count > 0:
+            reasons.append(f"{workspaces_count} workspace{'s' if workspaces_count > 1 else ''}")
+
+        # Check models - prefer count field, fall back to list length
+        models_count = usage.get("models_count", 0)
+        if models_count == 0:
+            models_list = usage.get("models", [])
+            models_count = len(models_list) if models_list else 0
+        if models_count > 0:
+            reasons.append(f"{models_count} model{'s' if models_count > 1 else ''}")
+
+        # Check scheduler_jobs (always a list)
+        scheduler_jobs = usage.get("scheduler_jobs", [])
+        if scheduler_jobs:
+            scheduler_count = len(scheduler_jobs)
+            reasons.append(f"{scheduler_count} scheduler job{'s' if scheduler_count > 1 else ''}")
+
+        # Check projects (always a list)
+        projects = usage.get("projects", [])
+        if projects:
+            project_count = len(projects)
+            reasons.append(f"{project_count} project{'s' if project_count > 1 else ''} using as default")
+
+        # Check organizations (always a list)
+        organizations = usage.get("organizations", [])
+        if organizations:
+            org_count = len(organizations)
+            reasons.append(f"{org_count} organization{'s' if org_count > 1 else ''} using as default")
+
+        # Check app_versions (always a list)
+        app_versions = usage.get("app_versions", [])
+        if app_versions:
+            app_version_count = len(app_versions)
+            reasons.append(f"{app_version_count} app version{'s' if app_version_count > 1 else ''}")
+
+        if not reasons:
+            # Try to provide more context about what we checked
+            checked_fields = []
+            if usage.get("runs") or usage.get("runs_count"):
+                checked_fields.append("runs")
+            if usage.get("workspaces") or usage.get("workspaces_count"):
+                checked_fields.append("workspaces")
+            if usage.get("models") or usage.get("models_count"):
+                checked_fields.append("models")
+            if usage.get("scheduler_jobs"):
+                checked_fields.append("scheduler_jobs")
+            if usage.get("projects"):
+                checked_fields.append("projects")
+            if usage.get("organizations"):
+                checked_fields.append("organizations")
+            if usage.get("app_versions"):
+                checked_fields.append("app_versions")
+
+            if checked_fields:
+                return f"No usage found (checked: {', '.join(checked_fields)}, all empty)"
+            else:
+                return "No usage found (no usage data available)"
+
+        return ", ".join(reasons)
+
     def generate_report(
-        self, unused_envs: List[UnusedEnvInfo], unused_tags: List[UnusedEnvInfo], freed_space_bytes: int = 0
+        self,
+        unused_envs: List[UnusedEnvInfo],
+        unused_tags: List[UnusedEnvInfo],
+        freed_space_bytes: int = 0,
+        protected_tags: Optional[List[UnusedEnvInfo]] = None,
     ) -> Dict:
         """Generate a comprehensive report of unused environments
 
@@ -1114,7 +1252,12 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
             unused_envs: List of all unused environment info objects (from MongoDB)
             unused_tags: List of unused tag info objects (from Docker)
             freed_space_bytes: Total bytes that would be freed by deletion (accounts for shared layers)
+            protected_tags: Docker tags belonging to Domino-shipped system environments that were
+                excluded from deletion consideration. Included in the report (marked protected=True)
+                so it's visible *why* they're skipped instead of them just quietly not appearing.
+                These are never counted toward deletable totals or freed space.
         """
+        protected_tags = protected_tags or []
 
         # Group by ObjectID
         by_object_id = {}
@@ -1132,6 +1275,8 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
             "freed_space_gb": round(freed_space_bytes / (1024 * 1024 * 1024), 2),
             "object_ids_with_tags": len(by_object_id),
             "object_ids_without_tags": len(unused_envs) - len(by_object_id),
+            "protected_environment_count": len({tag.object_id for tag in protected_tags}),
+            "protected_matching_tags": len(protected_tags),
         }
 
         # Prepare grouped data, enriched with usage information similar to delete_image/delete_archived_tags
@@ -1177,7 +1322,7 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
                     "app_versions": app_versions,
                 }
 
-                usage_summary = service.generate_usage_summary(usage_for_report)
+                usage_summary = self._generate_usage_summary(usage_for_report)
                 is_in_use = (
                     usage_for_report["runs_count"] > 0
                     or usage_for_report["workspaces_count"] > 0
@@ -1200,8 +1345,30 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
                         "status": status,
                         "usage": usage_for_report,
                         "usage_summary": usage_summary,
+                        "protected": False,
+                        "protected_reason": None,
                     }
                 )
+
+        # Merge in protected tags (Domino-shipped system environments). These are never usage-checked
+        # or counted toward deletable totals — they're shown purely so it's clear *why* an otherwise
+        # unused-looking environment isn't a deletion candidate.
+        for tag in protected_tags:
+            grouped_data.setdefault(tag.object_id, []).append(
+                {
+                    "object_id": tag.object_id,
+                    "env_name": tag.env_name,
+                    "image_type": tag.image_type,
+                    "tag": tag.tag,
+                    "full_image": tag.full_image,
+                    "size_bytes": tag.size_bytes,
+                    "status": "protected",
+                    "usage": None,
+                    "usage_summary": None,
+                    "protected": True,
+                    "protected_reason": "Domino-shipped system environment; not eligible for deletion",
+                }
+            )
 
         report = {
             "summary": summary,
@@ -1217,17 +1384,27 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
         return report
 
     def load_unused_tags_from_file(self, file_path: str) -> List[UnusedEnvInfo]:
-        """Load unused tags from a pre-generated report file"""
+        """Load unused tags from a pre-generated report file
+
+        Entries marked protected=True (Domino-shipped system environments, e.g. from
+        generate_report()) are always skipped, even if present in the file — this is a
+        deliberate safety net so a saved/edited dry-run report can never be replayed with
+        --apply --input to delete a protected environment.
+        """
         try:
             with open(file_path, "r") as f:
                 report = json.load(f)
 
             unused_tags = []
+            skipped_protected = 0
 
             # Load from grouped_by_object_id
             grouped_data = report.get("grouped_by_object_id", {})
             for _obj_id, tags_list in grouped_data.items():
                 for tag_data in tags_list:
+                    if tag_data.get("protected"):
+                        skipped_protected += 1
+                        continue
                     tag = UnusedEnvInfo(
                         object_id=tag_data["object_id"],
                         env_name=tag_data.get("env_name", ""),
@@ -1238,6 +1415,11 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
                     )
                     unused_tags.append(tag)
 
+            if skipped_protected:
+                self.logger.warning(
+                    f"Skipped {skipped_protected} protected tag(s) found in {file_path} "
+                    "(marked protected=True; Domino-shipped system environments are never deleted)"
+                )
             self.logger.info(f"Loaded {len(unused_tags)} unused tags from {file_path}")
             return unused_tags
 
@@ -1416,6 +1598,7 @@ def main():
             finder.generate_required_reports()
 
         # Handle different operation modes
+        protected_tags = []  # Only populated in Mode 2; load_unused_tags_from_file already strips these.
         if use_input_file:
             # Mode 1: Delete from pre-generated file
             logger.info(f"Loading unused tags from {args.input}...")
@@ -1429,9 +1612,9 @@ def main():
         else:
             # Mode 2: Find unused tags (and optionally delete them)
             logger.info("Finding unused environments from metadata...")
-            unused_envs = finder.find_unused_environments()
+            unused_envs, protected_envs = finder.find_unused_environments()
 
-            if not unused_envs:
+            if not unused_envs and not protected_envs:
                 logger.info("No unused environments found")
                 # Still create an empty report
                 empty_report = {
@@ -1441,6 +1624,8 @@ def main():
                         "freed_space_gb": 0,
                         "object_ids_with_tags": 0,
                         "object_ids_without_tags": 0,
+                        "protected_environment_count": 0,
+                        "protected_matching_tags": 0,
                     },
                     "grouped_by_object_id": {},
                     "metadata": {
@@ -1455,12 +1640,15 @@ def main():
                 sys.exit(0)
 
             logger.info("Finding matching Docker tags...")
-            unused_tags = finder.find_matching_tags(unused_envs)
+            matched_tags = finder.find_matching_tags(unused_envs + protected_envs)
+            protected_id_set = {env.object_id for env in protected_envs}
+            unused_tags = [t for t in matched_tags if t.object_id not in protected_id_set]
+            protected_tags = [t for t in matched_tags if t.object_id in protected_id_set]
 
-            if not unused_tags:
+            if not unused_tags and not protected_tags:
                 logger.info("No matching Docker tags found for unused environments")
                 # Still create a report with the environment IDs but no tags
-                report = finder.generate_report(unused_envs, [], freed_space_bytes=0)
+                report = finder.generate_report(unused_envs, [], freed_space_bytes=0, protected_tags=[])
                 save_json(output_file, report)
                 logger.info(f"Report written to {output_file}")
                 sys.exit(0)
@@ -1568,7 +1756,7 @@ def main():
             freed_space_bytes = finder.calculate_freed_space(unused_tags)
 
             logger.info("Generating report...")
-            report = finder.generate_report(unused_envs, unused_tags, freed_space_bytes)
+            report = finder.generate_report(unused_envs, unused_tags, freed_space_bytes, protected_tags=protected_tags)
 
             # Save report
             save_json(output_file, report)
@@ -1584,6 +1772,11 @@ def main():
             logger.info(f"Space that would be freed: {sizeof_fmt(freed_space_bytes)}")
             logger.info(f"Environment IDs with tags: {summary['object_ids_with_tags']}")
             logger.info(f"Environment IDs without tags: {summary['object_ids_without_tags']}")
+            if summary.get("protected_matching_tags"):
+                logger.info(
+                    f"Protected (Domino-shipped) tags excluded from deletion: {summary['protected_matching_tags']} "
+                    f"across {summary['protected_environment_count']} environment(s) — see report for details"
+                )
 
             logger.info(f"\nDetailed report saved to: {output_file}")
 

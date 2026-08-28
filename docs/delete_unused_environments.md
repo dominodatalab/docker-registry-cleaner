@@ -11,6 +11,14 @@ Finds and optionally deletes Docker images for environments that are not activel
 5. Performs a real-time usage check immediately before deletion to catch any new usage since the reports were generated.
 6. Optionally deletes matched Docker images and cleans up MongoDB records.
 
+## Protection for Domino-shipped system environments
+
+Environments Domino installs out of the box (e.g. the Spark/Dask/Ray compute environments, the Domino Standard Environment) are automatically excluded from deletion candidates — no admin-maintained allowlist required. Domino's installer writes a sentinel `authorId` (all-zero ObjectID) on the `environment_revisions` it seeds, as opposed to a real user's ObjectID. Any environment with a revision carrying that sentinel is treated as "in use" regardless of activity, and a log line reports which system environments were protected on each run.
+
+Since this protection is based on `metadata.authorId` rather than the environment's display name, it still applies even if an admin has renamed one of these environments.
+
+Protected environments still appear in the dry-run report's `grouped_by_object_id` section (each entry marked `"protected": true` with a `protected_reason`), and in the summary's `protected_environment_count` / `protected_matching_tags` fields — visible, but never counted toward deletable totals or freed space. `--apply --input <file>` refuses to load any entry marked `protected: true`, even from a hand-edited report file, so this protection can't be bypassed by editing the dry-run output.
+
 ## Usage
 
 ```bash
