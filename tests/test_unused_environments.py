@@ -370,3 +370,77 @@ class TestLoadUnusedTagsFromFileSafetyNet:
         loaded_ids = {t.object_id for t in loaded}
         assert "env1" not in loaded_ids  # protected entry must never be loaded for deletion
         assert "env2" in loaded_ids
+
+
+class TestGenerateUsageSummaryHonesty:
+    """Tests that a genuinely-unused tag never gets reported as 'referenced, source unknown'.
+
+    ImageUsageService.generate_usage_summary() (the shared helper) assumes "no reasons found"
+    still means "in use, source unknown" — correct for its real-time in-use-check callers, but
+    misleading when reporting on a tag whose usage has already been independently evaluated as
+    zero. UnusedEnvironmentsFinder._generate_usage_summary() exists specifically to give an
+    honest answer in that situation, mirroring the fix already applied in delete_image.py and
+    delete_archived_tags.py.
+    """
+
+    def test_no_usage_reports_honestly_instead_of_referenced_in_system(self, mock_finder_deps):
+        from scripts.delete_unused_environments import UnusedEnvironmentsFinder
+
+        finder = UnusedEnvironmentsFinder(registry_url="registry:5000", repository="repo")
+
+        usage = {"runs": [], "workspaces": [], "models": [], "scheduler_jobs": [], "projects": []}
+        summary = finder._generate_usage_summary(usage)
+
+        assert "Referenced in system" not in summary
+        assert "No usage found" in summary
+
+    def test_no_usage_data_available_reports_honestly(self, mock_finder_deps):
+        from scripts.delete_unused_environments import UnusedEnvironmentsFinder
+
+        finder = UnusedEnvironmentsFinder(registry_url="registry:5000", repository="repo")
+
+        summary = finder._generate_usage_summary({})
+
+        assert "Referenced in system" not in summary
+        assert "No usage found" in summary
+
+    def test_real_usage_is_still_reported(self, mock_finder_deps):
+        from scripts.delete_unused_environments import UnusedEnvironmentsFinder
+
+        finder = UnusedEnvironmentsFinder(registry_url="registry:5000", repository="repo")
+
+        usage = {"runs": [{"id": "1"}, {"id": "2"}], "workspaces": [], "models": []}
+        summary = finder._generate_usage_summary(usage)
+
+        assert "2 executions in MongoDB" in summary
+
+    def test_generate_report_never_emits_referenced_in_system_for_zero_usage(self, mocker, mock_finder_deps):
+        """End-to-end: a genuinely-unused tag's report entry must not say "Referenced in system"."""
+        from scripts.delete_unused_environments import UnusedEnvInfo, UnusedEnvironmentsFinder
+
+        mock_service = MagicMock()
+        mock_service.load_mongodb_usage_reports.return_value = {}
+        # No usage_info entry for this tag at all -> raw_usage falls back to the all-empty default.
+        mock_service.extract_docker_tags_with_usage_info.return_value = ({}, {})
+        mocker.patch("scripts.delete_unused_environments.ImageUsageService", return_value=mock_service)
+
+        finder = UnusedEnvironmentsFinder(registry_url="registry:5000", repository="repo")
+
+        custom_env_id = str(ObjectId())
+        unused_envs = [UnusedEnvInfo(object_id=custom_env_id, env_name="My Custom Environment")]
+        unused_tags = [
+            UnusedEnvInfo(
+                object_id=custom_env_id,
+                env_name="My Custom Environment",
+                image_type="environment",
+                tag=f"{custom_env_id}-1",
+                full_image=f"registry:5000/repo/environment:{custom_env_id}-1",
+                size_bytes=100,
+            )
+        ]
+
+        report = finder.generate_report(unused_envs, unused_tags, freed_space_bytes=0)
+
+        entry = report["grouped_by_object_id"][custom_env_id][0]
+        assert entry["status"] == "unused"
+        assert "Referenced in system" not in entry["usage_summary"]
