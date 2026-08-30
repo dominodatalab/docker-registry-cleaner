@@ -1,0 +1,40 @@
+# Override file — layers a mock Domino/Nucleus API onto docker-compose.yml
+# so both the admin and org-scoped access-control paths (see
+# docs/org-scoped-access-plan.md) can be exercised locally, against real
+# HTTP calls, without a real Domino cluster.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.auth.yml up --build
+#
+# Then visit http://localhost:9000/ and pick an identity to log in as
+# (admin / org1 / noorg) before opening http://localhost:8899/. Switching
+# identity via a new /login/<key> visit takes effect immediately — see the
+# AUTH_CACHE_TTL_SECONDS override below.
+#
+# Not used by `docker compose up` on its own — the base docker-compose.yml
+# is unchanged and keeps auth disabled (DOMINO_API_URL unset) by default.
+
+services:
+  mock-nucleus:
+    image: python:3.12-slim
+    volumes:
+      - ./dev/mock_nucleus.py:/mock_nucleus.py:ro
+    command: ["python", "/mock_nucleus.py"]
+    environment:
+      FRONTEND_URL: "http://localhost:8899"
+      # Without this, stdout is block-buffered in the container and
+      # `docker compose logs -f mock-nucleus` won't show requests as they
+      # happen — only in unpredictable batches.
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "9000:9000"
+
+  frontend:
+    environment:
+      DOMINO_API_URL: "http://mock-nucleus:9000"
+      # Disable the auth-cache TTL here specifically so switching identity
+      # via mock-nucleus's /login/<key> takes effect on the very next
+      # request instead of waiting out the cache window (default 60s).
+      AUTH_CACHE_TTL_SECONDS: "0"
+    depends_on:
+      - mock-nucleus

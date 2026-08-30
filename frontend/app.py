@@ -6,6 +6,7 @@ backend API running on localhost:8081.
 
 import json
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -22,13 +23,24 @@ BACKEND_API_KEY = os.environ.get("BACKEND_API_KEY", "")
 FLASK_BASE_PATH = os.environ.get("FLASK_BASE_PATH", "")
 # Internal URL of the Domino nucleus-frontend service.  When set, every request
 # is authenticated by forwarding the user's dominoAuth cookie to the Domino API
-# and verifying that the caller is a system administrator.  Leave unset to
-# disable auth (useful for local development).
+# and verifying the caller's access scope (admin, org-scoped, or denied).
+# Leave unset to disable auth (useful for local development).
 DOMINO_API_URL = os.environ.get("DOMINO_API_URL", "")
 # Public URL of the Domino deployment, used to build clickable links to assets
 # (runs, workspaces, projects, etc.) in reports.  Should be the external hostname,
 # e.g. https://my-domino.example.com.
 DOMINO_URL = os.environ.get("DOMINO_URL", "")
+# How long a resolved access scope is trusted before re-checking with Nucleus.
+_AUTH_CACHE_TTL = int(os.environ.get("AUTH_CACHE_TTL_SECONDS", "60"))
+# Nucleus path for "orgs the calling (cookie-forwarded) user belongs to" —
+# see docs/org-scoped-access-plan.md Appendix C for the confirmed response shape.
+_ORGANIZATIONS_API_PATH = "/api/organizations/v1/organizations"
+
+# Access-scope literals stored in the Flask session and returned by
+# resolve_access_scope(). See docs/org-scoped-access-plan.md §3.1.
+SCOPE_ADMIN = "admin"
+SCOPE_ORG = "org_scoped"
+SCOPE_DENIED = "denied"
 
 
 # Flask app setup
@@ -54,14 +66,16 @@ if FLASK_BASE_PATH:
 
 
 @app.before_request
-def require_domino_admin():
-    """Validate the caller is a Domino system administrator.
+def resolve_access_scope():
+    """Resolve the caller into one of three access scopes: admin, org-scoped,
+    or denied. See docs/org-scoped-access-plan.md §3.1.
 
-    Forwards all browser cookies to the Domino API to verify identity and
-    admin status.  Sending the full Cookie header handles both vanilla Domino
-    deployments (dominoAuth cookie) and Keycloak-based SSO deployments that
-    use different session cookies.  The result is cached in the Flask session
-    for _AUTH_CACHE_TTL seconds to avoid a Domino API call on every page load.
+    Forwards all browser cookies to the Domino API to verify identity and,
+    for non-admins, org membership.  Sending the full Cookie header handles
+    both vanilla Domino deployments (dominoAuth cookie) and Keycloak-based
+    SSO deployments that use different session cookies.  The resolved scope
+    is cached in the Flask session for AUTH_CACHE_TTL_SECONDS (default 60)
+    to avoid one or two Domino API calls on every page load.
 
     Skipped when DOMINO_API_URL is not configured (local dev mode).
     Skipped for the /health endpoint (used by Kubernetes liveness probes).
@@ -71,6 +85,15 @@ def require_domino_admin():
 
     if request.endpoint == "health" or request.path.startswith("/static/"):
         return
+
+    cached_at = session.get("auth_checked_at")
+    if cached_at is not None and (time.time() - cached_at) < _AUTH_CACHE_TTL:
+        cached_scope = session.get("access_scope")
+        if cached_scope == SCOPE_DENIED:
+            return _deny(authenticated=True)
+        if cached_scope in (SCOPE_ADMIN, SCOPE_ORG):
+            return
+        # Missing/unrecognized cache entry — fall through and re-check.
 
     cookie_header = request.headers.get("Cookie", "")
     if not cookie_header:
@@ -83,43 +106,97 @@ def require_domino_admin():
             timeout=5,
         )
     except httpx.RequestError:
-        # Domino API is unreachable — fail closed.
-        if request.path.startswith("/api/"):
-            return jsonify({"error": "Authentication service unavailable"}), 503
-        return (
-            render_template("error.html", message="Authentication service unavailable. Please try again shortly."),
-            503,
-        )
+        return _auth_service_unavailable()
 
     if resp.status_code != 200:
         return _deny(authenticated=False)
 
     principal = resp.json()
-    if not principal.get("isAdmin", False):
-        return _deny(authenticated=True)
+    username = principal.get("canonicalName", "")
 
-    session["domino_username"] = principal.get("canonicalName", "")
-    session["is_domino_admin"] = principal.get("isAdmin", False)
+    if principal.get("isAdmin", False):
+        _cache_scope(SCOPE_ADMIN, username=username)
+        return
+
+    org_ids = _fetch_org_ids(cookie_header)
+    if org_ids is None:
+        # Org-membership lookup was unreachable — fail closed, same as the
+        # principal check above.
+        return _auth_service_unavailable()
+
+    if org_ids:
+        _cache_scope(SCOPE_ORG, username=username, org_ids=org_ids)
+        return
+
+    _cache_scope(SCOPE_DENIED, username=username)
+    return _deny(authenticated=True)
+
+
+def _fetch_org_ids(cookie_header: str) -> Optional[List[str]]:
+    """Return the ids of the orgs the cookie-forwarded caller belongs to.
+
+    Returns None (not an empty list) if the lookup itself couldn't be made —
+    that's the "Nucleus unreachable" case, distinct from "reachable, caller
+    has zero org memberships".
+    """
+    try:
+        resp = httpx.get(
+            f"{DOMINO_API_URL}{_ORGANIZATIONS_API_PATH}",
+            headers={"Cookie": cookie_header},
+            timeout=5,
+        )
+    except httpx.RequestError:
+        return None
+    if resp.status_code != 200:
+        return None
+    orgs = resp.json().get("orgs", [])
+    return [org["id"] for org in orgs if "id" in org]
+
+
+def _cache_scope(scope: str, username: str = "", org_ids: Optional[List[str]] = None):
+    """Store a resolved access scope in the Flask session for AUTH_CACHE_TTL_SECONDS."""
+    session["access_scope"] = scope
+    session["domino_username"] = username
+    session["org_ids"] = org_ids or []
+    session["auth_checked_at"] = time.time()
+
+
+def _auth_service_unavailable():
+    """Fail closed when a Domino API call needed to resolve scope is unreachable."""
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Authentication service unavailable"}), 503
+    return (
+        render_template("error.html", message="Authentication service unavailable. Please try again shortly."),
+        503,
+    )
+
+
+_DENIED_MESSAGE = (
+    "Access denied: this application requires Domino administrator privileges or membership in a Domino organization."
+)
 
 
 def _deny(authenticated: bool):
     """Return the appropriate response when access is denied."""
     if request.path.startswith("/api/"):
         status = 403 if authenticated else 401
-        msg = "Administrator privileges required." if authenticated else "Authentication required."
+        msg = _DENIED_MESSAGE if authenticated else "Authentication required."
         return jsonify({"error": msg}), status
     if authenticated:
-        return render_template("error.html", message="Access denied: Domino administrator privileges required."), 403
+        return render_template("error.html", message=_DENIED_MESSAGE), 403
     # Not logged in — send to Domino's own login page (same hostname, root path).
     return redirect("/")
 
 
 @app.context_processor
 def inject_auth():
-    """Make the logged-in username available in all templates."""
+    """Make the logged-in username and resolved access scope available in all templates."""
+    scope = session.get("access_scope", "")
     return {
         "domino_username": session.get("domino_username", ""),
-        "is_domino_admin": session.get("is_domino_admin", False),
+        "is_domino_admin": scope == SCOPE_ADMIN,
+        "is_org_scoped": scope == SCOPE_ORG,
+        "org_ids": session.get("org_ids", []),
     }
 
 

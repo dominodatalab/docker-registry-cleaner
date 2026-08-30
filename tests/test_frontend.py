@@ -126,6 +126,113 @@ class TestLoadReport:
         assert load_report("../etc/passwd") is None
 
 
+# ── resolve_access_scope ─────────────────────────────────────────────────────────
+
+
+class TestResolveAccessScope:
+    def test_disabled_when_no_domino_api_url(self, client, reports_dir, monkeypatch):
+        monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "")
+        r = client.get("/")
+        assert r.status_code == 200
+
+    def test_admin_allowed(self, client, reports_dir, monkeypatch, mocker):
+        monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        mocker.patch(
+            "app.httpx.get",
+            return_value=_mock_httpx_response({"isAdmin": True, "canonicalName": "alice"}),
+        )
+        client.set_cookie("dominoAuth", "abc")
+        r = client.get("/")
+        assert r.status_code == 200
+        with client.session_transaction() as sess:
+            assert sess["access_scope"] == "admin"
+            assert sess["domino_username"] == "alice"
+
+    def test_org_scoped_allowed(self, client, reports_dir, monkeypatch, mocker):
+        monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        principal_resp = _mock_httpx_response({"isAdmin": False, "canonicalName": "bob"})
+        orgs_resp = _mock_httpx_response({"orgs": [{"id": "org1", "name": "Team A"}]})
+        mocker.patch("app.httpx.get", side_effect=[principal_resp, orgs_resp])
+        client.set_cookie("dominoAuth", "abc")
+        r = client.get("/")
+        assert r.status_code == 200
+        with client.session_transaction() as sess:
+            assert sess["access_scope"] == "org_scoped"
+            assert sess["org_ids"] == ["org1"]
+
+    def test_denied_when_no_org_membership(self, client, reports_dir, monkeypatch, mocker):
+        monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        principal_resp = _mock_httpx_response({"isAdmin": False})
+        orgs_resp = _mock_httpx_response({"orgs": []})
+        mocker.patch("app.httpx.get", side_effect=[principal_resp, orgs_resp])
+        client.set_cookie("dominoAuth", "abc")
+        r = client.get("/")
+        assert r.status_code == 403
+        with client.session_transaction() as sess:
+            assert sess["access_scope"] == "denied"
+
+    def test_denied_when_not_authenticated(self, client, reports_dir, monkeypatch):
+        monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        r = client.get("/")
+        assert r.status_code == 302
+
+    def test_503_when_principal_unreachable(self, client, reports_dir, monkeypatch, mocker):
+        import httpx as _httpx
+
+        monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        mocker.patch("app.httpx.get", side_effect=_httpx.RequestError("boom"))
+        client.set_cookie("dominoAuth", "abc")
+        r = client.get("/")
+        assert r.status_code == 503
+
+    def test_503_when_org_lookup_unreachable(self, client, reports_dir, monkeypatch, mocker):
+        import httpx as _httpx
+
+        monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        principal_resp = _mock_httpx_response({"isAdmin": False})
+        mocker.patch("app.httpx.get", side_effect=[principal_resp, _httpx.RequestError("boom")])
+        client.set_cookie("dominoAuth", "abc")
+        r = client.get("/")
+        assert r.status_code == 503
+
+    def test_cache_skips_second_nucleus_round_trip(self, client, reports_dir, monkeypatch, mocker):
+        monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        mock_get = mocker.patch(
+            "app.httpx.get",
+            return_value=_mock_httpx_response({"isAdmin": True, "canonicalName": "alice"}),
+        )
+        client.set_cookie("dominoAuth", "abc")
+        client.get("/")
+        assert mock_get.call_count == 1
+        r2 = client.get("/")
+        assert r2.status_code == 200
+        assert mock_get.call_count == 1  # served from the cached scope, no second call
+
+    def test_cache_expires_after_ttl(self, client, reports_dir, monkeypatch, mocker):
+        monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        monkeypatch.setattr(frontend_app, "_AUTH_CACHE_TTL", 0)
+        mock_get = mocker.patch(
+            "app.httpx.get",
+            return_value=_mock_httpx_response({"isAdmin": True, "canonicalName": "alice"}),
+        )
+        client.set_cookie("dominoAuth", "abc")
+        client.get("/")
+        client.get("/")
+        assert mock_get.call_count == 2  # TTL of 0 forces a re-check every time
+
+    def test_cached_denial_still_denies(self, client, reports_dir, monkeypatch, mocker):
+        monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        principal_resp = _mock_httpx_response({"isAdmin": False})
+        orgs_resp = _mock_httpx_response({"orgs": []})
+        mock_get = mocker.patch("app.httpx.get", side_effect=[principal_resp, orgs_resp])
+        client.set_cookie("dominoAuth", "abc")
+        client.get("/")
+        assert mock_get.call_count == 2
+        r2 = client.get("/")
+        assert r2.status_code == 403
+        assert mock_get.call_count == 2  # denial itself is cached too
+
+
 # ── Flask routes ───────────────────────────────────────────────────────────────
 
 

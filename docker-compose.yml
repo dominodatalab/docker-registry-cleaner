@@ -11,6 +11,11 @@
 # In production (Kubernetes) the backend port is NOT exposed via any Service.
 # The BACKEND_API_URL below uses the service name "backend" which is only
 # reachable within the compose network — not from outside.
+#
+# Auth is disabled here (DOMINO_API_URL unset) — every request gets full
+# admin access, matching this file's role as a quick smoke test. To exercise
+# the admin / org-scoped / denied access-control paths against a mock
+# Domino API instead, see docker-compose.auth.yml.
 
 services:
   backend:
