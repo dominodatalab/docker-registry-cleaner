@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from flask import session
 
 # Add frontend/ to path so we can import app without a package structure
 _frontend_dir = Path(__file__).parent.parent / "frontend"
@@ -109,21 +110,116 @@ class TestGetReportFiles:
 
 
 class TestLoadReport:
+    # load_report() reads Flask's `session` (to check org-scope access),
+    # so it needs an active request context — app.test_request_context()
+    # gives it one without spinning up a full test-client request.
+
     def test_loads_valid_json(self, reports_dir):
         data = {"summary": {"total": 5}, "items": []}
         (reports_dir / "report.json").write_text(json.dumps(data))
-        assert load_report("report.json") == data
+        with app.test_request_context():
+            assert load_report("report.json") == data
 
     def test_returns_none_for_missing_file(self, reports_dir):
-        assert load_report("nonexistent.json") is None
+        with app.test_request_context():
+            assert load_report("nonexistent.json") is None
 
     def test_returns_none_for_invalid_json(self, reports_dir):
         (reports_dir / "broken.json").write_text("not valid json {{{")
-        assert load_report("broken.json") is None
+        with app.test_request_context():
+            assert load_report("broken.json") is None
 
     def test_rejects_path_traversal(self, reports_dir):
         # Filenames containing ../ must not escape REPORTS_DIR
-        assert load_report("../etc/passwd") is None
+        with app.test_request_context():
+            assert load_report("../etc/passwd") is None
+
+
+class TestLoadReportOrgScope:
+    """load_report()'s org-scope filtering (docs/org-scoped-access-plan.md
+    §3.2/§3.3) — admin sessions are unaffected; org-scoped sessions get
+    filtered content for known report types and nothing at all for
+    backend-only ones."""
+
+    def test_admin_session_gets_unfiltered_data(self, reports_dir):
+        data = {"summary": {"total_images": 2}, "images": [{"tag": "a"}, {"tag": "b"}]}
+        (reports_dir / "image-size-report.json").write_text(json.dumps(data))
+        with app.test_request_context():
+            session["access_scope"] = "admin"
+            assert load_report("image-size-report.json") == data
+
+    def test_no_access_scope_gets_unfiltered_data(self, reports_dir):
+        """Local dev / auth-disabled mode: no access_scope is ever set."""
+        data = {"summary": {}, "images": [{"tag": "a"}]}
+        (reports_dir / "image-size-report.json").write_text(json.dumps(data))
+        with app.test_request_context():
+            assert load_report("image-size-report.json") == data
+
+    def test_org_scoped_session_gets_filtered_data(self, reports_dir, mocker):
+        data = {
+            "summary": {"total_images": 2, "total_size_bytes": 30},
+            "images": [
+                {"tag": "my-tag", "total_size_bytes": 10},
+                {"tag": "not-mine", "total_size_bytes": 20},
+            ],
+        }
+        (reports_dir / "image-size-report.json").write_text(json.dumps(data))
+        mocker.patch(
+            "app._get_org_scope",
+            return_value={"org_ids": ["org1"], "project_ids": [], "tags": ["my-tag"], "other_owners": {}},
+        )
+        with app.test_request_context():
+            session["access_scope"] = "org_scoped"
+            session["org_ids"] = ["org1"]
+            result = load_report("image-size-report.json")
+        assert [i["tag"] for i in result["images"]] == ["my-tag"]
+
+    def test_org_scoped_session_cannot_load_backend_only_report(self, reports_dir):
+        (reports_dir / "final-report.json").write_text(json.dumps({"sha256:abc": {"tags": ["x"]}}))
+        with app.test_request_context():
+            session["access_scope"] = "org_scoped"
+            session["org_ids"] = ["org1"]
+            assert load_report("final-report.json") is None
+
+    def test_org_scoped_session_fails_closed_when_backend_unreachable(self, reports_dir, mocker):
+        (reports_dir / "image-size-report.json").write_text(json.dumps({"summary": {}, "images": []}))
+        mocker.patch("app._get_org_scope", return_value=None)
+        with app.test_request_context():
+            session["access_scope"] = "org_scoped"
+            session["org_ids"] = ["org1"]
+            assert load_report("image-size-report.json") is None
+
+
+class TestGetOrgScope:
+    def test_no_org_ids_returns_empty_scope_without_backend_call(self, mocker):
+        mock_get = mocker.patch("app.httpx.get")
+        with app.test_request_context():
+            session["org_ids"] = []
+            result = frontend_app._get_org_scope()
+        assert result == {"org_ids": [], "project_ids": [], "tags": [], "other_owners": {}}
+        mock_get.assert_not_called()
+
+    def test_fetches_and_caches_scope(self, mocker):
+        scope = {"org_ids": ["org1"], "project_ids": [], "tags": ["t1"], "other_owners": {}}
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = scope
+        mock_resp.raise_for_status.return_value = None
+        mock_get = mocker.patch("app.httpx.get", return_value=mock_resp)
+        with app.test_request_context():
+            session["org_ids"] = ["org1"]
+            first = frontend_app._get_org_scope()
+            second = frontend_app._get_org_scope()
+        assert first == scope
+        assert second == scope
+        mock_get.assert_called_once()  # second call served from session cache
+
+    def test_backend_error_returns_none(self, mocker):
+        import httpx as _httpx
+
+        mocker.patch("app.httpx.get", side_effect=_httpx.ConnectError("refused"))
+        with app.test_request_context():
+            session["org_ids"] = ["org1"]
+            assert frontend_app._get_org_scope() is None
 
 
 # ── resolve_access_scope ─────────────────────────────────────────────────────────

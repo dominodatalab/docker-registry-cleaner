@@ -179,6 +179,54 @@ class TestOperations:
         assert "run_registry_gc" in data
 
 
+# ── GET /api/org-scope ─────────────────────────────────────────────────────────
+
+
+class TestOrgScope:
+    def test_no_org_ids_returns_empty_scope_without_querying_mongo(self, client, mocker):
+        mock_resolve = mocker.patch("api.resolve_org_scope")
+        resp = client.get("/api/org-scope")
+        assert resp.status_code == 200
+        assert resp.json() == {"org_ids": [], "project_ids": [], "tags": [], "other_owners": {}}
+        mock_resolve.assert_not_called()
+
+    def test_returns_resolved_scope(self, client, mocker):
+        mocker.patch(
+            "api.resolve_org_scope",
+            return_value={"org_ids": ["org1"], "project_ids": ["p1"], "tags": ["t1"], "other_owners": {}},
+        )
+        resp = client.get("/api/org-scope", params={"org_id": ["org1"]})
+        assert resp.status_code == 200
+        assert resp.json()["tags"] == ["t1"]
+
+    def test_passes_through_multiple_org_ids(self, client, mocker):
+        mock_resolve = mocker.patch(
+            "api.resolve_org_scope",
+            return_value={"org_ids": [], "project_ids": [], "tags": [], "other_owners": {}},
+        )
+        client.get("/api/org-scope", params={"org_id": ["org1", "org2"]})
+        mock_resolve.assert_called_once_with(["org1", "org2"])
+
+    def test_mongo_error_returns_503(self, client, mocker):
+        from pymongo.errors import PyMongoError
+
+        mocker.patch("api.resolve_org_scope", side_effect=PyMongoError("connection refused"))
+        resp = client.get("/api/org-scope", params={"org_id": ["org1"]})
+        assert resp.status_code == 503
+
+    def test_requires_api_key_when_configured(self, authed_client):
+        resp = authed_client.get("/api/org-scope", params={"org_id": ["org1"]})
+        assert resp.status_code == 403
+
+    def test_correct_key_passes(self, authed_client, mocker):
+        mocker.patch(
+            "api.resolve_org_scope",
+            return_value={"org_ids": [], "project_ids": [], "tags": [], "other_owners": {}},
+        )
+        resp = authed_client.get("/api/org-scope", params={"org_id": ["org1"]}, headers={"X-API-Key": "secret"})
+        assert resp.status_code == 200
+
+
 # ── _write_validated_input ─────────────────────────────────────────────────────
 
 

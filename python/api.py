@@ -29,11 +29,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
 from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
 from pydantic import BaseModel
+from pymongo.errors import PyMongoError
+
+from utils.org_scope import resolve_org_scope
 
 _API_KEY_HEADER: Optional[str] = Header(default=None)
+_ORG_ID_QUERY: List[str] = Query(default=[])
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -682,6 +686,31 @@ def list_operations() -> Dict[str, Any]:
             "params": params,
         }
     return result
+
+
+@app.get("/api/org-scope", dependencies=[Depends(_check_api_key)])
+def get_org_scope(org_id: List[str] = _ORG_ID_QUERY) -> Dict[str, Any]:
+    """Resolve which projects/environments/image tags the given Domino
+    organizations own, live against MongoDB.
+
+    Backs the frontend's org-scoped access control
+    (docs/org-scoped-access-plan.md §3.3, Option C) — the frontend never
+    talks to Mongo directly; it calls this endpoint the same way it already
+    calls /api/operations and /api/jobs, with the org ids resolved from the
+    caller's own session (frontend/app.py:resolve_access_scope()).
+
+    This does real, non-trivial Mongo work (full-collection aggregation
+    scans, the same ones extract_metadata.py runs for the periodic
+    mongodb_usage_report.json) — callers should cache the result rather
+    than calling this on every request.
+    """
+    if not org_id:
+        return {"org_ids": [], "project_ids": [], "tags": [], "other_owners": {}}
+    try:
+        return resolve_org_scope(org_id)
+    except PyMongoError:
+        logging.exception("org-scope resolution failed — MongoDB unreachable or query error")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database unavailable")
 
 
 @app.post("/api/jobs", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(_check_api_key)])

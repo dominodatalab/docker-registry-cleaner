@@ -277,6 +277,12 @@ def workspace_env_usage_pipeline() -> Pipeline:
             "$project": {
                 "workspace_name": "$name",
                 "workspace_last_change": "$stateUpdatedAt",
+                # Raw ids, carried through alongside the resolved names above — needed
+                # to attribute a workspace's environment usage back to a specific
+                # project/owner (e.g. for org-scoped access filtering), which resolved
+                # display names alone can't support (names aren't unique/stable keys).
+                "project_id": "$projectId",
+                "owner_id": "$ownerId",
                 "project_name": {"$first": "$project_id.name"},
                 "user_name": {"$first": "$user_id.fullName"},
                 "user_login": {"$first": "$user_id.loginId.id"},
@@ -353,6 +359,8 @@ def workspace_env_usage_pipeline() -> Pipeline:
             "$project": {
                 "workspace_name": "$workspace_name",
                 "workspace_last_change": "$workspace_last_change",
+                "project_id": "$project_id",
+                "owner_id": "$owner_id",
                 "project_name": "$project_name",
                 "user_name": "$user_name",
                 "user_login": "$user_login",
@@ -433,6 +441,8 @@ def workspace_env_usage_pipeline() -> Pipeline:
             "$project": {
                 "workspace_name": "$workspace_name",
                 "workspace_last_change": "$workspace_last_change",
+                "project_id": "$project_id",
+                "owner_id": "$owner_id",
                 "project_name": "$project_name",
                 "user_name": "$user_name",
                 "user_login": "$user_login",
