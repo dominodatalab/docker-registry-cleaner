@@ -13,6 +13,7 @@ from typing import Dict, List, Optional
 
 import httpx
 from flask import Flask, jsonify, redirect, render_template, request, session
+from report_scope import get_filter_for_filename
 
 # Configuration
 REPORTS_DIR = Path("/app/reports")  # In container
@@ -32,6 +33,12 @@ DOMINO_API_URL = os.environ.get("DOMINO_API_URL", "")
 DOMINO_URL = os.environ.get("DOMINO_URL", "")
 # How long a resolved access scope is trusted before re-checking with Nucleus.
 _AUTH_CACHE_TTL = int(os.environ.get("AUTH_CACHE_TTL_SECONDS", "60"))
+# How long a resolved org-scope (from the backend's /api/org-scope, itself a
+# real Mongo aggregation) is cached before re-fetching — a separate knob from
+# _AUTH_CACHE_TTL since org membership/ownership changes far less often than
+# an admin session's validity, and this call is considerably more expensive
+# per hit than the principal/org-membership checks above.
+_ORG_SCOPE_CACHE_TTL = int(os.environ.get("ORG_SCOPE_CACHE_TTL_SECONDS", "60"))
 # Nucleus path for "orgs the calling (cookie-forwarded) user belongs to" —
 # see docs/org-scoped-access-plan.md Appendix C for the confirmed response shape.
 _ORGANIZATIONS_API_PATH = "/api/organizations/v1/organizations"
@@ -210,6 +217,49 @@ def _backend_headers() -> Dict[str, str]:
     return headers
 
 
+_EMPTY_ORG_SCOPE = {"org_ids": [], "project_ids": [], "tags": [], "other_owners": {}}
+
+
+def _get_org_scope() -> Optional[Dict]:
+    """Fetch (or return the cached) org-scope resolution for the current
+    org-scoped session, via the backend's GET /api/org-scope
+    (docs/org-scoped-access-plan.md §3.3, Option C). Cached in the Flask
+    session for ORG_SCOPE_CACHE_TTL_SECONDS, since this triggers real Mongo
+    aggregation work on the backend — not something to redo on every single
+    report view.
+
+    Returns None if the backend call itself failed (as opposed to
+    succeeding with an empty scope) — callers must treat that as "couldn't
+    determine scope" and fail closed, not fail open.
+    """
+    org_ids = session.get("org_ids", [])
+    if not org_ids:
+        return dict(_EMPTY_ORG_SCOPE)
+
+    cached_at = session.get("org_scope_checked_at")
+    if cached_at is not None and (time.time() - cached_at) < _ORG_SCOPE_CACHE_TTL:
+        cached = session.get("org_scope")
+        if cached is not None:
+            return cached
+
+    try:
+        resp = httpx.get(
+            f"{BACKEND_API_URL}/api/org-scope",
+            params=[("org_id", oid) for oid in org_ids],
+            headers=_backend_headers(),
+            timeout=10,
+        )
+        resp.raise_for_status()
+        scope = resp.json()
+    except httpx.HTTPError as e:
+        print(f"Error fetching org scope: {e}")
+        return None
+
+    session["org_scope"] = scope
+    session["org_scope_checked_at"] = time.time()
+    return scope
+
+
 _USER_FACING_REPORT_PREFIXES = (
     "deletion-analysis",
     "archived-tags",
@@ -254,16 +304,37 @@ def format_bytes(bytes_size: int) -> str:
 
 
 def load_report(filename: str) -> Optional[Dict]:
-    """Load and parse a JSON report file"""
+    """Load and parse a JSON report file, filtered to the caller's org
+    scope when the session is org-scoped (docs/org-scoped-access-plan.md
+    §3.2/§3.3). Admin sessions are unaffected — this returns exactly what
+    it always has for them.
+    """
     try:
         file_path = REPORTS_DIR / filename
         if not file_path.exists():
             return None
         with open(file_path, "r") as f:
-            return json.load(f)
+            data = json.load(f)
     except Exception as e:
         print(f"Error loading report {filename}: {e}")
         return None
+
+    if session.get("access_scope") == SCOPE_ORG:
+        filter_fn = get_filter_for_filename(filename)
+        if filter_fn is None:
+            # Not a known user-facing report type (e.g. final-report.json,
+            # mongodb_usage_report.json) — org-scoped sessions never see
+            # these, whether by browsing or by requesting the filename
+            # directly. Treat identically to "file not found".
+            return None
+        org_scope = _get_org_scope()
+        if org_scope is None:
+            # Backend unreachable — fail closed, same philosophy as every
+            # other network call this feature makes (§2.1/§3.1).
+            return None
+        data = filter_fn(data, set(org_scope["tags"]))
+
+    return data
 
 
 # ── Report routes ──────────────────────────────────────────────────────────────
