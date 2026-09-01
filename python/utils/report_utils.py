@@ -6,17 +6,58 @@ This module provides functions to:
 - Check if reports are fresh
 - Automatically generate reports when needed
 - Generate timestamped report filenames
+- Build the standardized entries/summary shape (see
+  docs/report-schema-standardization-plan.md)
 """
 
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from utils.config_manager import config_manager
 from utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+# ============================================================================
+# Standardized report schema (additive — docs/report-schema-standardization-plan.md)
+# ============================================================================
+
+# Bumped whenever the standardized {"schema_version", "entries", ...} shape
+# changes in a way a consumer might need to branch on. Only the standardized
+# fields this module builds are versioned here — each report's legacy,
+# generator-specific fields (kept alongside these during the deprecation
+# window) are unversioned, as they always have been.
+REPORT_SCHEMA_VERSION = 2
+
+
+def build_standard_summary(entries: List[Dict[str, Any]], extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Compute the standardized summary block for a flat `entries` list:
+    `count`, `total_size_bytes`, `total_size_gb`, computed identically for
+    every report type so a single generic function (rather than one
+    per-report-type guess at which summary fields happen to exist) can
+    recompute them after filtering entries down (e.g. org-scoped access).
+
+    Args:
+        entries: the report's standardized entries list (each entry's
+            `size_bytes` is summed; entries without one contribute 0)
+        extra: report-specific summary fields to merge in alongside the
+            standardized ones (e.g. `tags_by_image_type`, `keep_revisions`)
+
+    Returns:
+        {"count": ..., "total_size_bytes": ..., "total_size_gb": ..., **extra}
+    """
+    total_size_bytes = sum(e.get("size_bytes", 0) or 0 for e in entries)
+    summary: Dict[str, Any] = {
+        "count": len(entries),
+        "total_size_bytes": total_size_bytes,
+        "total_size_gb": round(total_size_bytes / (1024**3), 2),
+    }
+    if extra:
+        summary.update(extra)
+    return summary
+
 
 # ============================================================================
 # Formatting Utilities

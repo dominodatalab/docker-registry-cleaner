@@ -62,7 +62,14 @@ from utils.image_data_analysis import ImageAnalyzer
 from utils.image_usage import ImageUsageService
 from utils.logging_utils import get_logger, setup_logging
 from utils.mongo_utils import get_mongo_client
-from utils.report_utils import ensure_mongodb_reports, get_timestamp_suffix, save_json, sizeof_fmt
+from utils.report_utils import (
+    REPORT_SCHEMA_VERSION,
+    build_standard_summary,
+    ensure_mongodb_reports,
+    get_timestamp_suffix,
+    save_json,
+    sizeof_fmt,
+)
 
 logger = get_logger(__name__)
 
@@ -1370,8 +1377,23 @@ class UnusedEnvironmentsFinder(BaseDeletionScript):
                 }
             )
 
+        # `entries`/`schema_version`/the standardized summary fields below are
+        # additive — see docs/report-schema-standardization-plan.md.
+        # `grouped_by_object_id` is kept as the deprecated legacy shape during
+        # the migration window; `object_id` (already on each entry) is what a
+        # consumer of `entries` regroups by instead of relying on dict keys.
+        entries = [entry for entries_for_id in grouped_data.values() for entry in entries_for_id]
         report = {
-            "summary": summary,
+            "schema_version": REPORT_SCHEMA_VERSION,
+            "summary": {
+                **summary,
+                # total_size_bytes/total_size_gb here are a naive sum over
+                # `entries` and will usually be *larger* than freed_space_gb
+                # above, which is dedup-aware — the two intentionally measure
+                # different things (see delete_archived_tags.py's identical note).
+                **build_standard_summary(entries),
+            },
+            "entries": entries,
             "grouped_by_object_id": grouped_data,
             "metadata": {
                 "registry_url": self.registry_url,
