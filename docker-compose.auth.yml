@@ -36,5 +36,9 @@ services:
       # via mock-nucleus's /login/<key> takes effect on the very next
       # request instead of waiting out the cache window (default 60s).
       AUTH_CACHE_TTL_SECONDS: "0"
+      # R2's staged-rollout flag defaults to off — without this, the org1
+      # identity here would just be denied, same as noorg, and there'd be
+      # no way to exercise the org-scoped path locally.
+      ORG_SCOPED_ACCESS_ENABLED: "true"
     depends_on:
       - mock-nucleus

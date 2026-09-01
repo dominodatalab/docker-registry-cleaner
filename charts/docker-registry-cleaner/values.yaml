@@ -85,6 +85,16 @@ frontend:
     # Traffic is allowed from any pod in a namespace bearing this label.
     ingressNamespaceLabel:
       domino-platform: "true"
+  # Lets a Domino organization member see a read-only, filtered view of
+  # reports (their own org's images only) instead of the current
+  # all-or-nothing (admin-or-denied) access model. New authz boundary and
+  # new data-exposure surface (see docs/org-scoped-access-plan.md) — off
+  # by default so it can be rolled out to one cluster at a time rather
+  # than turning on everywhere the moment this chart version deploys.
+  # With this off, a non-admin org member is denied, exactly as before
+  # this feature existed.
+  orgScopedAccess:
+    enabled: false
 
 # ── StatefulSet pod configuration ──────────────────
 imagePullSecrets:

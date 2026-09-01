@@ -186,7 +186,13 @@ const filename = {{ filename | tojson }};
 // tag -> [{type, id, name}] for every one of this org's tags also used by
 // another org/user (D3) — empty for admin sessions. Re-fetched by the
 // multi-org selector's JS below on every narrowing change (U3).
-let otherOwners = {{ other_owners | safe }};
+// `| tojson` (not `| safe`) — other_owners' `name` values come from
+// Mongo's `organizations.name`/`users.fullName`, which real Domino users
+// can set to arbitrary text. `| safe` would embed that raw, and a name
+// like `</script><script>...</script>` would break out of this very
+// script block and execute unconditionally on page load. `tojson`
+// escapes `<`/`>`/`&` so the JSON blob can't do that (R1 security review).
+let otherOwners = {{ other_owners | tojson }};
 
 // ── Domino link helpers ──────────────────────────────────────────────────────
 
@@ -272,6 +278,17 @@ function sectionTitle(text) {
     return `<div class="section-title">${text}</div>`;
 }
 
+// Escapes text for safe interpolation into an HTML string that's later
+// assigned via innerHTML (as sectionTitle/table/stat/sharedOwnerNote all
+// are here) — otherOwners' `name` values in particular come from Mongo's
+// `organizations.name`/`users.fullName`, real-user-settable text, not
+// platform-controlled content (R1 security review).
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text ?? '';
+    return div.innerHTML;
+}
+
 // ── Shared-image note (U3) ──────────────────────────────────────────────────
 // For an org-scoped session, flags a tag that's also used by another org or
 // user (D3's "who else uses this" data) — destructive action on a shared
@@ -281,13 +298,13 @@ function sectionTitle(text) {
 function sharedOwnerNote(tag) {
     const owners = (otherOwners && otherOwners[tag]) || [];
     if (!owners.length) return '';
-    const names = owners.map(o => o.name || o.id).join(', ');
+    const names = owners.map(o => escapeHtml(o.name || o.id)).join(', ');
     return `<div class="shared-owner-note">⚠ Also used by ${names} — admin required to remove</div>`;
 }
 
 function tagCell(tag) {
     if (!tag) return '—';
-    return tag + sharedOwnerNote(tag);
+    return escapeHtml(tag) + sharedOwnerNote(tag);
 }
 
 // ── Shared usage details renderer ───────────────────────────────────────────
@@ -870,7 +887,24 @@ renderSummary();
         return params;
     }
 
-    async function refetch() {
+    // Debounced + single-flight: each narrowed call re-triggers a real,
+    // uncached, multi-collection Mongo scan on the backend (see
+    // _get_org_scope()'s docstring in frontend/app.py) — rapid checkbox
+    // toggling must not pile up one such call per click. debounceTimer
+    // coalesces a burst of changes into one call after the user pauses;
+    // inFlight/pending caps concurrency at "one running, at most one
+    // queued" regardless of how many toggles land while a call is out
+    // (R1 security review).
+    let debounceTimer = null;
+    let inFlight = false;
+    let pending = false;
+
+    async function doRefetch() {
+        if (inFlight) {
+            pending = true;
+            return;
+        }
+        inFlight = true;
         const params = buildParams();
         const selectedCount = params.getAll('org_ids').length;
         statusEl.textContent = 'Updating…';
@@ -891,10 +925,22 @@ renderSummary();
                 : `Showing ${selectedCount} of ${checkboxes.length} organizations`;
         } catch (e) {
             statusEl.textContent = `Failed to update: ${e.message}`;
+        } finally {
+            inFlight = false;
+            if (pending) {
+                pending = false;
+                doRefetch();
+            }
         }
     }
 
-    checkboxes.forEach(cb => cb.addEventListener('change', refetch));
+    function scheduleRefetch() {
+        statusEl.textContent = 'Updating…';
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(doRefetch, 400);
+    }
+
+    checkboxes.forEach(cb => cb.addEventListener('change', scheduleRefetch));
 }());
 </script>
 {% endblock %}

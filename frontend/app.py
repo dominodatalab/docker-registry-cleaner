@@ -42,6 +42,17 @@ _ORG_SCOPE_CACHE_TTL = int(os.environ.get("ORG_SCOPE_CACHE_TTL_SECONDS", "60"))
 # Nucleus path for "orgs the calling (cookie-forwarded) user belongs to" —
 # see docs/org-scoped-access-plan.md Appendix C for the confirmed response shape.
 _ORGANIZATIONS_API_PATH = "/api/organizations/v1/organizations"
+# R2 staged-rollout flag: org-scoped access is a new authz boundary (R1's
+# security review), so it ships behind an explicit per-instance toggle
+# rather than turning on for every cluster the moment this deploys.
+# Default OFF — a non-admin with org membership gets denied, exactly like
+# before this feature existed, until an operator opts in
+# (charts/docker-registry-cleaner/values.yaml's frontend.orgScopedAccess.enabled).
+_ORG_SCOPED_ACCESS_ENABLED = os.environ.get("ORG_SCOPED_ACCESS_ENABLED", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 # Access-scope literals stored in the Flask session and returned by
 # resolve_access_scope(). See docs/org-scoped-access-plan.md §3.1.
@@ -86,6 +97,11 @@ def resolve_access_scope():
 
     Skipped when DOMINO_API_URL is not configured (local dev mode).
     Skipped for the /health endpoint (used by Kubernetes liveness probes).
+
+    The org-scoped branch itself is gated behind ORG_SCOPED_ACCESS_ENABLED
+    (R2's staged-rollout flag, default off) — with it off, a non-admin is
+    denied exactly as before this feature existed, and the org-membership
+    Nucleus call is never made at all.
     """
     if not DOMINO_API_URL:
         return  # auth disabled — local dev
@@ -99,6 +115,11 @@ def resolve_access_scope():
         if cached_scope == SCOPE_DENIED:
             return _deny(authenticated=True)
         if cached_scope == SCOPE_ORG:
+            if not _ORG_SCOPED_ACCESS_ENABLED:
+                # R2: the flag was flipped off since this was cached — fail
+                # closed immediately rather than letting a stale org-scoped
+                # session ride out the rest of its TTL.
+                return _deny(authenticated=True)
             return _reject_org_scoped_operations()
         if cached_scope == SCOPE_ADMIN:
             return
@@ -126,6 +147,14 @@ def resolve_access_scope():
     if principal.get("isAdmin", False):
         _cache_scope(SCOPE_ADMIN, username=username)
         return
+
+    if not _ORG_SCOPED_ACCESS_ENABLED:
+        # R2 staged rollout: feature flag off — exact pre-feature behavior.
+        # Skip the org-membership lookup entirely (no Nucleus call, no scope
+        # resolved and then hidden) rather than resolving org-scoped access
+        # and only suppressing it at the UI/route layer.
+        _cache_scope(SCOPE_DENIED, username=username)
+        return _deny(authenticated=True)
 
     orgs = _fetch_orgs(cookie_header)
     if orgs is None:
@@ -394,6 +423,16 @@ def load_report(filename: str, org_scope: Optional[Dict] = None) -> Optional[Dic
     which preserves this function's original behavior exactly: resolve the
     session's own (unnarrowed) scope itself via _get_org_scope().
     """
+    # Explicit traversal guard (R1 security review) — every real report
+    # lives flat in REPORTS_DIR (get_report_files()'s glob is non-recursive),
+    # so a legitimate filename never contains a path separator or "..".
+    # Without this, protection against escaping REPORTS_DIR rested entirely
+    # on Werkzeug's routing behavior (rejecting an encoded "/" in a single
+    # <filename> segment) rather than on anything this function chose to
+    # enforce itself — incidental, not a control anyone decided on purpose.
+    if "/" in filename or "\\" in filename or ".." in filename:
+        return None
+
     try:
         file_path = REPORTS_DIR / filename
         if not file_path.exists():
@@ -505,7 +544,11 @@ def view_report(filename):
         filename=filename,
         report_type=report_type,
         report_data=json.dumps(report_data, indent=2),
-        other_owners=json.dumps(other_owners),
+        # Passed as a dict, not pre-serialized here — report.html embeds it
+        # with Jinja's `| tojson`, which HTML/JS-escapes `<`/`>`/`&` (R1
+        # security review: other_owners' `name` values are attacker-settable
+        # Mongo fields, `json.dumps()` alone doesn't neutralize `</script>`).
+        other_owners=other_owners,
         domino_url=domino_url,
     )
 

@@ -79,30 +79,38 @@ docker compose -f docker-compose.yml -f docker-compose.auth.yml up --build
 ```
 
 This layers a mock Nucleus API (`dev/mock_nucleus.py`, stdlib only) onto the
-usual compose setup. Visit [http://localhost:9000](http://localhost:9000) and
-pick an identity to log in as (`admin`, `org1`, or `noorg` — authenticated
-but zero org memberships, to test the denied path) before opening
+usual compose setup, and sets `ORG_SCOPED_ACCESS_ENABLED=true` so the
+`org1` identity below actually exercises the org-scoped path (see
+"Security" below — that flag defaults to `false` everywhere else). Visit
+[http://localhost:9000](http://localhost:9000) and pick an identity to log
+in as (`admin`, `org1`, or `noorg` — authenticated but zero org
+memberships, to test the denied path) before opening
 [http://localhost:8899](http://localhost:8899). See
 `docker-compose.auth.yml`'s header comment for details. Plain
 `docker compose up` (no override) keeps auth disabled, as today.
 
 ## Security
 
-See [`org-scoped-access-plan.md`](org-scoped-access-plan.md) for the full
-design. Every request is authenticated by forwarding the user's session
-cookie to the nucleus-frontend service and resolved into one of three
-access scopes (`frontend/app.py:resolve_access_scope()`):
+Every request is authenticated by forwarding the user's session cookie to
+the nucleus-frontend service and resolved into one of three access scopes
+(`frontend/app.py:resolve_access_scope()`):
 
 - **admin** — `GET /v4/auth/principal` reports `isAdmin: true`. Full access,
   unchanged from before org-scoped access existed.
 - **org-scoped** — authenticated, not a system admin, but a member of at
   least one Domino organization (`GET /api/organizations/v1/organizations`
-  returns ≥1 org). Gets a restricted, read-only view in v1 (no
-  job-triggering or destructive actions).
+  returns ≥1 org). Gets a restricted, read-only view (no job-triggering or
+  destructive actions), filtered to that org's own images. Requires the
+  `ORG_SCOPED_ACCESS_ENABLED` env var — set via the Helm chart's
+  `frontend.orgScopedAccess.enabled` value, **default `false`**. With it
+  off, this scope never resolves at all: a non-admin org member is denied,
+  exactly like before this feature existed, and the org-membership lookup
+  above isn't even attempted. Enable it per-cluster once you're ready to
+  roll this out there.
 - **denied** — not authenticated, or authenticated with zero org
-  memberships and not an admin. Unauthenticated requests receive a 401 (API)
-  or a redirect to Domino's login page (browser); authenticated-but-denied
-  requests receive a 403.
+  memberships (or org-scoped access disabled) and not an admin.
+  Unauthenticated requests receive a 401 (API) or a redirect to Domino's
+  login page (browser); authenticated-but-denied requests receive a 403.
 
 The resolved scope is cached in the Flask session for
 `AUTH_CACHE_TTL_SECONDS` (default 60) to avoid a Nucleus round trip on every

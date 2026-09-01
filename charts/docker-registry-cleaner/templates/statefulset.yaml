@@ -125,6 +125,8 @@ spec:
               value: {{ printf "http://nucleus-frontend.%s.svc.cluster.local" .Values.dominoPlatformNamespace | quote }}
             - name: DOMINO_URL
               value: {{ .Values.dominoUrl | quote }}
+            - name: ORG_SCOPED_ACCESS_ENABLED
+              value: {{ ((.Values.frontend.orgScopedAccess).enabled | default false) | quote }}
           ports:
             - name: http
               containerPort: {{ .Values.frontend.service.targetPort }}

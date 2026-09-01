@@ -134,6 +134,23 @@ class TestLoadReport:
         with app.test_request_context():
             assert load_report("../etc/passwd") is None
 
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "../secret.json",
+            "image-size-report/../../secret.json",  # prefix-gate bypass shape (R1 review)
+            "a/b.json",
+            "a\\b.json",
+            "..",
+        ],
+    )
+    def test_rejects_any_filename_with_a_path_separator_or_dotdot(self, reports_dir, filename):
+        # Explicit guard (R1 security review) — previously nothing in this
+        # function itself rejected these; escaping REPORTS_DIR rested
+        # entirely on Werkzeug's routing behavior for the real HTTP path.
+        with app.test_request_context():
+            assert load_report(filename) is None
+
 
 class TestLoadReportOrgScope:
     """load_report()'s org-scope filtering (docs/org-scoped-access-plan.md
@@ -411,6 +428,7 @@ class TestResolveAccessScope:
 
     def test_org_scoped_allowed(self, client, reports_dir, monkeypatch, mocker):
         monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        monkeypatch.setattr(frontend_app, "_ORG_SCOPED_ACCESS_ENABLED", True)  # R2: exercising the org-lookup path
         principal_resp = _mock_httpx_response({"isAdmin": False, "canonicalName": "bob"})
         orgs_resp = _mock_httpx_response({"orgs": [{"id": "org1", "name": "Team A"}]})
         mocker.patch("app.httpx.get", side_effect=[principal_resp, orgs_resp])
@@ -424,12 +442,14 @@ class TestResolveAccessScope:
 
     def test_denied_when_no_org_membership(self, client, reports_dir, monkeypatch, mocker):
         monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        monkeypatch.setattr(frontend_app, "_ORG_SCOPED_ACCESS_ENABLED", True)  # R2: exercise the empty-org-list path
         principal_resp = _mock_httpx_response({"isAdmin": False})
         orgs_resp = _mock_httpx_response({"orgs": []})
-        mocker.patch("app.httpx.get", side_effect=[principal_resp, orgs_resp])
+        mock_get = mocker.patch("app.httpx.get", side_effect=[principal_resp, orgs_resp])
         client.set_cookie("dominoAuth", "abc")
         r = client.get("/")
         assert r.status_code == 403
+        assert mock_get.call_count == 2  # both principal and org-lookup calls actually happened
         with client.session_transaction() as sess:
             assert sess["access_scope"] == "denied"
 
@@ -451,11 +471,48 @@ class TestResolveAccessScope:
         import httpx as _httpx
 
         monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        monkeypatch.setattr(frontend_app, "_ORG_SCOPED_ACCESS_ENABLED", True)  # R2: need to reach the org lookup
         principal_resp = _mock_httpx_response({"isAdmin": False})
         mocker.patch("app.httpx.get", side_effect=[principal_resp, _httpx.RequestError("boom")])
         client.set_cookie("dominoAuth", "abc")
         r = client.get("/")
         assert r.status_code == 503
+
+    # ── R2: org-scoped access is gated behind ORG_SCOPED_ACCESS_ENABLED ─────────
+    # New authz boundary (R1's security review) — ships off by default so it
+    # rolls out to one cluster at a time, not everywhere the chart deploys.
+
+    def test_org_membership_denied_by_default_flag_off(self, client, reports_dir, monkeypatch, mocker):
+        # _ORG_SCOPED_ACCESS_ENABLED is left at its real default (no monkeypatch) —
+        # a non-admin with real org membership still gets denied, and the
+        # org-membership lookup is never even attempted.
+        monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        principal_resp = _mock_httpx_response({"isAdmin": False, "canonicalName": "bob"})
+        orgs_resp = _mock_httpx_response({"orgs": [{"id": "org1", "name": "Team A"}]})
+        mock_get = mocker.patch("app.httpx.get", side_effect=[principal_resp, orgs_resp])
+        client.set_cookie("dominoAuth", "abc")
+        r = client.get("/")
+        assert r.status_code == 403
+        assert mock_get.call_count == 1  # only the principal call — org lookup never attempted
+        with client.session_transaction() as sess:
+            assert sess["access_scope"] == "denied"
+
+    def test_cached_org_scoped_session_denied_immediately_when_flag_disabled(
+        self, client, reports_dir, monkeypatch, mocker
+    ):
+        # Simulates an operator flipping the flag off while a session that
+        # was cached as org_scoped (from when it was on) is still within its
+        # auth-cache TTL — must fail closed on the very next request, not
+        # ride out the rest of the cache window.
+        monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        mock_get = mocker.patch("app.httpx.get")
+        with client.session_transaction() as sess:
+            sess["access_scope"] = "org_scoped"
+            sess["org_ids"] = ["org1"]
+            sess["auth_checked_at"] = time.time()
+        r = client.get("/")
+        assert r.status_code == 403
+        mock_get.assert_not_called()  # denied straight from the cache-hit branch, no Nucleus call
 
     def test_cache_skips_second_nucleus_round_trip(self, client, reports_dir, monkeypatch, mocker):
         monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
@@ -484,6 +541,7 @@ class TestResolveAccessScope:
 
     def test_cached_denial_still_denies(self, client, reports_dir, monkeypatch, mocker):
         monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        monkeypatch.setattr(frontend_app, "_ORG_SCOPED_ACCESS_ENABLED", True)  # R2: exercise the empty-org-list path
         principal_resp = _mock_httpx_response({"isAdmin": False})
         orgs_resp = _mock_httpx_response({"orgs": []})
         mock_get = mocker.patch("app.httpx.get", side_effect=[principal_resp, orgs_resp])
@@ -511,7 +569,11 @@ class TestOperationsBlockedForOrgScoped:
         # all; seeding auth_checked_at recent enough puts every request
         # through the cache-hit branch (the common case, and the one that
         # silently regressed if only the fresh-resolution branch rejects).
+        # _ORG_SCOPED_ACCESS_ENABLED must also be on (R2) — otherwise the
+        # cache-hit branch denies this cached org_scoped session outright,
+        # for a different reason than the one these tests are about.
         monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        monkeypatch.setattr(frontend_app, "_ORG_SCOPED_ACCESS_ENABLED", True)
         with client.session_transaction() as sess:
             sess["access_scope"] = "org_scoped"
             sess["domino_username"] = "bob"
@@ -639,6 +701,32 @@ class TestOrgScopedTemplateRendering:
         r = client.get("/reports/image-size-report.json")
         assert r.status_code == 200
         assert b"Team B" in r.data  # embedded in the `otherOwners` JS global
+
+    def test_other_owners_name_is_html_escaped_not_raw(self, client, reports_dir, mocker):
+        """R1 security review: an owner `name` — sourced from Mongo's
+        `organizations.name`/`users.fullName`, real-user-settable text —
+        must never reach the page as a raw `</script>` breakout. Regression
+        test for the other_owners=json.dumps(...) + `| safe` bug (fixed to
+        pass the dict through and render with `| tojson`)."""
+        data = {"summary": {}, "images": [{"tag": "shared-tag"}], "entries": [{"tag": "shared-tag"}]}
+        (reports_dir / "image-size-report.json").write_text(json.dumps(data))
+        payload = "</script><script>alert(document.domain)</script>"
+        mocker.patch(
+            "app._get_org_scope",
+            return_value={
+                "org_ids": ["org1"],
+                "project_ids": [],
+                "tags": ["shared-tag"],
+                "other_owners": {"shared-tag": [{"type": "user", "id": "u1", "name": payload}]},
+            },
+        )
+        with client.session_transaction() as sess:
+            sess["access_scope"] = "org_scoped"
+            sess["org_ids"] = ["org1"]
+        r = client.get("/reports/image-size-report.json")
+        assert r.status_code == 200
+        assert payload.encode() not in r.data  # never appears raw
+        assert b"</script><script>alert" not in r.data  # specifically: no script-block breakout
 
     def test_other_owners_empty_for_admin_view(self, client, reports_dir):
         data = {"summary": {}, "images": []}
