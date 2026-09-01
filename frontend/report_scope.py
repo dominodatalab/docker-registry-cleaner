@@ -6,15 +6,18 @@ docs/org-scoped-access-plan.md §3.2/§3.3 for the design.
 
 Row-level filtering — which entries an org-scoped user sees at all — is
 exact: every filter function below only keeps entries whose docker tag
-(the `tag`/`docker_tag` field every report type carries per-entry) appears
-in the org's resolved tag scope. This is the security-relevant property
-and it's exact, not best-effort.
+appears in the org's resolved tag scope. This is the security-relevant
+property and it's exact, not best-effort.
 
 Filtered *summary* statistics are best-effort by contrast: this
-recomputes straightforward counts (list/dict length) and size sums over
-the now-filtered data, but does not hand-replicate every report
-generator's full bespoke accounting (e.g. per-image-type breakdowns,
-"why can't delete" narrative text, protected-tag reasoning counts). A
+recomputes straightforward counts and size sums over the now-filtered
+data, but does not hand-replicate every report generator's full bespoke
+accounting (e.g. per-image-type breakdowns, "why can't delete" narrative
+text, protected-tag reasoning counts, or the dedup-aware totals some
+reports carry under other names — `freed_space_gb`,
+`total_freed_size_bytes`, `total_size_saved`, `freed_space_bytes` on a
+per-user entry — none of which this module knows how to safely
+recompute from a filtered subset, so they're left as-is, untouched). A
 summary field this module doesn't know how to safely recompute is left
 as-is from the original report — this can overstate a scoped view's
 totals relative to what it actually shows, but never hides an entry it
@@ -29,14 +32,26 @@ of the browsable UI (frontend/app.py's _USER_FACING_REPORT_PREFIXES) and
 stay that way for org-scoped sessions too — filtering them isn't in scope
 for v1 (see docs/org-scoped-access-tickets.md).
 
-The seven bespoke functions below exist because the seven report
-generators each invented their own shape independently (flat lists, two
-different dict-keyed-by-ObjectId conventions, and one nested-per-user
-structure — see docs/report-schema-standardization-plan.md). That doc
-proposes a standardized `{"summary", "entries", "metadata"}` shape that
-would collapse this whole module to one generic filter function; it's
-scoped but not yet implemented, since it touches all seven generators,
-report.html, and api.py's metrics reader, not just this file.
+Filtering itself is unified around the standardized `entries` field every
+report carries as of docs/report-schema-standardization-plan.md's phase 1
+— `_filtered_entries()` is the one place tag-matching happens, used by
+every report type below, rather than each report independently filtering
+its own legacy structure. What still varies per report is only how the
+already-filtered `entries` get *reshaped* back into that report's
+legacy, report-specific structure (a flat list, a dict grouped by an id,
+a per-user nested list, or two lists split by status) — `report.html`
+reads those legacy structures today, not `entries` (migrating it to read
+`entries` directly is phase 2 of the standardization plan: bigger,
+separate work, not done — see that doc). Every entry already carries the
+field its report's legacy structure groups by (`object_id`, `parent_id`,
+`user_id`, `status`) since the generators push those down additively, so
+reshaping is a generic group-by, not report-specific logic.
+
+Depends on every report actually having an `entries` field — reports
+generated before docs/report-schema-standardization-plan.md's phase 1
+landed won't have one, and will filter down to nothing (safe-direction
+empty, not a leak) until they regenerate. Documented there as an accepted
+rollout wrinkle, not something this module works around.
 """
 
 from typing import Any, Callable, Dict, List, Optional, Set
@@ -48,36 +63,31 @@ def _entry_tag(entry: Dict[str, Any]) -> Optional[str]:
     return entry.get("tag") or entry.get("docker_tag")
 
 
-def _filter_list(entries: List[Dict[str, Any]], org_tags: Set[str]) -> List[Dict[str, Any]]:
-    return [e for e in entries if _entry_tag(e) in org_tags]
+def _filtered_entries(data: Dict[str, Any], org_tags: Set[str]) -> List[Dict[str, Any]]:
+    """The one tag-matching operation every report type filters through."""
+    return [e for e in data.get("entries", []) if _entry_tag(e) in org_tags]
 
 
-def _filter_grouped(grouped: Dict[str, List[Dict[str, Any]]], org_tags: Set[str]) -> Dict[str, List[Dict[str, Any]]]:
-    """For the two report types keyed by ObjectId (unused-environments'
-    grouped_by_object_id, old-revisions' grouped_by_parent) rather than a
-    flat list. A key is dropped entirely once none of its entries survive
-    filtering, rather than kept with an empty list."""
-    result = {}
-    for key, entries in grouped.items():
-        kept = _filter_list(entries, org_tags)
-        if kept:
-            result[key] = kept
-    return result
+def _grouped_by(entries: List[Dict[str, Any]], key_field: str) -> Dict[Any, List[Dict[str, Any]]]:
+    """Bucket already-filtered entries by the value of `key_field` — used
+    both for the two dict-keyed-by-id legacy shapes (`object_id`,
+    `parent_id`) and for deletion-analysis's split-by-`status`, which is
+    the same operation. A key with zero surviving entries never appears,
+    rather than showing up with an empty list."""
+    grouped: Dict[Any, List[Dict[str, Any]]] = {}
+    for e in entries:
+        key = e.get(key_field)
+        if key is None:
+            continue
+        grouped.setdefault(key, []).append(e)
+    return grouped
 
 
 def _recompute_size_summary(summary: Dict[str, Any], entries: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Recompute the standardized `count`/`total_size_bytes`/`total_size_gb`
-    fields (docs/report-schema-standardization-plan.md — present in every
-    report's summary as of that change) as well as this report's own
-    identically-named legacy field, if present, over `entries`. Every other
-    summary field is left untouched by this helper.
-
-    IMPORTANT: `entries` here must be the *filtered* set — this is the same
-    computation that used to be merely best-effort for the legacy
-    `total_size_bytes`/`total_size_gb` fields, but since the standardization
-    change these are no longer optional/legacy-only: they're on every
-    report's summary now, so getting this right here is load-bearing, not
-    cosmetic.
+    fields (present in every report's summary, and on a per-user entry in
+    user-size-report — docs/report-schema-standardization-plan.md) over
+    `entries`. Every other summary field is left untouched by this helper.
     """
     summary = dict(summary)
     size_bytes = sum(e.get("size_bytes", 0) or 0 for e in entries)
@@ -91,113 +101,114 @@ def _recompute_size_summary(summary: Dict[str, Any], entries: List[Dict[str, Any
 
 
 def filter_archived_tags(data: Dict[str, Any], org_tags: Set[str]) -> Dict[str, Any]:
-    entries = _filter_list(data.get("archived_tags", []), org_tags)
-    summary = dict(data.get("summary", {}))
+    entries = _filtered_entries(data, org_tags)
+    summary = _recompute_size_summary(data.get("summary", {}), entries)
     if "total_archived_object_ids" in summary:
         summary["total_archived_object_ids"] = len({e["object_id"] for e in entries if e.get("object_id")})
-    summary = _recompute_size_summary(summary, entries)
     return {**data, "archived_tags": entries, "entries": entries, "summary": summary}
 
 
 def filter_unused_environments(data: Dict[str, Any], org_tags: Set[str]) -> Dict[str, Any]:
-    grouped = _filter_grouped(data.get("grouped_by_object_id", {}), org_tags)
-    flat = [e for entries in grouped.values() for e in entries]
-    summary = dict(data.get("summary", {}))
+    entries = _filtered_entries(data, org_tags)
+    grouped = _grouped_by(entries, "object_id")
+    summary = _recompute_size_summary(data.get("summary", {}), entries)
     if "total_unused_environment_ids" in summary:
         summary["total_unused_environment_ids"] = len(grouped)
-    summary = _recompute_size_summary(summary, flat)
-    return {**data, "grouped_by_object_id": grouped, "entries": flat, "summary": summary}
+    return {**data, "grouped_by_object_id": grouped, "entries": entries, "summary": summary}
 
 
 def filter_old_revisions(data: Dict[str, Any], org_tags: Set[str]) -> Dict[str, Any]:
-    grouped = _filter_grouped(data.get("grouped_by_parent", {}), org_tags)
-    flat = [e for entries in grouped.values() for e in entries]
-    summary = dict(data.get("summary", {}))
+    entries = _filtered_entries(data, org_tags)
+    grouped = _grouped_by(entries, "parent_id")
+    summary = _recompute_size_summary(data.get("summary", {}), entries)
     if "total_old_revisions" in summary:
-        summary["total_old_revisions"] = len(flat)
+        summary["total_old_revisions"] = len(entries)
     if "environments_affected" in summary:
         summary["environments_affected"] = len(
             {k for k, v in grouped.items() if v and v[0].get("image_type") == "environment"}
         )
     if "models_affected" in summary:
         summary["models_affected"] = len({k for k, v in grouped.items() if v and v[0].get("image_type") == "model"})
-    summary = _recompute_size_summary(summary, flat)
-    return {**data, "grouped_by_parent": grouped, "entries": flat, "summary": summary}
+    return {**data, "grouped_by_parent": grouped, "entries": entries, "summary": summary}
 
 
 def filter_image_size_report(data: Dict[str, Any], org_tags: Set[str]) -> Dict[str, Any]:
-    entries = _filter_list(data.get("images", []), org_tags)
-    summary = dict(data.get("summary", {}))
+    entries = _filtered_entries(data, org_tags)
+    summary = _recompute_size_summary(data.get("summary", {}), entries)
     if "total_images" in summary:
         summary["total_images"] = len(entries)
-    # This report's per-entry size field is total_size_bytes, not size_bytes —
-    # adapt to _recompute_size_summary's expected field name.
-    summary = _recompute_size_summary(summary, [{"size_bytes": e.get("total_size_bytes", 0)} for e in entries])
     return {**data, "images": entries, "entries": entries, "summary": summary}
 
 
 def filter_user_size_report(data: Dict[str, Any], org_tags: Set[str]) -> Dict[str, Any]:
-    """user-size-report nests an `images` list under each user rather than
-    being a flat tag-bearing list itself — filtered one level deeper: a
-    user's entry is kept only if at least one of their images is in the
-    org's tag scope, with that nested list itself filtered down too.
+    """user-size-report nests images under each user rather than being a
+    flat tag-bearing list itself — reshaped here by grouping the filtered
+    `entries` (one entry per (user, image) pair) by `user_id`. Each user's
+    *other* fields (`freed_space_bytes` and its per-type breakdowns, which
+    are dedup-aware and this module has no way to recompute for a filtered
+    subset) are carried through from that user's original entry as-is —
+    best-effort, per this module's docstring, not silently dropped."""
+    entries = _filtered_entries(data, org_tags)
+    original_users = {u.get("user_id"): u for u in data.get("users", [])}
+    grouped = _grouped_by(entries, "user_id")
 
-    The standardized `entries` field (docs/report-schema-standardization-plan.md)
-    is this report's flattened equivalent — one entry per (user, image)
-    pair, the same shape the generator itself produces — reconstructed here
-    from the already-filtered per-user image lists rather than filtered
-    separately, so the two can't drift apart.
-    """
     users = []
-    entries: List[Dict[str, Any]] = []
-    for user in data.get("users", []):
-        images = _filter_list(user.get("images", []), org_tags)
-        if not images:
-            continue
-        user = dict(user)
+    for user_id, images in grouped.items():
+        # Start from the original per-user record when one exists (carries
+        # through user_name/login_id/freed_space_* etc. best-effort), but
+        # user_id/images/image_count/total_size_bytes/total_size_gb are set
+        # unconditionally below rather than relying on _recompute_size_summary's
+        # "only touch a field that already exists" behavior (right for the
+        # top-level summary's report-specific extras, wrong here — these are
+        # core fields this report's entries always have, not optional ones).
+        user = dict(original_users.get(user_id, {}))
+        size_bytes = sum(i.get("size_bytes", 0) or 0 for i in images)
+        user["user_id"] = user_id
         user["images"] = images
-        if "image_count" in user:
-            user["image_count"] = len(images)
-        user = _recompute_size_summary(user, [{"size_bytes": i.get("total_size_bytes", 0)} for i in images])
+        user["image_count"] = len(images)
+        user["total_size_bytes"] = size_bytes
+        user["total_size_gb"] = round(size_bytes / (1024**3), 2)
         users.append(user)
-        entries.extend(images)
 
-    summary = dict(data.get("summary", {}))
+    summary = _recompute_size_summary(data.get("summary", {}), entries)
     if "total_users" in summary:
         summary["total_users"] = len(users)
     if "total_images" in summary:
-        summary["total_images"] = sum(u.get("image_count", 0) for u in users)
-    summary = _recompute_size_summary(summary, [{"size_bytes": u.get("total_size_bytes", 0)} for u in users])
+        summary["total_images"] = len(entries)
     return {**data, "users": users, "entries": entries, "summary": summary}
 
 
 def filter_integrity_check(data: Dict[str, Any], org_tags: Set[str]) -> Dict[str, Any]:
-    """Only issues carrying a resolvable image_tag can be attributed to an
-    org at all — most referential-integrity issues (a dangling reference
-    with no live registry image) never get one (see
+    """Only issues carrying a resolvable tag can be attributed to an org at
+    all — most referential-integrity issues (a dangling reference with no
+    live registry image) never get one (see
     docs/org-scoped-access-plan.md's schema investigation of this report).
     Those are dropped from an org-scoped view rather than shown
     unattributed, since there's no way to confirm they're this org's."""
-    entries = [e for e in data.get("issues", []) if e.get("image_tag") in org_tags]
-    summary = dict(data.get("summary", {}))
+    entries = _filtered_entries(data, org_tags)
+    summary = _recompute_size_summary(data.get("summary", {}), entries)
     if "total_issues" in summary:
         summary["total_issues"] = len(entries)
-    summary = _recompute_size_summary(summary, entries)
     return {**data, "issues": entries, "entries": entries, "summary": summary}
 
 
 def filter_deletion_analysis(data: Dict[str, Any], org_tags: Set[str]) -> Dict[str, Any]:
-    unused = _filter_list(data.get("unused_images", []), org_tags)
-    used = _filter_list(data.get("used_images", []), org_tags)
-    summary = dict(data.get("summary", {}))
+    """Splits back into unused/used the same way archived-tags already
+    distinguishes by a `status` field — grouping filtered `entries` by
+    `status` is the identical operation `_grouped_by` already does for the
+    dict-keyed-by-id reports, just with `"unused"`/`"used"` as the keys."""
+    entries = _filtered_entries(data, org_tags)
+    by_status = _grouped_by(entries, "status")
+    unused = by_status.get("unused", [])
+    used = by_status.get("used", [])
+
+    summary = _recompute_size_summary(data.get("summary", {}), entries)
     if "unused_images" in summary:
         summary["unused_images"] = len(unused)
     if "used_images" in summary:
         summary["used_images"] = len(used)
     if "total_images_analyzed" in summary:
-        summary["total_images_analyzed"] = len(unused) + len(used)
-    entries = unused + used
-    summary = _recompute_size_summary(summary, entries)
+        summary["total_images_analyzed"] = len(entries)
     return {**data, "unused_images": unused, "used_images": used, "entries": entries, "summary": summary}
 
 

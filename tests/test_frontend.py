@@ -156,12 +156,19 @@ class TestLoadReportOrgScope:
             assert load_report("image-size-report.json") == data
 
     def test_org_scoped_session_gets_filtered_data(self, reports_dir, mocker):
+        # entries mirrors `images` — the real generator (image_size_report.py)
+        # builds both from the same list; report_scope.py's filter functions
+        # read from `entries` as their source of truth (see
+        # docs/report-schema-standardization-plan.md), so a fixture without
+        # it would filter down to nothing regardless of what `images` has.
+        images = [
+            {"tag": "my-tag", "total_size_bytes": 10, "size_bytes": 10},
+            {"tag": "not-mine", "total_size_bytes": 20, "size_bytes": 20},
+        ]
         data = {
             "summary": {"total_images": 2, "total_size_bytes": 30},
-            "images": [
-                {"tag": "my-tag", "total_size_bytes": 10},
-                {"tag": "not-mine", "total_size_bytes": 20},
-            ],
+            "images": images,
+            "entries": images,
         }
         (reports_dir / "image-size-report.json").write_text(json.dumps(data))
         mocker.patch(

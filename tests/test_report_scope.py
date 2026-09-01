@@ -20,6 +20,15 @@ carried the full, unfiltered list through the exact same response) — a
 real access-control bypass, not a hypothetical one. Every test class
 below now asserts on `result["entries"]` and `result["summary"]["count"]`
 explicitly, not just the legacy fields, so this can't silently reappear.
+
+report_scope.py was later migrated so every filter function reads from
+`entries` as its one source of truth and *reshapes* the result back into
+the legacy structure, rather than filtering each legacy structure
+independently. `TestFilteringReadsFromEntriesNotLegacyField` below locks
+that in directly, by deliberately making a fixture's legacy field and
+`entries` disagree and asserting the output follows `entries` — proof the
+two aren't independently filtered (which would silently re-diverge if
+someone reverted the read source for just one report type).
 """
 
 import sys
@@ -102,9 +111,13 @@ class TestFilterArchivedTags:
 
 class TestFilterUnusedEnvironments:
     def _data(self):
+        # The real generator (delete_unused_environments.py) puts `object_id`
+        # directly on every entry, not just as the grouped_by_object_id dict
+        # key — needed since filtering now groups the flat `entries` list by
+        # that field rather than filtering a pre-grouped dict.
         grouped = {
-            "env1": [{"tag": "my-tag-1", "size_bytes": 50, "status": "unused"}],
-            "env2": [{"tag": "not-mine", "size_bytes": 50, "status": "unused"}],
+            "env1": [{"object_id": "env1", "tag": "my-tag-1", "size_bytes": 50, "status": "unused"}],
+            "env2": [{"object_id": "env2", "tag": "not-mine", "size_bytes": 50, "status": "unused"}],
         }
         return {
             "schema_version": 2,
@@ -130,20 +143,43 @@ class TestFilterUnusedEnvironments:
 
 class TestFilterOldRevisions:
     def _data(self):
-        # The real generator (delete_old_revisions.py) puts both `docker_tag`
-        # (legacy) and `tag` (standardized) on every grouped_by_parent entry —
-        # they're the same dict objects `entries` is built from, not a
-        # separately-shaped list. Test fixtures need both fields too, or a
-        # filter bug here would look like a fixture bug instead (as it did
-        # the first time this test was written with docker_tag only).
+        # The real generator (delete_old_revisions.py) puts `docker_tag`
+        # (legacy), `tag` (standardized), and `parent_id` (the grouping key,
+        # pushed onto the entry itself) on every entry — they're the same
+        # dict objects `entries` is built from, not a separately-shaped
+        # list. Test fixtures need all three fields, or a filter bug here
+        # would look like a fixture bug instead (as it did the first time
+        # this test was written with docker_tag only, and again when
+        # grouping moved from filtering grouped_by_parent directly to
+        # grouping already-filtered entries by parent_id).
         grouped = {
             "env-parent": [
-                {"docker_tag": "my-tag-1", "tag": "my-tag-1", "image_type": "environment", "size_bytes": 10}
+                {
+                    "docker_tag": "my-tag-1",
+                    "tag": "my-tag-1",
+                    "parent_id": "env-parent",
+                    "image_type": "environment",
+                    "size_bytes": 10,
+                }
             ],
             "other-env-parent": [
-                {"docker_tag": "not-mine", "tag": "not-mine", "image_type": "environment", "size_bytes": 10}
+                {
+                    "docker_tag": "not-mine",
+                    "tag": "not-mine",
+                    "parent_id": "other-env-parent",
+                    "image_type": "environment",
+                    "size_bytes": 10,
+                }
             ],
-            "model-parent": [{"docker_tag": "my-tag-2", "tag": "my-tag-2", "image_type": "model", "size_bytes": 20}],
+            "model-parent": [
+                {
+                    "docker_tag": "my-tag-2",
+                    "tag": "my-tag-2",
+                    "parent_id": "model-parent",
+                    "image_type": "model",
+                    "size_bytes": 20,
+                }
+            ],
         }
         return {
             "schema_version": 2,
@@ -173,11 +209,15 @@ class TestFilterOldRevisions:
         assert result["summary"]["total_size_bytes"] == 30
 
     def test_entries_join_on_docker_tag_field_not_tag(self):
-        # old-revisions.json's grouped_by_parent entries use "docker_tag",
-        # not "tag" — confirm the generic _entry_tag() helper checks both.
-        data = {"summary": {}, "grouped_by_parent": {"p": [{"docker_tag": "my-tag-1"}]}, "entries": []}
+        # A entry with only "docker_tag" (no "tag") must still match —
+        # confirm the generic _entry_tag() helper checks both field names.
+        # Filtering now reads from `entries`, not `grouped_by_parent`
+        # directly, so the entry needs to actually be in `entries` (with its
+        # grouping key) for this to exercise anything real.
+        entry = {"docker_tag": "my-tag-1", "parent_id": "p"}
+        data = {"summary": {}, "grouped_by_parent": {"p": [entry]}, "entries": [entry]}
         result = filter_old_revisions(data, ORG_TAGS)
-        assert result["grouped_by_parent"] == {"p": [{"docker_tag": "my-tag-1"}]}
+        assert result["grouped_by_parent"] == {"p": [entry]}
 
     def test_standardized_entries_field_is_filtered_not_leaked(self):
         result = filter_old_revisions(self._data(), ORG_TAGS)
@@ -226,11 +266,14 @@ class TestFilterImageSizeReport:
 
 class TestFilterUserSizeReport:
     def _data(self):
+        # The real generator (user_size_report.py) puts `size_bytes` on
+        # every image as a standardized alias of `total_size_bytes` — needed
+        # since _recompute_size_summary sums `size_bytes` specifically.
         u1_images = [
-            {"tag": "my-tag-1", "total_size_bytes": 100, "user_id": "u1"},
-            {"tag": "not-mine", "total_size_bytes": 200, "user_id": "u1"},
+            {"tag": "my-tag-1", "total_size_bytes": 100, "size_bytes": 100, "user_id": "u1"},
+            {"tag": "not-mine", "total_size_bytes": 200, "size_bytes": 200, "user_id": "u1"},
         ]
-        u2_images = [{"tag": "not-mine", "total_size_bytes": 50, "user_id": "u2"}]
+        u2_images = [{"tag": "not-mine", "total_size_bytes": 50, "size_bytes": 50, "user_id": "u2"}]
         return {
             "schema_version": 2,
             "summary": {"total_users": 2, "total_images": 3, "count": 3, "total_size_bytes": 350},
@@ -348,3 +391,68 @@ class TestFilterDeletionAnalysis:
         result = filter_deletion_analysis(self._data(), ORG_TAGS)
         assert result["summary"]["count"] == 2
         assert result["summary"]["total_size_bytes"] == 40  # 10 + 30
+
+
+class TestFilteringReadsFromEntriesNotLegacyField:
+    """Each fixture's legacy field is deliberately empty/stale while
+    `entries` carries the real, matching data — proving the filter
+    functions read from `entries`, not from filtering their own legacy
+    structure independently. If a future change reverted that for just one
+    report type, these would catch it immediately."""
+
+    def test_archived_tags(self):
+        data = {
+            "summary": {},
+            "archived_tags": [],
+            "entries": [{"tag": "my-tag-1", "object_id": "a1", "size_bytes": 100}],
+        }
+        result = filter_archived_tags(data, ORG_TAGS)
+        assert [e["tag"] for e in result["archived_tags"]] == ["my-tag-1"]
+
+    def test_unused_environments(self):
+        data = {
+            "summary": {},
+            "grouped_by_object_id": {},
+            "entries": [{"tag": "my-tag-1", "object_id": "env1", "size_bytes": 50}],
+        }
+        result = filter_unused_environments(data, ORG_TAGS)
+        assert list(result["grouped_by_object_id"].keys()) == ["env1"]
+
+    def test_old_revisions(self):
+        data = {
+            "summary": {},
+            "grouped_by_parent": {},
+            "entries": [{"tag": "my-tag-1", "parent_id": "p1", "size_bytes": 10}],
+        }
+        result = filter_old_revisions(data, ORG_TAGS)
+        assert list(result["grouped_by_parent"].keys()) == ["p1"]
+
+    def test_image_size_report(self):
+        data = {"summary": {}, "images": [], "entries": [{"tag": "my-tag-1", "size_bytes": 100}]}
+        result = filter_image_size_report(data, ORG_TAGS)
+        assert [e["tag"] for e in result["images"]] == ["my-tag-1"]
+
+    def test_user_size_report(self):
+        data = {
+            "summary": {},
+            "users": [],
+            "entries": [{"tag": "my-tag-1", "user_id": "u1", "size_bytes": 100}],
+        }
+        result = filter_user_size_report(data, ORG_TAGS)
+        assert result["users"][0]["user_id"] == "u1"
+        assert [e["tag"] for e in result["users"][0]["images"]] == ["my-tag-1"]
+
+    def test_integrity_check(self):
+        data = {"summary": {}, "issues": [], "entries": [{"image_tag": "my-tag-1", "tag": "my-tag-1"}]}
+        result = filter_integrity_check(data, ORG_TAGS)
+        assert [e["tag"] for e in result["issues"]] == ["my-tag-1"]
+
+    def test_deletion_analysis(self):
+        data = {
+            "summary": {},
+            "unused_images": [],
+            "used_images": [],
+            "entries": [{"tag": "my-tag-1", "status": "unused", "size_bytes": 10}],
+        }
+        result = filter_deletion_analysis(data, ORG_TAGS)
+        assert [e["tag"] for e in result["unused_images"]] == ["my-tag-1"]
