@@ -66,16 +66,27 @@ def _filter_grouped(grouped: Dict[str, List[Dict[str, Any]]], org_tags: Set[str]
 
 
 def _recompute_size_summary(summary: Dict[str, Any], entries: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Best-effort: if `summary` already has a total_size_bytes/total_size_gb
-    field, recompute it as a sum over `entries`' size_bytes. Every other
-    summary field is left untouched by this helper."""
+    """Recompute the standardized `count`/`total_size_bytes`/`total_size_gb`
+    fields (docs/report-schema-standardization-plan.md — present in every
+    report's summary as of that change) as well as this report's own
+    identically-named legacy field, if present, over `entries`. Every other
+    summary field is left untouched by this helper.
+
+    IMPORTANT: `entries` here must be the *filtered* set — this is the same
+    computation that used to be merely best-effort for the legacy
+    `total_size_bytes`/`total_size_gb` fields, but since the standardization
+    change these are no longer optional/legacy-only: they're on every
+    report's summary now, so getting this right here is load-bearing, not
+    cosmetic.
+    """
     summary = dict(summary)
-    if "total_size_bytes" in summary or "total_size_gb" in summary:
-        size_bytes = sum(e.get("size_bytes", 0) or 0 for e in entries)
-        if "total_size_bytes" in summary:
-            summary["total_size_bytes"] = size_bytes
-        if "total_size_gb" in summary:
-            summary["total_size_gb"] = round(size_bytes / (1024**3), 2)
+    size_bytes = sum(e.get("size_bytes", 0) or 0 for e in entries)
+    if "count" in summary:
+        summary["count"] = len(entries)
+    if "total_size_bytes" in summary:
+        summary["total_size_bytes"] = size_bytes
+    if "total_size_gb" in summary:
+        summary["total_size_gb"] = round(size_bytes / (1024**3), 2)
     return summary
 
 
@@ -85,7 +96,7 @@ def filter_archived_tags(data: Dict[str, Any], org_tags: Set[str]) -> Dict[str, 
     if "total_archived_object_ids" in summary:
         summary["total_archived_object_ids"] = len({e["object_id"] for e in entries if e.get("object_id")})
     summary = _recompute_size_summary(summary, entries)
-    return {**data, "archived_tags": entries, "summary": summary}
+    return {**data, "archived_tags": entries, "entries": entries, "summary": summary}
 
 
 def filter_unused_environments(data: Dict[str, Any], org_tags: Set[str]) -> Dict[str, Any]:
@@ -95,7 +106,7 @@ def filter_unused_environments(data: Dict[str, Any], org_tags: Set[str]) -> Dict
     if "total_unused_environment_ids" in summary:
         summary["total_unused_environment_ids"] = len(grouped)
     summary = _recompute_size_summary(summary, flat)
-    return {**data, "grouped_by_object_id": grouped, "summary": summary}
+    return {**data, "grouped_by_object_id": grouped, "entries": flat, "summary": summary}
 
 
 def filter_old_revisions(data: Dict[str, Any], org_tags: Set[str]) -> Dict[str, Any]:
@@ -111,7 +122,7 @@ def filter_old_revisions(data: Dict[str, Any], org_tags: Set[str]) -> Dict[str, 
     if "models_affected" in summary:
         summary["models_affected"] = len({k for k, v in grouped.items() if v and v[0].get("image_type") == "model"})
     summary = _recompute_size_summary(summary, flat)
-    return {**data, "grouped_by_parent": grouped, "summary": summary}
+    return {**data, "grouped_by_parent": grouped, "entries": flat, "summary": summary}
 
 
 def filter_image_size_report(data: Dict[str, Any], org_tags: Set[str]) -> Dict[str, Any]:
@@ -122,15 +133,23 @@ def filter_image_size_report(data: Dict[str, Any], org_tags: Set[str]) -> Dict[s
     # This report's per-entry size field is total_size_bytes, not size_bytes —
     # adapt to _recompute_size_summary's expected field name.
     summary = _recompute_size_summary(summary, [{"size_bytes": e.get("total_size_bytes", 0)} for e in entries])
-    return {**data, "images": entries, "summary": summary}
+    return {**data, "images": entries, "entries": entries, "summary": summary}
 
 
 def filter_user_size_report(data: Dict[str, Any], org_tags: Set[str]) -> Dict[str, Any]:
     """user-size-report nests an `images` list under each user rather than
     being a flat tag-bearing list itself — filtered one level deeper: a
     user's entry is kept only if at least one of their images is in the
-    org's tag scope, with that nested list itself filtered down too."""
+    org's tag scope, with that nested list itself filtered down too.
+
+    The standardized `entries` field (docs/report-schema-standardization-plan.md)
+    is this report's flattened equivalent — one entry per (user, image)
+    pair, the same shape the generator itself produces — reconstructed here
+    from the already-filtered per-user image lists rather than filtered
+    separately, so the two can't drift apart.
+    """
     users = []
+    entries: List[Dict[str, Any]] = []
     for user in data.get("users", []):
         images = _filter_list(user.get("images", []), org_tags)
         if not images:
@@ -141,6 +160,7 @@ def filter_user_size_report(data: Dict[str, Any], org_tags: Set[str]) -> Dict[st
             user["image_count"] = len(images)
         user = _recompute_size_summary(user, [{"size_bytes": i.get("total_size_bytes", 0)} for i in images])
         users.append(user)
+        entries.extend(images)
 
     summary = dict(data.get("summary", {}))
     if "total_users" in summary:
@@ -148,7 +168,7 @@ def filter_user_size_report(data: Dict[str, Any], org_tags: Set[str]) -> Dict[st
     if "total_images" in summary:
         summary["total_images"] = sum(u.get("image_count", 0) for u in users)
     summary = _recompute_size_summary(summary, [{"size_bytes": u.get("total_size_bytes", 0)} for u in users])
-    return {**data, "users": users, "summary": summary}
+    return {**data, "users": users, "entries": entries, "summary": summary}
 
 
 def filter_integrity_check(data: Dict[str, Any], org_tags: Set[str]) -> Dict[str, Any]:
@@ -162,7 +182,8 @@ def filter_integrity_check(data: Dict[str, Any], org_tags: Set[str]) -> Dict[str
     summary = dict(data.get("summary", {}))
     if "total_issues" in summary:
         summary["total_issues"] = len(entries)
-    return {**data, "issues": entries, "summary": summary}
+    summary = _recompute_size_summary(summary, entries)
+    return {**data, "issues": entries, "entries": entries, "summary": summary}
 
 
 def filter_deletion_analysis(data: Dict[str, Any], org_tags: Set[str]) -> Dict[str, Any]:
@@ -175,7 +196,9 @@ def filter_deletion_analysis(data: Dict[str, Any], org_tags: Set[str]) -> Dict[s
         summary["used_images"] = len(used)
     if "total_images_analyzed" in summary:
         summary["total_images_analyzed"] = len(unused) + len(used)
-    return {**data, "unused_images": unused, "used_images": used, "summary": summary}
+    entries = unused + used
+    summary = _recompute_size_summary(summary, entries)
+    return {**data, "unused_images": unused, "used_images": used, "entries": entries, "summary": summary}
 
 
 # Maps a report filename PREFIX (matching frontend/app.py's

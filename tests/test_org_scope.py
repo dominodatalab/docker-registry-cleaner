@@ -41,6 +41,9 @@ def collections():
         "environments_v2": _empty_collection(),
         "environment_revisions": _empty_collection(),
         "users": _empty_collection(),
+        "model_versions": _empty_collection(),
+        "model_products": _empty_collection(),
+        "app_versions": _empty_collection(),
     }
 
 
@@ -273,6 +276,119 @@ class TestResolve:
         scope = resolver.resolve([str(org_id)])
 
         assert scope["project_ids"] == [str(project_id)]
+
+    def test_model_image_owned_by_org_project_is_visible(self, make_resolver, collections, mocker):
+        """model_versions.projectId (confirmed live) is the org-attribution
+        path for model images — not models.metadata.createdBy, which is
+        always an individual user. See org_scope.py's module docstring."""
+        org_id = ObjectId()
+        project_id = ObjectId()
+        version_id = ObjectId()
+        collections["projects"].find.return_value = [{"_id": project_id, "ownerId": org_id}]
+        collections["model_versions"].find.return_value = [{"_id": version_id, "projectId": project_id}]
+        mock_service_cls = mocker.patch("utils.org_scope.ImageUsageService")
+        mock_service_cls.return_value.collect_model_version_slugs.return_value = {str(version_id): "model-tag-1"}
+        resolver = make_resolver()
+
+        scope = resolver.resolve([str(org_id)])
+
+        assert scope["tags"] == ["model-tag-1"]
+        # Only called with ids that actually resolved to an owner — never an
+        # unfiltered "give me everything" call.
+        mock_service_cls.return_value.collect_model_version_slugs.assert_called_once_with([str(version_id)])
+
+    def test_model_version_with_no_owning_project_is_excluded(self, make_resolver, collections, mocker):
+        """A model_version whose projectId doesn't match any known project
+        (e.g. the project was deleted) contributes no tag — not an error,
+        and collect_model_version_slugs is never called with an empty list."""
+        version_id = ObjectId()
+        collections["model_versions"].find.return_value = [{"_id": version_id, "projectId": ObjectId()}]
+        mock_service_cls = mocker.patch("utils.org_scope.ImageUsageService")
+        resolver = make_resolver()
+
+        scope = resolver.resolve([str(ObjectId())])
+
+        assert scope["tags"] == []
+        mock_service_cls.return_value.collect_model_version_slugs.assert_not_called()
+
+    def test_model_version_with_no_slug_tag_contributes_nothing(self, make_resolver, collections, mocker):
+        """A model version that resolved to an owning project but has no
+        buildable slug tag (e.g. every build failed) is silently excluded,
+        not an error."""
+        org_id = ObjectId()
+        project_id = ObjectId()
+        version_id = ObjectId()
+        collections["projects"].find.return_value = [{"_id": project_id, "ownerId": org_id}]
+        collections["model_versions"].find.return_value = [{"_id": version_id, "projectId": project_id}]
+        mock_service_cls = mocker.patch("utils.org_scope.ImageUsageService")
+        mock_service_cls.return_value.collect_model_version_slugs.return_value = {}
+        resolver = make_resolver()
+
+        scope = resolver.resolve([str(org_id)])
+
+        assert scope["tags"] == []
+
+    def test_environment_used_by_org_app_is_visible(self, make_resolver, collections):
+        """Apps have no image of their own — they run on a compute
+        environment image (see org_scope.py's module docstring). This
+        confirms that environment image is attributed to the org owning the
+        app, via app_versions.appId -> model_products._id -> projectId
+        (confirmed live, a two-hop join since app_versions carries no owner
+        info of its own) — so it's recognized as still needed if the app
+        were re-run after a registry cleanup."""
+        org_id = ObjectId()
+        project_id = ObjectId()
+        product_id = ObjectId()
+        collections["projects"].find.return_value = [{"_id": project_id, "ownerId": org_id}]
+        collections["model_products"].find.return_value = [{"_id": product_id, "projectId": project_id}]
+        collections["app_versions"].aggregate.return_value = [
+            {"app_version_id": "av1", "app_id": product_id, "environment_docker_tag": "app-env-tag-1"},
+        ]
+        resolver = make_resolver()
+
+        scope = resolver.resolve([str(org_id)])
+
+        assert scope["tags"] == ["app-env-tag-1"]
+
+    def test_app_version_with_unowned_product_is_excluded(self, make_resolver, collections):
+        collections["app_versions"].aggregate.return_value = [
+            {"app_version_id": "av1", "app_id": ObjectId(), "environment_docker_tag": "app-env-tag-1"},
+        ]
+        resolver = make_resolver()
+
+        scope = resolver.resolve([str(ObjectId())])
+
+        assert scope["tags"] == []
+
+    def test_model_image_shared_with_other_org_is_named(self, make_resolver, collections, mocker):
+        my_org = ObjectId()
+        other_org = ObjectId()
+        my_project = ObjectId()
+        other_project = ObjectId()
+        v1, v2 = ObjectId(), ObjectId()
+        collections["projects"].find.return_value = [
+            {"_id": my_project, "ownerId": my_org},
+            {"_id": other_project, "ownerId": other_org},
+        ]
+        collections["model_versions"].find.return_value = [
+            {"_id": v1, "projectId": my_project},
+            {"_id": v2, "projectId": other_project},
+        ]
+        mock_service_cls = mocker.patch("utils.org_scope.ImageUsageService")
+        # Both model versions happen to resolve to the same shared slug tag.
+        mock_service_cls.return_value.collect_model_version_slugs.return_value = {
+            str(v1): "shared-model-tag",
+            str(v2): "shared-model-tag",
+        }
+        collections["organizations"].find.return_value = [{"_id": other_org, "name": "Other Org"}]
+        resolver = make_resolver()
+
+        scope = resolver.resolve([str(my_org)])
+
+        assert scope["tags"] == ["shared-model-tag"]
+        assert scope["other_owners"] == {
+            "shared-model-tag": [{"type": "organization", "id": str(other_org), "name": "Other Org"}]
+        }
 
 
 # ── resolve_org_scope (module-level convenience wrapper) ─────────────────────

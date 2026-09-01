@@ -16,14 +16,28 @@ an organization's own `_id` doubles as a pseudo-user document's `_id` in
 personal or org. So resolving "is this owner an org or a person" is a
 single lookup: check `organizations` first, fall back to `users`.
 
-Known v1 gap: model images (`models`/`model_versions`) and app images
-(`app_versions`) are not yet included. Neither collection carries a
-project-linkage field anywhere in this codebase (verified by search, not
-assumed), and `models.metadata.createdBy` (the only "owner" field that
-does exist) identifies the user who created the model, not the owning
-project/org — so it can't be used to attribute a model to an org's
-project the way `projects.ownerId` or `runs.projectId` can. See
-docs/org-scoped-access-plan.md for the status of this gap.
+Model images: `models.metadata.createdBy` identifies the individual who
+created a model, never an org — confirmed live, not just inferred — so
+it's never a usable org-attribution path. The real path, also confirmed
+live: `model_versions.projectId` (direct).
+
+Apps: apps have no image of their own in the registry — an app runs on a
+compute environment image, the same kind already tracked via
+`environments_v2`/`environment_revisions`. The reason this module looks at
+`app_versions` at all is to answer "would one of this org's apps need a
+registry image back if it were re-run after cleanup" — i.e. to make sure
+an environment image an org's app currently depends on counts as in-scope
+for that org, not to track some separate "app image" artifact. The
+attribution path, confirmed live: `app_versions.appId` →
+`model_products._id` → `model_products.projectId` (a two-hop join;
+`mongo_cleanup.py:133-138` already does the first hop, for an unrelated
+`isArchived` check, confirming the join itself is real and not
+speculative).
+
+Neither `model_versions.projectId` nor `model_products.projectId` was
+referenced anywhere in this codebase before this module. See
+docs/org-scoped-access-plan.md Appendix A for the full confirmed field
+inventory.
 """
 
 import logging
@@ -33,12 +47,14 @@ from bson import ObjectId
 from bson.errors import InvalidId
 
 from utils.extract_metadata import (
+    app_versions_env_usage_pipeline,
     organizations_env_usage_pipeline,
     projects_env_usage_pipeline,
     runs_env_usage_pipeline,
     scheduler_jobs_env_usage_pipeline,
     workspace_env_usage_pipeline,
 )
+from utils.image_usage import ImageUsageService
 from utils.mongo_utils import get_db, get_mongo_client
 
 logger = logging.getLogger(__name__)
@@ -143,6 +159,23 @@ class OrgScopeResolver:
         docs = self._db["projects"].find({}, {"_id": 1, "ownerId": 1})
         return {d["_id"]: d["ownerId"] for d in docs if d.get("ownerId") is not None}
 
+    def _model_version_owner_map(self, project_owner: Dict[ObjectId, ObjectId]) -> Dict[ObjectId, ObjectId]:
+        """model_versions._id -> project owner id, for every model version on
+        the instance (not just an org's own) — via the confirmed-live
+        `model_versions.projectId` field. Not `models.metadata.createdBy`,
+        which is always an individual user and never usable for org
+        attribution (confirmed live — see this module's docstring)."""
+        docs = self._db["model_versions"].find({}, {"_id": 1, "projectId": 1})
+        return {d["_id"]: project_owner[d["projectId"]] for d in docs if d.get("projectId") in project_owner}
+
+    def _model_product_owner_map(self, project_owner: Dict[ObjectId, ObjectId]) -> Dict[ObjectId, ObjectId]:
+        """model_products._id -> project owner id, for every product on the
+        instance — via the confirmed-live `model_products.projectId` field.
+        This is the join app_versions.appId needs one hop further to reach a
+        project owner (app_versions carries no owner info of its own)."""
+        docs = self._db["model_products"].find({}, {"_id": 1, "projectId": 1})
+        return {d["_id"]: project_owner[d["projectId"]] for d in docs if d.get("projectId") in project_owner}
+
     def _tag_owner_ids(self) -> Dict[str, Set[ObjectId]]:
         """tag -> set of owner ids (project owners, or the org directly, for
         every usage record on the instance) — the raw material both org's
@@ -177,6 +210,28 @@ class OrgScopeResolver:
                 "project_default_environment_docker_tag",
             ):
                 add(rec.get(tag_field), owner_id)
+
+        # Model images: model_versions.projectId (confirmed live) is the only
+        # usable org-attribution path — deliberately not model_env_usage_pipeline's
+        # base_environment_tag, which is a separate, often-shared dependency the
+        # model was built *from*, not an artifact the model's own project produced.
+        model_version_owner = self._model_version_owner_map(project_owner)
+        owned_version_ids = [vid for vid in model_version_owner]
+        if owned_version_ids:
+            slugs = ImageUsageService().collect_model_version_slugs([str(vid) for vid in owned_version_ids])
+            for vid in owned_version_ids:
+                add(slugs.get(str(vid)), model_version_owner[vid])
+
+        # Apps don't have an image of their own (see module docstring) — this
+        # attributes the *compute environment* image an org's app currently
+        # runs on, via app_versions.appId -> model_products._id -> projectId
+        # (a two-hop join, confirmed live). app_versions_env_usage_pipeline
+        # already resolves each app version's environment tag; it just never
+        # had a way to attribute an owner to it before now.
+        product_owner = self._model_product_owner_map(project_owner)
+        for rec in self._db["app_versions"].aggregate(app_versions_env_usage_pipeline()):
+            owner_id = product_owner.get(rec.get("app_id"))
+            add(rec.get("environment_docker_tag"), owner_id)
 
         return tag_owners
 
