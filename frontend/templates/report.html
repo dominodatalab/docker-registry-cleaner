@@ -691,12 +691,22 @@ function renderFinalReport(data) {
     return html;
 }
 
+// Standardized fields every report's summary now carries (see
+// docs/report-schema-standardization-plan.md) — meant for programmatic
+// consumers (e.g. org-scoped filtering), not for display here. Report
+// types with a dedicated renderer already only read the fields they name
+// explicitly, so this only matters for renderGenericReport's blind
+// iteration below (currently: old-revisions.json, the one report type
+// with no dedicated renderer).
+const STANDARDIZED_SUMMARY_FIELDS = new Set(['count', 'total_size_bytes', 'total_size_gb']);
+
 function renderGenericReport(data) {
     // Try to surface a summary block if present
     let html = '';
     if (data.summary && typeof data.summary === 'object') {
         html += '<div class="stats-grid">';
         Object.entries(data.summary).forEach(([key, val]) => {
+            if (STANDARDIZED_SUMMARY_FIELDS.has(key)) return;
             if (typeof val === 'number' || typeof val === 'string') {
                 const label = key.replaceAll('_', ' ');
                 const display = typeof val === 'number' && key.includes('bytes')

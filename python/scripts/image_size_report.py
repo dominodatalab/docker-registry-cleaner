@@ -29,7 +29,13 @@ from utils.config_manager import config_manager
 from utils.image_data_analysis import ImageAnalyzer
 from utils.image_metadata import build_environment_tag_to_metadata_mapping, build_model_tag_to_metadata_mapping
 from utils.logging_utils import get_logger, setup_logging
-from utils.report_utils import ensure_image_analysis_reports, save_json, sizeof_fmt
+from utils.report_utils import (
+    REPORT_SCHEMA_VERSION,
+    build_standard_summary,
+    ensure_image_analysis_reports,
+    save_json,
+    sizeof_fmt,
+)
 
 logger = get_logger(__name__)
 
@@ -137,6 +143,11 @@ def generate_image_size_report(analyzer: ImageAnalyzer, image_types: List[str] =
                 "image_id": image_id,
                 "image_type": image_type,
                 "tag": tag,
+                # `size_bytes` alias added alongside the existing
+                # `total_size_bytes` — the standardized per-entry field name
+                # every report uses, see
+                # docs/report-schema-standardization-plan.md.
+                "size_bytes": total_size_bytes,
                 "repository": image_data["repository"],
                 "digest": image_data.get("digest", ""),
                 "image_name": image_name,
@@ -174,6 +185,15 @@ def generate_image_size_report(analyzer: ImageAnalyzer, image_types: List[str] =
     )
 
     report_data["images"] = images_list
+
+    # `entries`/`schema_version`/`count` below are additive — see
+    # docs/report-schema-standardization-plan.md. No collision to resolve
+    # here: this report's existing total_size_bytes/total_size_gb already
+    # mean the same naive per-image sum the standardized fields define, so
+    # they come out identical, not overwritten with a different meaning.
+    report_data["schema_version"] = REPORT_SCHEMA_VERSION
+    report_data["entries"] = images_list
+    report_data["summary"].update(build_standard_summary(images_list))
 
     return report_data
 

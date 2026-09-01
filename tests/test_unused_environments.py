@@ -329,6 +329,84 @@ class TestGenerateReportProtectedVisibility:
         assert report["summary"]["protected_environment_count"] == 0
 
 
+class TestGenerateReportStandardSchema:
+    """generate_report()'s standardized entries/summary fields, additive
+    alongside grouped_by_object_id — see docs/report-schema-standardization-plan.md."""
+
+    def _finder(self, mocker):
+        from scripts.delete_unused_environments import UnusedEnvironmentsFinder
+
+        mock_service = MagicMock()
+        mock_service.load_mongodb_usage_reports.return_value = {}
+        mock_service.extract_docker_tags_with_usage_info.return_value = ({}, {})
+        mocker.patch("scripts.delete_unused_environments.ImageUsageService", return_value=mock_service)
+        return UnusedEnvironmentsFinder(registry_url="registry:5000", repository="repo")
+
+    def test_entries_flattens_grouped_by_object_id(self, mocker, mock_finder_deps):
+        from scripts.delete_unused_environments import UnusedEnvInfo
+
+        finder = self._finder(mocker)
+        env1, env2 = str(ObjectId()), str(ObjectId())
+        unused_tags = [
+            UnusedEnvInfo(
+                object_id=env1,
+                env_name="Env One",
+                image_type="environment",
+                tag=f"{env1}-1",
+                full_image=f"registry:5000/repo/environment:{env1}-1",
+                size_bytes=100,
+            ),
+            UnusedEnvInfo(
+                object_id=env2,
+                env_name="Env Two",
+                image_type="environment",
+                tag=f"{env2}-1",
+                full_image=f"registry:5000/repo/environment:{env2}-1",
+                size_bytes=200,
+            ),
+        ]
+        report = finder.generate_report([], unused_tags, freed_space_bytes=0)
+
+        assert len(report["entries"]) == 2
+        assert {e["object_id"] for e in report["entries"]} == {env1, env2}
+        # Same entries reachable through the legacy grouped structure.
+        assert report["grouped_by_object_id"][env1][0] in report["entries"]
+
+    def test_schema_version_present(self, mocker, mock_finder_deps):
+        from utils.report_utils import REPORT_SCHEMA_VERSION
+
+        finder = self._finder(mocker)
+        report = finder.generate_report([], [], freed_space_bytes=0)
+        assert report["schema_version"] == REPORT_SCHEMA_VERSION
+
+    def test_standardized_summary_alongside_legacy(self, mocker, mock_finder_deps):
+        from scripts.delete_unused_environments import UnusedEnvInfo
+
+        finder = self._finder(mocker)
+        env1 = str(ObjectId())
+        unused_tags = [
+            UnusedEnvInfo(
+                object_id=env1,
+                env_name="Env One",
+                image_type="environment",
+                tag=f"{env1}-1",
+                full_image=f"registry:5000/repo/environment:{env1}-1",
+                size_bytes=100,
+            )
+        ]
+        report = finder.generate_report([], unused_tags, freed_space_bytes=0)
+
+        assert report["summary"]["count"] == 1
+        assert report["summary"]["total_size_bytes"] == 100
+        assert report["summary"]["total_matching_tags"] == 1  # legacy field untouched
+
+    def test_empty_report_has_valid_standard_fields(self, mocker, mock_finder_deps):
+        finder = self._finder(mocker)
+        report = finder.generate_report([], [], freed_space_bytes=0)
+        assert report["entries"] == []
+        assert report["summary"]["count"] == 0
+
+
 class TestLoadUnusedTagsFromFileSafetyNet:
     """Tests that a saved/edited report can never be replayed to delete a protected environment."""
 

@@ -68,7 +68,7 @@ from utils.image_usage import ImageUsageService
 from utils.logging_utils import get_logger, setup_logging
 from utils.mongo_utils import get_mongo_client
 from utils.object_id_utils import read_typed_object_ids_from_file
-from utils.report_utils import ensure_mongodb_reports, save_json
+from utils.report_utils import REPORT_SCHEMA_VERSION, build_standard_summary, ensure_mongodb_reports, save_json
 
 logger = get_logger(__name__)
 
@@ -578,17 +578,35 @@ class OldRevisionCleaner(BaseDeletionScript):
             "environments_affected": env_count,
             "models_affected": model_count,
             "keep_revisions": self.keep_revisions,
-            "total_size_bytes": total_freed_bytes,
-            "total_size_gb": round(total_freed_bytes / (1024**3), 2),
+            # Dedup-aware (accounts for layers shared across the full candidate
+            # set — see this method's docstring) — kept under these names for
+            # backward compatibility. Renamed from the previous
+            # total_size_bytes/total_size_gb specifically because those names
+            # are now reserved, across every report, for the standardized
+            # *naive* per-entry sum below — see
+            # docs/report-schema-standardization-plan.md. Without this rename,
+            # the standardized fields would silently overwrite a
+            # differently-defined existing field of the same name.
+            "total_freed_size_bytes": total_freed_bytes,
+            "total_freed_size_gb": round(total_freed_bytes / (1024**3), 2),
         }
 
+        # Each entry carries both `docker_tag` (legacy field name, read by
+        # grouped_by_parent's existing consumers) and `tag` (the standardized
+        # name every report's entries use — see
+        # docs/report-schema-standardization-plan.md) plus `parent_id` (the
+        # grouping key, pushed onto the entry itself so `entries` doesn't need
+        # dict-keyed structure to know which environment/model a revision
+        # belongs to).
         grouped: Dict[str, list] = {}
         for parent_id, revisions in by_parent.items():
             grouped[parent_id] = [
                 {
                     "revision_id": r.revision_id,
                     "image_type": r.image_type,
+                    "parent_id": parent_id,
                     "parent_name": r.environment_name,
+                    "tag": r.docker_tag,
                     "docker_tag": r.docker_tag,
                     "full_image": r.full_image,
                     "size_bytes": r.size_bytes,
@@ -596,8 +614,15 @@ class OldRevisionCleaner(BaseDeletionScript):
                 for r in revisions
             ]
 
+        # `entries`/`schema_version`/the standardized summary fields below are
+        # additive — see docs/report-schema-standardization-plan.md.
+        # `grouped_by_parent` is kept as the deprecated legacy shape during the
+        # migration window.
+        entries = [entry for entries_for_parent in grouped.values() for entry in entries_for_parent]
         return {
-            "summary": summary,
+            "schema_version": REPORT_SCHEMA_VERSION,
+            "summary": {**summary, **build_standard_summary(entries)},
+            "entries": entries,
             "grouped_by_parent": grouped,
             "metadata": {
                 "registry_url": self.registry_url,
