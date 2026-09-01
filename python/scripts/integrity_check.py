@@ -28,7 +28,7 @@ from utils.config_manager import SkopeoClient, config_manager
 from utils.image_metadata import extract_model_tag_from_version_doc
 from utils.logging_utils import get_logger, setup_logging
 from utils.mongo_utils import get_mongo_client
-from utils.report_utils import get_reports_dir, save_json
+from utils.report_utils import REPORT_SCHEMA_VERSION, build_standard_summary, get_reports_dir, save_json
 from utils.tag_matching import model_tags_match
 
 logger = get_logger(__name__)
@@ -67,7 +67,19 @@ class IntegrityChecker:
                 summary["orphaned_with_image"] = with_image
                 summary["orphaned_without_image"] = without_image
 
-            return {"summary": summary, "issues": issues}
+            # `entries`/`schema_version`/the standardized summary fields below
+            # are additive — see docs/report-schema-standardization-plan.md.
+            # `tag` is added to every issue (aliasing `image_tag` where one was
+            # resolved, `None` otherwise) since most integrity issues are
+            # fundamentally referential problems with no image to speak of —
+            # `null` here is the honest answer, not a gap. No entry has a
+            # `size_bytes` either, so the standardized total_size_bytes below
+            # is always 0 for this report; that's expected, not a bug.
+            for issue in issues:
+                issue["tag"] = issue.get("image_tag")
+            summary.update(build_standard_summary(issues))
+
+            return {"schema_version": REPORT_SCHEMA_VERSION, "summary": summary, "issues": issues, "entries": issues}
         finally:
             mongo_client.close()
 

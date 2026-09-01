@@ -69,7 +69,14 @@ from utils.image_metadata import extract_model_tag_from_version_doc
 from utils.image_usage import ImageUsageService
 from utils.logging_utils import get_logger, setup_logging
 from utils.mongo_utils import get_mongo_client
-from utils.report_utils import ensure_mongodb_reports, get_timestamp_suffix, save_json, sizeof_fmt
+from utils.report_utils import (
+    REPORT_SCHEMA_VERSION,
+    build_standard_summary,
+    ensure_mongodb_reports,
+    get_timestamp_suffix,
+    save_json,
+    sizeof_fmt,
+)
 from utils.tag_matching import model_tags_match
 
 logger = get_logger(__name__)
@@ -1393,8 +1400,23 @@ class ArchivedTagsFinder(BaseDeletionScript):
 
         # Report structure: keep summary (counts only), archived_tags, and metadata
         # Remove large ObjectID lists and redundant grouped_by_object_id (not needed for deletion)
+        #
+        # `entries`/`schema_version`/the standardized summary fields below are
+        # additive — see docs/report-schema-standardization-plan.md. `archived_tags`
+        # is kept as a deprecated alias for `entries` during the migration window;
+        # both point at the same list.
+        entries = detailed_tags
         report = {
-            "summary": summary,
+            "schema_version": REPORT_SCHEMA_VERSION,
+            "summary": {
+                **summary,
+                # total_size_bytes/total_size_gb here are a naive sum over `entries`
+                # and will usually be *larger* than freed_space_gb above, which is
+                # dedup-aware (accounts for layers shared with images that would
+                # remain) — the two intentionally measure different things.
+                **build_standard_summary(entries),
+            },
+            "entries": entries,
             "archived_tags": detailed_tags,
             "metadata": {
                 "registry_url": self.registry_url,
