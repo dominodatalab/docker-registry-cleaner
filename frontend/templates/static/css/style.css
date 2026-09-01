@@ -72,6 +72,20 @@ body {
     line-height: 1;
 }
 
+.navbar-badge {
+    color: #fbbf24;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    list-style: none;
+    align-self: center;
+    line-height: 1;
+    border: 1px solid rgba(251, 191, 36, 0.4);
+    border-radius: 4px;
+    padding: 0.25rem 0.5rem;
+}
+
 /* Main Content */
 main {
     padding: 2rem 0;
@@ -551,6 +565,33 @@ footer p {
 .danger-text {
     color: #e53e3e;
     font-weight: 600;
+}
+
+/* Multi-org selector (U1) */
+.org-filter-card {
+    margin-bottom: 1.5rem;
+}
+
+.org-filter-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.9rem;
+    font-weight: normal;
+    cursor: pointer;
+}
+
+.org-filter-status {
+    font-size: 0.85rem;
+    color: #888;
+    font-style: italic;
+}
+
+/* Shared-image note (U3) */
+.shared-owner-note {
+    color: #92400e;
+    font-size: 0.78rem;
+    margin-top: 2px;
 }
 
 /* Alerts */

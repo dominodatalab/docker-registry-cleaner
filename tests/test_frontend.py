@@ -196,6 +196,164 @@ class TestLoadReportOrgScope:
             session["org_ids"] = ["org1"]
             assert load_report("image-size-report.json") is None
 
+    def test_uses_passed_org_scope_without_refetching(self, reports_dir, mocker):
+        """load_report(filename, org_scope=...) — U1/U3's callers (view_report,
+        api_report_detail) resolve scope themselves (possibly narrowed) and
+        pass it in, so this must not silently re-fetch its own (unnarrowed)
+        copy via _get_org_scope()."""
+        images = [{"tag": "my-tag", "size_bytes": 10}]
+        data = {"summary": {"total_images": 1}, "images": images, "entries": images}
+        (reports_dir / "image-size-report.json").write_text(json.dumps(data))
+        mock_get_scope = mocker.patch("app._get_org_scope")
+        passed_scope = {"org_ids": ["org1"], "project_ids": [], "tags": ["my-tag"], "other_owners": {}}
+        with app.test_request_context():
+            session["access_scope"] = "org_scoped"
+            session["org_ids"] = ["org1"]
+            result = load_report("image-size-report.json", org_scope=passed_scope)
+        assert [i["tag"] for i in result["images"]] == ["my-tag"]
+        mock_get_scope.assert_not_called()
+
+
+# ── U1: multi-org selector — narrowing helpers ──────────────────────────────────
+
+
+class TestOrgIdsOverride:
+    """_org_ids_override() reads ?narrow=1&org_ids=... off the query string.
+    The explicit `narrow` marker (not just org_ids' presence/absence) is
+    what distinguishes "no override" from "the user explicitly narrowed to
+    a subset, possibly the empty subset"."""
+
+    def test_returns_none_without_narrow_param(self):
+        with app.test_request_context("/reports/x.json"):
+            assert frontend_app._org_ids_override() is None
+
+    def test_returns_none_when_org_ids_present_but_not_narrowed(self):
+        # org_ids alone (no narrow=1) must not be mistaken for an override —
+        # otherwise a stray/unexpected query param could silently narrow scope.
+        with app.test_request_context("/reports/x.json?org_ids=org1"):
+            assert frontend_app._org_ids_override() is None
+
+    def test_returns_selected_org_ids_when_narrowed(self):
+        with app.test_request_context("/reports/x.json?narrow=1&org_ids=org1&org_ids=org2"):
+            assert frontend_app._org_ids_override() == ["org1", "org2"]
+
+    def test_returns_empty_list_for_explicit_empty_selection(self):
+        # Unchecking every org is a valid, meaningful choice: show nothing —
+        # distinct from "no override" (which falls back to the full set).
+        with app.test_request_context("/reports/x.json?narrow=1"):
+            assert frontend_app._org_ids_override() == []
+
+
+class TestGetOrgScopeNarrowing:
+    """_get_org_scope(org_ids_override=...) — U1's narrowed re-resolution.
+    Clamped to the session's own org_ids and never cached, unlike the
+    default (no-override) path exercised by TestGetOrgScope above."""
+
+    def _mock_scope_response(self, mocker, scope):
+        resp = MagicMock()
+        resp.json.return_value = scope
+        resp.raise_for_status.return_value = None
+        return mocker.patch("app.httpx.get", return_value=resp)
+
+    def test_clamps_override_to_session_org_ids(self, mocker):
+        mock_get = self._mock_scope_response(
+            mocker, {"org_ids": ["org1"], "project_ids": [], "tags": [], "other_owners": {}}
+        )
+        with app.test_request_context():
+            session["org_ids"] = ["org1", "org2"]
+            frontend_app._get_org_scope(["org1", "not-mine"])
+        requested = [oid for _, oid in mock_get.call_args.kwargs["params"]]
+        assert requested == ["org1"]  # "not-mine" dropped; "org2" never asked for (not selected)
+
+    def test_narrowed_request_not_cached(self, mocker):
+        mock_get = self._mock_scope_response(
+            mocker, {"org_ids": ["org1"], "project_ids": [], "tags": ["t1"], "other_owners": {}}
+        )
+        with app.test_request_context():
+            session["org_ids"] = ["org1"]
+            frontend_app._get_org_scope(["org1"])
+            frontend_app._get_org_scope(["org1"])
+            assert mock_get.call_count == 2  # no caching for narrowed requests
+            assert "org_scope_checked_at" not in session
+
+    def test_narrowed_call_does_not_clobber_the_unnarrowed_cache(self, mocker):
+        scope_full = {"org_ids": ["org1"], "project_ids": [], "tags": ["t1", "t2"], "other_owners": {}}
+        scope_narrow = {"org_ids": ["org1"], "project_ids": [], "tags": ["t1"], "other_owners": {}}
+        resp_full, resp_narrow = MagicMock(), MagicMock()
+        resp_full.json.return_value, resp_full.raise_for_status.return_value = scope_full, None
+        resp_narrow.json.return_value, resp_narrow.raise_for_status.return_value = scope_narrow, None
+        mocker.patch("app.httpx.get", side_effect=[resp_full, resp_narrow])
+        with app.test_request_context():
+            session["org_ids"] = ["org1"]
+            first = frontend_app._get_org_scope()  # caches scope_full
+            frontend_app._get_org_scope(["org1"])  # narrowed — must not overwrite the cache
+            second = frontend_app._get_org_scope()  # served from cache, still scope_full
+        assert first == scope_full
+        assert second == scope_full
+
+    def test_empty_override_selection_returns_empty_scope_without_backend_call(self, mocker):
+        mock_get = mocker.patch("app.httpx.get")
+        with app.test_request_context():
+            session["org_ids"] = ["org1"]
+            result = frontend_app._get_org_scope([])
+        assert result == {"org_ids": [], "project_ids": [], "tags": [], "other_owners": {}}
+        mock_get.assert_not_called()
+
+
+class TestOrgScopeViewRoute:
+    """GET /api/org-scope-view — the frontend-facing view report.html's JS
+    polls on every org-filter checkbox change (U1), and the source of
+    U3's `other_owners`."""
+
+    def test_admin_session_gets_empty_scope_without_backend_call(self, client, mocker):
+        mock_get = mocker.patch("app.httpx.get")
+        with client.session_transaction() as sess:
+            sess["access_scope"] = "admin"
+        r = client.get("/api/org-scope-view")
+        assert r.status_code == 200
+        assert r.get_json() == {"org_ids": [], "project_ids": [], "tags": [], "other_owners": {}}
+        mock_get.assert_not_called()
+
+    def test_org_scoped_session_gets_resolved_scope(self, client, mocker):
+        scope = {
+            "org_ids": ["org1"],
+            "project_ids": [],
+            "tags": ["t1"],
+            "other_owners": {"t1": [{"type": "user", "id": "u1", "name": "Alice"}]},
+        }
+        resp = MagicMock()
+        resp.json.return_value = scope
+        resp.raise_for_status.return_value = None
+        mocker.patch("app.httpx.get", return_value=resp)
+        with client.session_transaction() as sess:
+            sess["access_scope"] = "org_scoped"
+            sess["org_ids"] = ["org1"]
+        r = client.get("/api/org-scope-view")
+        assert r.status_code == 200
+        assert r.get_json() == scope
+
+    def test_narrowing_via_query_params(self, client, mocker):
+        resp = MagicMock()
+        resp.json.return_value = {"org_ids": ["org1"], "project_ids": [], "tags": [], "other_owners": {}}
+        resp.raise_for_status.return_value = None
+        mock_get = mocker.patch("app.httpx.get", return_value=resp)
+        with client.session_transaction() as sess:
+            sess["access_scope"] = "org_scoped"
+            sess["org_ids"] = ["org1", "org2"]
+        client.get("/api/org-scope-view?narrow=1&org_ids=org1")
+        requested = [oid for _, oid in mock_get.call_args.kwargs["params"]]
+        assert requested == ["org1"]
+
+    def test_backend_unreachable_returns_503(self, client, mocker):
+        import httpx as _httpx
+
+        mocker.patch("app.httpx.get", side_effect=_httpx.ConnectError("refused"))
+        with client.session_transaction() as sess:
+            sess["access_scope"] = "org_scoped"
+            sess["org_ids"] = ["org1"]
+        r = client.get("/api/org-scope-view")
+        assert r.status_code == 503
+
 
 class TestGetOrgScope:
     def test_no_org_ids_returns_empty_scope_without_backend_call(self, mocker):
@@ -262,6 +420,7 @@ class TestResolveAccessScope:
         with client.session_transaction() as sess:
             assert sess["access_scope"] == "org_scoped"
             assert sess["org_ids"] == ["org1"]
+            assert sess["org_names"] == {"org1": "Team A"}  # kept for U1's selector labels
 
     def test_denied_when_no_org_membership(self, client, reports_dir, monkeypatch, mocker):
         monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
@@ -334,6 +493,161 @@ class TestResolveAccessScope:
         r2 = client.get("/")
         assert r2.status_code == 403
         assert mock_get.call_count == 2  # denial itself is cached too
+
+
+# ── U2: org-scoped sessions are read-only — no job-triggering ──────────────────
+
+
+class TestOperationsBlockedForOrgScoped:
+    """Org-scoped members get read-only reporting only — no job-triggering,
+    no destructive actions (docs/org-scoped-access-plan.md §3.2, decided).
+    base.html hides the Operations nav link and buttons for this scope
+    (not asserted here — no JS/HTML-rendering test harness in this repo),
+    but that's not enforcement: resolve_access_scope() must reject a direct
+    request to any of these routes too, admin sessions unaffected."""
+
+    def _seed_org_scoped_session(self, client, monkeypatch):
+        # DOMINO_API_URL must be set for resolve_access_scope() to run at
+        # all; seeding auth_checked_at recent enough puts every request
+        # through the cache-hit branch (the common case, and the one that
+        # silently regressed if only the fresh-resolution branch rejects).
+        monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        with client.session_transaction() as sess:
+            sess["access_scope"] = "org_scoped"
+            sess["domino_username"] = "bob"
+            sess["org_ids"] = ["org1"]
+            sess["org_names"] = {"org1": "Team A"}
+            sess["auth_checked_at"] = time.time()
+
+    def test_operations_page_rejected(self, client, monkeypatch):
+        self._seed_org_scoped_session(client, monkeypatch)
+        r = client.get("/operations")
+        assert r.status_code == 403
+
+    def test_api_operations_catalogue_rejected(self, client, monkeypatch):
+        self._seed_org_scoped_session(client, monkeypatch)
+        r = client.get("/api/operations")
+        assert r.status_code == 403
+        assert "error" in r.get_json()
+
+    def test_api_jobs_list_rejected(self, client, monkeypatch):
+        self._seed_org_scoped_session(client, monkeypatch)
+        r = client.get("/api/jobs")
+        assert r.status_code == 403
+
+    def test_api_jobs_create_rejected_without_reaching_backend(self, client, monkeypatch, mocker):
+        self._seed_org_scoped_session(client, monkeypatch)
+        mock_post = mocker.patch("app.httpx.post")
+        r = client.post("/api/jobs", json={"operation": "health_check", "params": {}})
+        assert r.status_code == 403
+        mock_post.assert_not_called()
+
+    def test_api_job_status_rejected(self, client, monkeypatch):
+        self._seed_org_scoped_session(client, monkeypatch)
+        r = client.get("/api/jobs/abc123")
+        assert r.status_code == 403
+
+    def test_api_job_cancel_rejected(self, client, monkeypatch):
+        self._seed_org_scoped_session(client, monkeypatch)
+        r = client.delete("/api/jobs/abc123")
+        assert r.status_code == 403
+
+    def test_reports_routes_unaffected(self, client, monkeypatch, reports_dir):
+        self._seed_org_scoped_session(client, monkeypatch)
+        r = client.get("/")
+        assert r.status_code == 200
+
+    def test_admin_session_still_allowed(self, client, monkeypatch):
+        monkeypatch.setattr(frontend_app, "DOMINO_API_URL", "https://domino.example.com")
+        with client.session_transaction() as sess:
+            sess["access_scope"] = "admin"
+            sess["domino_username"] = "alice"
+            sess["auth_checked_at"] = time.time()
+        r = client.get("/operations")
+        assert r.status_code == 200
+
+
+# ── U1/U3: multi-org selector + shared-image note in report.html ───────────────
+
+
+class TestOrgScopedTemplateRendering:
+    def test_operations_link_hidden_for_org_scoped(self, client, reports_dir):
+        with client.session_transaction() as sess:
+            sess["access_scope"] = "org_scoped"
+            sess["org_ids"] = ["org1"]
+        r = client.get("/")
+        assert r.status_code == 200
+        assert b'href="/operations"' not in r.data
+        assert b"Read-only" in r.data
+
+    def test_operations_link_shown_for_admin(self, client, reports_dir):
+        with client.session_transaction() as sess:
+            sess["access_scope"] = "admin"
+        r = client.get("/")
+        assert r.status_code == 200
+        assert b'href="/operations"' in r.data
+
+    def test_org_filter_card_shown_for_multi_org_session(self, client, reports_dir, mocker):
+        data = {"summary": {}, "images": [], "entries": []}
+        (reports_dir / "image-size-report.json").write_text(json.dumps(data))
+        mocker.patch(
+            "app._get_org_scope",
+            return_value={"org_ids": ["org1", "org2"], "project_ids": [], "tags": [], "other_owners": {}},
+        )
+        with client.session_transaction() as sess:
+            sess["access_scope"] = "org_scoped"
+            sess["org_ids"] = ["org1", "org2"]
+            sess["org_names"] = {"org1": "Team A", "org2": "Team B"}
+        r = client.get("/reports/image-size-report.json")
+        assert r.status_code == 200
+        assert b"Team A" in r.data
+        assert b"Team B" in r.data
+        assert b'class="org-filter-checkbox"' in r.data
+
+    def test_org_filter_card_hidden_for_single_org_session(self, client, reports_dir, mocker):
+        # No narrowing decision to make with only one org — matches U1's
+        # acceptance criteria (the selector is meaningful for 2+ orgs).
+        data = {"summary": {}, "images": [], "entries": []}
+        (reports_dir / "image-size-report.json").write_text(json.dumps(data))
+        mocker.patch(
+            "app._get_org_scope",
+            return_value={"org_ids": ["org1"], "project_ids": [], "tags": [], "other_owners": {}},
+        )
+        with client.session_transaction() as sess:
+            sess["access_scope"] = "org_scoped"
+            sess["org_ids"] = ["org1"]
+            sess["org_names"] = {"org1": "Team A"}
+        r = client.get("/reports/image-size-report.json")
+        assert r.status_code == 200
+        assert b'class="org-filter-checkbox"' not in r.data
+
+    def test_other_owners_injected_for_org_scoped_view(self, client, reports_dir, mocker):
+        data = {"summary": {}, "images": [{"tag": "shared-tag"}], "entries": [{"tag": "shared-tag"}]}
+        (reports_dir / "image-size-report.json").write_text(json.dumps(data))
+        mocker.patch(
+            "app._get_org_scope",
+            return_value={
+                "org_ids": ["org1"],
+                "project_ids": [],
+                "tags": ["shared-tag"],
+                "other_owners": {"shared-tag": [{"type": "organization", "id": "org2", "name": "Team B"}]},
+            },
+        )
+        with client.session_transaction() as sess:
+            sess["access_scope"] = "org_scoped"
+            sess["org_ids"] = ["org1"]
+        r = client.get("/reports/image-size-report.json")
+        assert r.status_code == 200
+        assert b"Team B" in r.data  # embedded in the `otherOwners` JS global
+
+    def test_other_owners_empty_for_admin_view(self, client, reports_dir):
+        data = {"summary": {}, "images": []}
+        (reports_dir / "image-size-report.json").write_text(json.dumps(data))
+        with client.session_transaction() as sess:
+            sess["access_scope"] = "admin"
+        r = client.get("/reports/image-size-report.json")
+        assert r.status_code == 200
+        assert b"let otherOwners = {};" in r.data
 
 
 # ── Flask routes ───────────────────────────────────────────────────────────────

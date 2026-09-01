@@ -142,6 +142,25 @@
     <h2>{{ filename }}</h2>
 </div>
 
+{% if is_org_scoped and orgs|length > 1 %}
+<!-- Multi-org selector (U1): all orgs checked by default (union); unchecking
+     one narrows the view. Tags aren't attributed per-org in the org-scope
+     response (it's a flat union), so narrowing re-requests the backend with
+     an explicit org_ids selection rather than re-filtering client-side —
+     see the JS below and docs/org-scoped-access-tickets.md's U1. -->
+<div class="card org-filter-card">
+    <div class="card-body" style="display:flex; align-items:center; gap:1rem; flex-wrap:wrap;">
+        <strong>Organizations:</strong>
+        {% for org in orgs %}
+        <label class="org-filter-option">
+            <input type="checkbox" class="org-filter-checkbox" value="{{ org.id }}" checked> {{ org.name }}
+        </label>
+        {% endfor %}
+        <span id="org-filter-status" class="org-filter-status"></span>
+    </div>
+</div>
+{% endif %}
+
 <div class="tabs">
     <button class="tab active" onclick="switchTab('summary', event)">Summary</button>
     <button class="tab" onclick="switchTab('raw', event)">Raw JSON</button>
@@ -155,14 +174,19 @@
 
 <div id="raw-tab" class="tab-content">
     <div class="json-viewer">
-        <pre>{{ report_data }}</pre>
+        <pre id="raw-json">{{ report_data }}</pre>
     </div>
 </div>
 
 <script>
-const reportData = {{ report_data | safe }};
+let reportData = {{ report_data | safe }};
 const reportType = "{{ report_type }}";
 const dominoUrl = {{ domino_url | tojson }};
+const filename = {{ filename | tojson }};
+// tag -> [{type, id, name}] for every one of this org's tags also used by
+// another org/user (D3) — empty for admin sessions. Re-fetched by the
+// multi-org selector's JS below on every narrowing change (U3).
+let otherOwners = {{ other_owners | safe }};
 
 // ── Domino link helpers ──────────────────────────────────────────────────────
 
@@ -246,6 +270,24 @@ function table(headers, rows) {
 
 function sectionTitle(text) {
     return `<div class="section-title">${text}</div>`;
+}
+
+// ── Shared-image note (U3) ──────────────────────────────────────────────────
+// For an org-scoped session, flags a tag that's also used by another org or
+// user (D3's "who else uses this" data) — destructive action on a shared
+// image needs an admin, since it'd affect an owner other than the viewer's
+// own org(s). No-op (empty string) for admin sessions, where otherOwners is
+// always {}.
+function sharedOwnerNote(tag) {
+    const owners = (otherOwners && otherOwners[tag]) || [];
+    if (!owners.length) return '';
+    const names = owners.map(o => o.name || o.id).join(', ');
+    return `<div class="shared-owner-note">⚠ Also used by ${names} — admin required to remove</div>`;
+}
+
+function tagCell(tag) {
+    if (!tag) return '—';
+    return tag + sharedOwnerNote(tag);
 }
 
 // ── Shared usage details renderer ───────────────────────────────────────────
@@ -369,7 +411,7 @@ function renderUnusedEnvironmentsReport(data) {
             rows.push([
                 item.env_name || item.object_id || '—',
                 item.image_type || '—',
-                item.tag || '—',
+                tagCell(item.tag),
                 formatBytes(item.size_bytes),
                 item.usage_summary || '—',
             ]);
@@ -407,7 +449,7 @@ function renderArchivedTagsReport(data) {
         html += sectionTitle(`Archived Tags (${items.length} total)`);
         const rows = items.slice(0, 100).map(item => [
             item.image_type || '—',
-            item.tag || '—',
+            tagCell(item.tag),
             formatBytes(item.size_bytes),
             item.usage_summary || '—',
         ]);
@@ -576,7 +618,7 @@ function renderSizeReport(data) {
             const rows = (data.images || []).slice(0, 100).map(img => [
                 img.image_type || '—',
                 img.user_name || img.owner_login_id || '—',
-                img.tag || '—',
+                tagCell(img.tag),
                 formatBytes(img.total_size_bytes),
                 formatBytes(img.freed_space_bytes),
             ]);
@@ -669,6 +711,7 @@ function renderDeletionResultsReport(data) {
             html += `<details style="margin-bottom:8px;border:1px solid #fde68a;border-radius:4px;">
                 <summary style="padding:10px 14px;cursor:pointer;background:#fefce8;border-radius:4px;list-style:none;">
                     <div style="font-family:monospace;font-size:0.82rem;margin-bottom:${summaryItems.length ? '6px' : '0'};">${shortTag}</div>
+                    ${sharedOwnerNote(img.tag)}
                     ${summaryItems.length ? `<div style="font-size:0.85rem;">${inlineLinks}${overflowNote}</div>` : ''}
                 </summary>
                 <div style="padding:8px 14px 14px;">
@@ -803,5 +846,55 @@ function renderSummary() {
 }
 
 renderSummary();
+
+// ── Multi-org selector (U1) ─────────────────────────────────────────────────
+// Only present for org-scoped sessions with 2+ orgs (see the card above).
+// The org-scope resolution has no per-org tag attribution — GET
+// /api/org-scope returns a flat union of tags visible to *any* of the given
+// orgs, not tag -> owning-org — so narrowing to a subset can only come from
+// asking the backend to re-resolve against a smaller org set, not from
+// re-filtering already-fetched data client-side. Re-fetches both the report
+// content (already filtered/reshaped server-side) and the org-scope view
+// (for U3's otherOwners, which also depends on which orgs are selected) on
+// every checkbox change, then re-runs the same renderSummary() used on
+// initial load — no page reload.
+(function () {
+    const checkboxes = Array.from(document.querySelectorAll('.org-filter-checkbox'));
+    if (!checkboxes.length) return;
+    const statusEl = document.getElementById('org-filter-status');
+
+    function buildParams() {
+        const params = new URLSearchParams();
+        params.set('narrow', '1');
+        checkboxes.filter(cb => cb.checked).forEach(cb => params.append('org_ids', cb.value));
+        return params;
+    }
+
+    async function refetch() {
+        const params = buildParams();
+        const selectedCount = params.getAll('org_ids').length;
+        statusEl.textContent = 'Updating…';
+        try {
+            const [reportResp, scopeResp] = await Promise.all([
+                fetch(`${API_BASE}/api/reports/${encodeURIComponent(filename)}?${params}`),
+                fetch(`${API_BASE}/api/org-scope-view?${params}`),
+            ]);
+            if (!reportResp.ok) throw new Error(`HTTP ${reportResp.status}`);
+            reportData = await reportResp.json();
+            otherOwners = scopeResp.ok ? ((await scopeResp.json()).other_owners || {}) : {};
+
+            renderSummary();
+            document.getElementById('raw-json').textContent = JSON.stringify(reportData, null, 2);
+
+            statusEl.textContent = selectedCount === checkboxes.length
+                ? ''
+                : `Showing ${selectedCount} of ${checkboxes.length} organizations`;
+        } catch (e) {
+            statusEl.textContent = `Failed to update: ${e.message}`;
+        }
+    }
+
+    checkboxes.forEach(cb => cb.addEventListener('change', refetch));
+}());
 </script>
 {% endblock %}

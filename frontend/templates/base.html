@@ -15,8 +15,11 @@
             </div>
             <ul class="navbar-menu">
                 <li><a href="{{ url_for('index') }}" class="{% if request.endpoint == 'index' %}active{% endif %}">Reports</a></li>
+                {% if not is_org_scoped %}
                 <li><a href="{{ url_for('operations') }}" class="{% if request.endpoint == 'operations' %}active{% endif %}">Operations</a></li>
+                {% endif %}
                 {% if domino_username %}<li class="navbar-user">{{ domino_username }}</li>{% endif %}
+                {% if is_org_scoped %}<li class="navbar-badge" title="Organization member: read-only reporting">Read-only</li>{% endif %}
             </ul>
         </div>
     </nav>

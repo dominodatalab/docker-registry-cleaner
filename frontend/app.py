@@ -98,7 +98,9 @@ def resolve_access_scope():
         cached_scope = session.get("access_scope")
         if cached_scope == SCOPE_DENIED:
             return _deny(authenticated=True)
-        if cached_scope in (SCOPE_ADMIN, SCOPE_ORG):
+        if cached_scope == SCOPE_ORG:
+            return _reject_org_scoped_operations()
+        if cached_scope == SCOPE_ADMIN:
             return
         # Missing/unrecognized cache entry — fall through and re-check.
 
@@ -125,22 +127,25 @@ def resolve_access_scope():
         _cache_scope(SCOPE_ADMIN, username=username)
         return
 
-    org_ids = _fetch_org_ids(cookie_header)
-    if org_ids is None:
+    orgs = _fetch_orgs(cookie_header)
+    if orgs is None:
         # Org-membership lookup was unreachable — fail closed, same as the
         # principal check above.
         return _auth_service_unavailable()
 
-    if org_ids:
-        _cache_scope(SCOPE_ORG, username=username, org_ids=org_ids)
-        return
+    if orgs:
+        _cache_scope(SCOPE_ORG, username=username, orgs=orgs)
+        return _reject_org_scoped_operations()
 
     _cache_scope(SCOPE_DENIED, username=username)
     return _deny(authenticated=True)
 
 
-def _fetch_org_ids(cookie_header: str) -> Optional[List[str]]:
-    """Return the ids of the orgs the cookie-forwarded caller belongs to.
+def _fetch_orgs(cookie_header: str) -> Optional[List[Dict[str, str]]]:
+    """Return {"id", "name"} for every org the cookie-forwarded caller
+    belongs to. Names are kept (not just ids) so the multi-org selector
+    (U1) has something readable to label its checkboxes with — org_ids
+    alone was sufficient for A2/D4's filtering but not for a usable UI.
 
     Returns None (not an empty list) if the lookup itself couldn't be made —
     that's the "Nucleus unreachable" case, distinct from "reachable, caller
@@ -157,15 +162,53 @@ def _fetch_org_ids(cookie_header: str) -> Optional[List[str]]:
     if resp.status_code != 200:
         return None
     orgs = resp.json().get("orgs", [])
-    return [org["id"] for org in orgs if "id" in org]
+    return [{"id": org["id"], "name": org.get("name") or org["id"]} for org in orgs if "id" in org]
 
 
-def _cache_scope(scope: str, username: str = "", org_ids: Optional[List[str]] = None):
+def _cache_scope(scope: str, username: str = "", orgs: Optional[List[Dict[str, str]]] = None):
     """Store a resolved access scope in the Flask session for AUTH_CACHE_TTL_SECONDS."""
+    orgs = orgs or []
     session["access_scope"] = scope
     session["domino_username"] = username
-    session["org_ids"] = org_ids or []
+    session["org_ids"] = [o["id"] for o in orgs]
+    session["org_names"] = {o["id"]: o["name"] for o in orgs}
     session["auth_checked_at"] = time.time()
+
+
+# Job-triggering / operation-launching endpoints — org-scoped members get
+# read-only reporting only, no job-triggering, no destructive actions
+# (docs/org-scoped-access-plan.md §3.2, decided). The UI already hides
+# these (base.html's nav, U2), but that's not enforcement — a scoped
+# session hitting one of these routes directly must be rejected here too
+# (defense in depth, same §3.2), even though the *backend's* own API-key
+# identity gap (§2.1, out of scope for v1) means the backend itself can't
+# yet distinguish an org-scoped caller from an admin one.
+_OPERATIONS_ENDPOINTS = {
+    "operations",
+    "proxy_list_operations",
+    "proxy_list_jobs",
+    "proxy_create_job",
+    "proxy_get_job",
+    "proxy_cancel_job",
+}
+
+_ORG_READ_ONLY_MESSAGE = (
+    "This view is read-only for organization members: job-triggering and destructive "
+    "operations require Domino administrator privileges."
+)
+
+
+def _reject_org_scoped_operations():
+    """Called once a request's access scope is confirmed org-scoped (both
+    the cache-hit and freshly-resolved paths above) — rejects the request
+    if it's aimed at the operations surface, otherwise lets it through
+    (returning None from a before_request hook means "continue normally").
+    """
+    if request.endpoint in _OPERATIONS_ENDPOINTS:
+        if request.path.startswith("/api/"):
+            return jsonify({"error": _ORG_READ_ONLY_MESSAGE}), 403
+        return render_template("error.html", message=_ORG_READ_ONLY_MESSAGE), 403
+    return None
 
 
 def _auth_service_unavailable():
@@ -199,11 +242,16 @@ def _deny(authenticated: bool):
 def inject_auth():
     """Make the logged-in username and resolved access scope available in all templates."""
     scope = session.get("access_scope", "")
+    org_ids = session.get("org_ids", [])
+    org_names = session.get("org_names", {})
     return {
         "domino_username": session.get("domino_username", ""),
         "is_domino_admin": scope == SCOPE_ADMIN,
         "is_org_scoped": scope == SCOPE_ORG,
-        "org_ids": session.get("org_ids", []),
+        "org_ids": org_ids,
+        # {"id", "name"} pairs for every org the session belongs to — the
+        # multi-org selector (U1) renders these as its checkbox labels.
+        "orgs": [{"id": oid, "name": org_names.get(oid, oid)} for oid in org_ids],
     }
 
 
@@ -220,7 +268,7 @@ def _backend_headers() -> Dict[str, str]:
 _EMPTY_ORG_SCOPE = {"org_ids": [], "project_ids": [], "tags": [], "other_owners": {}}
 
 
-def _get_org_scope() -> Optional[Dict]:
+def _get_org_scope(org_ids_override: Optional[List[str]] = None) -> Optional[Dict]:
     """Fetch (or return the cached) org-scope resolution for the current
     org-scoped session, via the backend's GET /api/org-scope
     (docs/org-scoped-access-plan.md §3.3, Option C). Cached in the Flask
@@ -228,19 +276,35 @@ def _get_org_scope() -> Optional[Dict]:
     aggregation work on the backend — not something to redo on every single
     report view.
 
+    org_ids_override, when given, narrows the resolution to a subset of
+    the session's own orgs (U1's multi-org selector) — clamped to the
+    session's actual org_ids here, not just trusted from the caller, so a
+    scoped session can never resolve scope for an org it doesn't belong
+    to no matter what a request asks for. A narrowed request always hits
+    the backend fresh rather than using/updating the session cache: it's a
+    deliberate, occasional interactive choice (a user unchecking an org),
+    not the page-load hot path the cache exists for, and caching every
+    distinct subset a session might ask for isn't worth the complexity.
+
     Returns None if the backend call itself failed (as opposed to
     succeeding with an empty scope) — callers must treat that as "couldn't
     determine scope" and fail closed, not fail open.
     """
-    org_ids = session.get("org_ids", [])
+    session_org_ids = session.get("org_ids", [])
+    if org_ids_override is not None:
+        org_ids = [oid for oid in org_ids_override if oid in session_org_ids]
+    else:
+        org_ids = session_org_ids
+
     if not org_ids:
         return dict(_EMPTY_ORG_SCOPE)
 
-    cached_at = session.get("org_scope_checked_at")
-    if cached_at is not None and (time.time() - cached_at) < _ORG_SCOPE_CACHE_TTL:
-        cached = session.get("org_scope")
-        if cached is not None:
-            return cached
+    if org_ids_override is None:
+        cached_at = session.get("org_scope_checked_at")
+        if cached_at is not None and (time.time() - cached_at) < _ORG_SCOPE_CACHE_TTL:
+            cached = session.get("org_scope")
+            if cached is not None:
+                return cached
 
     try:
         resp = httpx.get(
@@ -255,9 +319,22 @@ def _get_org_scope() -> Optional[Dict]:
         print(f"Error fetching org scope: {e}")
         return None
 
-    session["org_scope"] = scope
-    session["org_scope_checked_at"] = time.time()
+    if org_ids_override is None:
+        session["org_scope"] = scope
+        session["org_scope_checked_at"] = time.time()
     return scope
+
+
+def _org_ids_override() -> Optional[List[str]]:
+    """Read a `?narrow=1&org_ids=...` narrowing selection off the query
+    string (U1's multi-org selector) — the explicit `narrow` marker (not
+    just the presence/absence of `org_ids`) is what distinguishes "no
+    override, use the session's full org set" from "the user deliberately
+    narrowed to a subset, possibly the empty subset" (unchecking every
+    box is a valid, meaningful selection: show nothing)."""
+    if request.args.get("narrow") != "1":
+        return None
+    return request.args.getlist("org_ids")
 
 
 _USER_FACING_REPORT_PREFIXES = (
@@ -303,11 +380,19 @@ def format_bytes(bytes_size: int) -> str:
     return f"{bytes_size:.2f} PB"
 
 
-def load_report(filename: str) -> Optional[Dict]:
+def load_report(filename: str, org_scope: Optional[Dict] = None) -> Optional[Dict]:
     """Load and parse a JSON report file, filtered to the caller's org
     scope when the session is org-scoped (docs/org-scoped-access-plan.md
     §3.2/§3.3). Admin sessions are unaffected — this returns exactly what
     it always has for them.
+
+    org_scope, when given, is used instead of fetching it here — callers
+    that also need the same scope resolution for something else (U1's
+    narrowed re-fetch, U3's "also used by" note) fetch it once themselves
+    and pass it in, rather than this function silently re-fetching (and
+    re-hitting the backend/session cache) a second time. Defaults to None,
+    which preserves this function's original behavior exactly: resolve the
+    session's own (unnarrowed) scope itself via _get_org_scope().
     """
     try:
         file_path = REPORTS_DIR / filename
@@ -327,7 +412,8 @@ def load_report(filename: str) -> Optional[Dict]:
             # these, whether by browsing or by requesting the filename
             # directly. Treat identically to "file not found".
             return None
-        org_scope = _get_org_scope()
+        if org_scope is None:
+            org_scope = _get_org_scope()
         if org_scope is None:
             # Backend unreachable — fail closed, same philosophy as every
             # other network call this feature makes (§2.1/§3.1).
@@ -354,10 +440,33 @@ def api_reports():
     return jsonify(reports)
 
 
+@app.route("/api/org-scope-view")
+def api_org_scope_view():
+    """Frontend-facing view of the current session's resolved org scope,
+    optionally narrowed via `?narrow=1&org_ids=...` (U1's multi-org
+    selector). Distinct from the backend's own GET /api/org-scope (which
+    this proxies via _get_org_scope) — this is what report.html's JS polls
+    on every checkbox change, both for U1's re-filtering and for U3's
+    "also used by" note (the `other_owners` field), since narrowing the
+    org selection changes both.
+
+    Admin sessions get the empty scope shape rather than a real call —
+    meaningless for them, and matches every other org-scope code path in
+    this file: admins never hit the backend's /api/org-scope at all.
+    """
+    if session.get("access_scope") != SCOPE_ORG:
+        return jsonify(dict(_EMPTY_ORG_SCOPE))
+    scope = _get_org_scope(_org_ids_override())
+    if scope is None:
+        return jsonify({"error": "Backend unavailable"}), 503
+    return jsonify(scope)
+
+
 @app.route("/api/reports/<filename>")
 def api_report_detail(filename):
     """API endpoint to get report content"""
-    report_data = load_report(filename)
+    org_scope = _get_org_scope(_org_ids_override()) if session.get("access_scope") == SCOPE_ORG else None
+    report_data = load_report(filename, org_scope=org_scope)
     if report_data is None:
         return jsonify({"error": "Report not found"}), 404
     return jsonify(report_data)
@@ -366,7 +475,9 @@ def api_report_detail(filename):
 @app.route("/reports/<filename>")
 def view_report(filename):
     """View a specific report"""
-    report_data = load_report(filename)
+    is_org_scoped_session = session.get("access_scope") == SCOPE_ORG
+    org_scope = _get_org_scope(_org_ids_override()) if is_org_scoped_session else None
+    report_data = load_report(filename, org_scope=org_scope)
     if report_data is None:
         return "Report not found", 404
 
@@ -388,11 +499,13 @@ def view_report(filename):
         report_type = "final_report"
 
     domino_url = DOMINO_URL.rstrip("/") if DOMINO_URL else ""
+    other_owners = (org_scope or {}).get("other_owners", {})
     return render_template(
         "report.html",
         filename=filename,
         report_type=report_type,
         report_data=json.dumps(report_data, indent=2),
+        other_owners=json.dumps(other_owners),
         domino_url=domino_url,
     )
 
