@@ -125,6 +125,68 @@ class TestDeletionWorkflows:
             assert report["summary"]["unused_images"] == 2
             assert report["summary"]["used_images"] == 2
 
+    # ── standardized entries/summary fields ─────────────────────────────
+    # Additive alongside unused_images/used_images — see
+    # docs/report-schema-standardization-plan.md.
+
+    def _analysis_with_one_used_and_one_unused(self):
+        return WorkloadAnalysis(
+            used_images={"tag1"},
+            unused_images={"tag2"},
+            total_size_saved=100,
+            image_usage_stats={
+                "tag1": {"size": 300, "status": "used", "usage": {}},
+                "tag2": {"size": 200, "status": "unused", "usage": {}},
+            },
+        )
+
+    def test_entries_merges_used_and_unused_lists(self, deleter):
+        with patch("scripts.delete_image.save_json") as mock_save:
+            deleter.generate_deletion_report(self._analysis_with_one_used_and_one_unused(), "test-report.json")
+            report = mock_save.call_args[0][1]
+
+        assert len(report["entries"]) == 2
+        assert {e["tag"] for e in report["entries"]} == {"tag1", "tag2"}
+
+    def test_entries_status_field_distinguishes_used_from_unused(self, deleter):
+        with patch("scripts.delete_image.save_json") as mock_save:
+            deleter.generate_deletion_report(self._analysis_with_one_used_and_one_unused(), "test-report.json")
+            report = mock_save.call_args[0][1]
+
+        by_tag = {e["tag"]: e for e in report["entries"]}
+        assert by_tag["tag1"]["status"] == "used"
+        assert by_tag["tag2"]["status"] == "unused"
+
+    def test_schema_version_present(self, deleter):
+        from utils.report_utils import REPORT_SCHEMA_VERSION
+
+        with patch("scripts.delete_image.save_json") as mock_save:
+            deleter.generate_deletion_report(self._analysis_with_one_used_and_one_unused(), "test-report.json")
+            report = mock_save.call_args[0][1]
+
+        assert report["schema_version"] == REPORT_SCHEMA_VERSION
+
+    def test_standardized_summary_alongside_legacy_total_size_saved(self, deleter):
+        """No rename needed here: total_size_saved (dedup-aware) has a
+        different name from the standardized total_size_bytes (naive sum),
+        so both coexist without collision."""
+        with patch("scripts.delete_image.save_json") as mock_save:
+            deleter.generate_deletion_report(self._analysis_with_one_used_and_one_unused(), "test-report.json")
+            report = mock_save.call_args[0][1]
+
+        assert report["summary"]["count"] == 2
+        assert report["summary"]["total_size_bytes"] == 500  # naive sum: 300 + 200
+        assert report["summary"]["total_size_saved"] == 100  # legacy, dedup-aware, untouched
+
+    def test_empty_analysis_has_valid_standard_fields(self, deleter):
+        analysis = WorkloadAnalysis(used_images=set(), unused_images=set(), total_size_saved=0, image_usage_stats={})
+        with patch("scripts.delete_image.save_json") as mock_save:
+            deleter.generate_deletion_report(analysis, "test-report.json")
+            report = mock_save.call_args[0][1]
+
+        assert report["entries"] == []
+        assert report["summary"]["count"] == 0
+
     def test_usage_summary_generation(self, deleter):
         """Test usage summary generation"""
         usage = {"runs_count": 5, "workspaces_count": 2, "models_count": 1, "scheduler_jobs": [], "projects": []}

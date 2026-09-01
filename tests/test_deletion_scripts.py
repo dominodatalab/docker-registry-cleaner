@@ -415,6 +415,77 @@ class TestArchivedTagsFinder:
         assert id_to_type[str(model_id)] == "model"
         assert id_to_type[str(version_id)] == "version"
 
+    # ── generate_report()'s standardized entries/summary fields ────────────
+    # Additive alongside the legacy shape — see
+    # docs/report-schema-standardization-plan.md.
+
+    def _finder_for_report_tests(self, mocker, mock_archived_tags_deps):
+        from scripts.delete_archived_tags import ArchivedTagsFinder
+
+        mock_service_cls = mocker.patch("scripts.delete_archived_tags.ImageUsageService")
+        mock_service_cls.return_value.load_mongodb_usage_reports.return_value = {}
+        mock_service_cls.return_value.extract_docker_tags_with_usage_info.return_value = ({}, {})
+        return ArchivedTagsFinder(registry_url="registry:5000", repository="repo", process_environments=True)
+
+    def test_entries_mirrors_archived_tags(self, mocker, mock_archived_tags_deps):
+        from scripts.delete_archived_tags import ArchivedTagInfo
+
+        finder = self._finder_for_report_tests(mocker, mock_archived_tags_deps)
+        tag = ArchivedTagInfo(
+            object_id="507f1f77bcf86cd799439011",
+            image_type="environment",
+            tag="507f1f77bcf86cd799439011-1",
+            full_image="registry:5000/repo/environment:507f1f77bcf86cd799439011-1",
+            size_bytes=100,
+        )
+        report = finder.generate_report(
+            archived_ids=["507f1f77bcf86cd799439011"],
+            archived_tags=[tag],
+            id_to_type_map={"507f1f77bcf86cd799439011": "environment"},
+        )
+
+        assert report["entries"] == report["archived_tags"]
+        assert report["entries"][0]["tag"] == "507f1f77bcf86cd799439011-1"
+
+    def test_schema_version_present(self, mocker, mock_archived_tags_deps):
+        from utils.report_utils import REPORT_SCHEMA_VERSION
+
+        finder = self._finder_for_report_tests(mocker, mock_archived_tags_deps)
+        report = finder.generate_report(archived_ids=[], archived_tags=[], id_to_type_map={})
+        assert report["schema_version"] == REPORT_SCHEMA_VERSION
+
+    def test_standardized_summary_fields_alongside_legacy_ones(self, mocker, mock_archived_tags_deps):
+        from scripts.delete_archived_tags import ArchivedTagInfo
+
+        finder = self._finder_for_report_tests(mocker, mock_archived_tags_deps)
+        tags = [
+            ArchivedTagInfo(
+                object_id="a1", image_type="environment", tag="a1-1", full_image="img:a1-1", size_bytes=100
+            ),
+            ArchivedTagInfo(
+                object_id="a2", image_type="environment", tag="a2-1", full_image="img:a2-1", size_bytes=200
+            ),
+        ]
+        report = finder.generate_report(
+            archived_ids=["a1", "a2"],
+            archived_tags=tags,
+            id_to_type_map={"a1": "environment", "a2": "environment"},
+        )
+
+        # New, standardized fields.
+        assert report["summary"]["count"] == 2
+        assert report["summary"]["total_size_bytes"] == 300
+        # Legacy fields untouched alongside them.
+        assert report["summary"]["total_archived_object_ids"] == 2
+        assert report["summary"]["total_matching_tags"] == 2
+
+    def test_empty_report_has_valid_standard_fields(self, mocker, mock_archived_tags_deps):
+        finder = self._finder_for_report_tests(mocker, mock_archived_tags_deps)
+        report = finder.generate_report(archived_ids=[], archived_tags=[], id_to_type_map={})
+        assert report["entries"] == []
+        assert report["summary"]["count"] == 0
+        assert report["summary"]["total_size_bytes"] == 0
+
 
 # ============================================================================
 # Tests: Filter cloned dependencies

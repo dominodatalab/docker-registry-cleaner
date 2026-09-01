@@ -9,7 +9,43 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
-from utils.report_utils import save_json, save_table_and_json
+from utils.report_utils import REPORT_SCHEMA_VERSION, build_standard_summary, save_json, save_table_and_json
+
+
+class TestBuildStandardSummary:
+    """docs/report-schema-standardization-plan.md — the standardized
+    summary block every report gains alongside its legacy fields."""
+
+    def test_count_and_size_totals(self):
+        entries = [{"size_bytes": 100}, {"size_bytes": 200}, {"size_bytes": 300}]
+        summary = build_standard_summary(entries)
+        assert summary["count"] == 3
+        assert summary["total_size_bytes"] == 600
+        assert summary["total_size_gb"] == round(600 / (1024**3), 2)
+
+    def test_empty_entries(self):
+        summary = build_standard_summary([])
+        assert summary == {"count": 0, "total_size_bytes": 0, "total_size_gb": 0.0}
+
+    def test_missing_size_bytes_treated_as_zero(self):
+        summary = build_standard_summary([{"tag": "a"}, {"tag": "b", "size_bytes": 50}])
+        assert summary["count"] == 2
+        assert summary["total_size_bytes"] == 50
+
+    def test_extra_fields_merged_in(self):
+        summary = build_standard_summary([{"size_bytes": 10}], extra={"tags_by_image_type": {"environment": 1}})
+        assert summary["count"] == 1
+        assert summary["tags_by_image_type"] == {"environment": 1}
+
+    def test_extra_cannot_be_overridden_by_standard_fields_silently(self):
+        # extra is merged in *after* the standard fields, so an extra key
+        # sharing a standard field's name wins — documenting that behavior
+        # rather than leaving it as an untested surprise.
+        summary = build_standard_summary([{"size_bytes": 10}], extra={"count": 999})
+        assert summary["count"] == 999
+
+    def test_schema_version_constant_exists(self):
+        assert isinstance(REPORT_SCHEMA_VERSION, int)
 
 
 class TestSaveJson:

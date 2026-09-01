@@ -39,7 +39,7 @@ from utils.image_metadata import extract_model_tag_from_version_doc, lookup_user
 from utils.image_usage import ImageUsageService
 from utils.logging_utils import get_logger, setup_logging
 from utils.object_id_utils import normalize_object_id
-from utils.report_utils import ensure_all_reports, save_json, sizeof_fmt
+from utils.report_utils import REPORT_SCHEMA_VERSION, build_standard_summary, ensure_all_reports, save_json, sizeof_fmt
 
 logger = get_logger(__name__)
 
@@ -573,7 +573,25 @@ def generate_user_size_report(
     total_size = sum(u["total_size_bytes"] for u in users_list)
     total_freed = sum(u["freed_space_bytes"] for u in users_list)
 
+    # `entries`/`schema_version`/the standardized summary fields below are
+    # additive — see docs/report-schema-standardization-plan.md. Unlike every
+    # other report, this one nests a list per user rather than being a flat
+    # tag-bearing list itself — `entries` flattens that nesting, pushing
+    # `user_id`/`user_name`/`login_id` onto each image (added directly onto
+    # the same dicts `users[].images` already holds, so both structures stay
+    # in sync) and aliasing `total_size_bytes` as `size_bytes`, the
+    # standardized per-entry field name every report's entries use.
+    entries = []
+    for stats in users_list:
+        for image in stats["images"]:
+            image["size_bytes"] = image["total_size_bytes"]
+            image["user_id"] = stats["user_id"]
+            image["user_name"] = stats["user_name"]
+            image["login_id"] = stats["login_id"]
+            entries.append(image)
+
     report_data = {
+        "schema_version": REPORT_SCHEMA_VERSION,
         "summary": {
             "total_users": len(users_list),
             "total_images": sum(u["image_count"] for u in users_list),
@@ -583,8 +601,13 @@ def generate_user_size_report(
             "total_freed_if_all_deleted_gb": round(total_freed / (1024**3), 2),
             "image_types": image_types,
             "generated_at": datetime.now().isoformat(),
+            # No collision to resolve: this report's existing total_size_bytes
+            # already means the same naive per-image sum the standardized
+            # `count`/`total_size_bytes`/`total_size_gb` below define.
+            **build_standard_summary(entries),
         },
         "users": users_list,
+        "entries": entries,
     }
 
     return report_data

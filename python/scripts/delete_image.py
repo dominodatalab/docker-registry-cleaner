@@ -65,7 +65,14 @@ from utils.image_data_analysis import ImageAnalyzer
 from utils.image_usage import ImageUsageService
 from utils.logging_utils import get_logger, setup_logging
 from utils.object_id_utils import normalize_object_id, read_typed_object_ids_from_file
-from utils.report_utils import ensure_image_analysis_reports, ensure_mongodb_reports, save_json, sizeof_fmt
+from utils.report_utils import (
+    REPORT_SCHEMA_VERSION,
+    build_standard_summary,
+    ensure_image_analysis_reports,
+    ensure_mongodb_reports,
+    save_json,
+    sizeof_fmt,
+)
 
 
 @dataclass
@@ -1143,6 +1150,18 @@ class IntelligentImageDeleter(BaseDeletionScript):
                     "why_cannot_delete": self._generate_usage_summary(usage),
                 }
                 report["used_images"].append(used_entry)
+
+        # `entries`/`schema_version`/the standardized summary fields below are
+        # additive — see docs/report-schema-standardization-plan.md. Unlike
+        # every other report, this one splits what's really one list across
+        # two top-level keys (`unused_images`/`used_images`) — `entries`
+        # merges them back into one list, distinguished by the `status` field
+        # each entry already carries ("unused"/"used"), the same pattern
+        # archived-tags.json already uses for the same distinction.
+        entries = report["unused_images"] + report["used_images"]
+        report["schema_version"] = REPORT_SCHEMA_VERSION
+        report["entries"] = entries
+        report["summary"].update(build_standard_summary(entries))
 
         try:
             saved_path = save_json(output_file, report, timestamp=True)
