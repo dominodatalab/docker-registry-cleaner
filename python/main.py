@@ -498,7 +498,14 @@ Safety Notes:
             args.additional_args.append("--force")
         if args.script_keyword == "delete_image" and args.file and "--file" not in args.additional_args:
             args.additional_args.extend(["--file", args.file])
-        if args.generate_reports and "--generate-reports" not in args.additional_args:
+        # migrate_registry has no --generate-reports flag (it always writes its own
+        # migration report) — forwarding this would crash its argparse with
+        # "unrecognized arguments", so it's gated to delete_image only.
+        if (
+            args.script_keyword == "delete_image"
+            and args.generate_reports
+            and "--generate-reports" not in args.additional_args
+        ):
             args.additional_args.append("--generate-reports")
 
         if args.apply or "--apply" in args.additional_args:

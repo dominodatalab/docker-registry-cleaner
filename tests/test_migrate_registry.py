@@ -45,6 +45,10 @@ class TestCopyImage:
         mock_config.get_retry_exponential_base.return_value = 2.0
         mock_config.get_retry_jitter.return_value = False
         mock_config.get_retry_timeout.return_value = 300
+        # SkopeoClient.__init__ reads config_manager.auth_file (a plain attribute, not
+        # a method) and exports it as REGISTRY_AUTH_FILE during construction — a real
+        # string is required or that os.environ[...] assignment raises TypeError.
+        mock_config.auth_file = "/tmp/output/.registry-auth.json"
 
         with patch("utils.skopeo_client.get_credentials_from_k8s_secret", return_value=("user", "pass")):
             with patch.object(SkopeoClient, "_ensure_logged_in"):
@@ -419,8 +423,16 @@ class TestUnarchivedFilter:
                 )
                 return m
 
-    def _make_mock_db(self, env_docs, env_revision_docs, model_docs, model_version_docs):
-        """Helper to build a mock MongoDB database with the given documents."""
+    def _make_mock_db(self, env_docs, env_revision_docs, model_docs, model_version_ids):
+        """Helper to build a mock MongoDB database with the given documents.
+
+        model_version_ids is just what model_versions.find({...}, {"_id": 1}) returns
+        (e.g. [{"_id": "mv-1"}]) — actual tag resolution goes through
+        ImageUsageService.collect_model_version_slugs(), mocked separately per test
+        via _mock_slugs, not read off these documents directly (see
+        docs/migrate_registry.md's note on why: a model version can have failed
+        build attempts, and only collect_model_version_slugs() knows how to exclude
+        them)."""
         mock_client = MagicMock()
         mock_db = MagicMock()
         mock_client.__getitem__ = MagicMock(return_value=mock_db)
@@ -435,7 +447,7 @@ class TestUnarchivedFilter:
         mock_models.find.return_value = model_docs
 
         mock_versions = MagicMock()
-        mock_versions.find.return_value = model_version_docs
+        mock_versions.find.return_value = model_version_ids
 
         mock_db.__getitem__ = MagicMock(
             side_effect=lambda name: {
@@ -457,23 +469,18 @@ class TestUnarchivedFilter:
                 {"metadata": {"dockerImageName": {"tag": "tag-env-b"}}},
             ],
             model_docs=[{"_id": "model-1"}],
-            model_version_docs=[
-                {
-                    "metadata": {
-                        "builds": [
-                            {"slug": {"image": {"tag": "tag-model-a"}}},
-                        ]
-                    }
-                },
-            ],
+            model_version_ids=[{"_id": "mv-1"}],
         )
 
         with patch("scripts.migrate_registry.get_mongo_client", return_value=mock_client):
             with patch("scripts.migrate_registry.config_manager") as mock_config:
                 mock_config.get_mongo_db.return_value = "domino"
-                tags = migrator.get_unarchived_tags()
+                with patch("scripts.migrate_registry.ImageUsageService") as MockService:
+                    MockService.return_value.collect_model_version_slugs.return_value = {"mv-1": "tag-model-a"}
+                    tags = migrator.get_unarchived_tags()
 
         assert tags == {"tag-env-a", "tag-env-b", "tag-model-a"}
+        MockService.return_value.collect_model_version_slugs.assert_called_once_with(["mv-1"])
 
     def test_get_unarchived_tags_empty_when_no_records(self, migrator):
         """Test that get_unarchived_tags returns empty set when nothing exists"""
@@ -481,7 +488,7 @@ class TestUnarchivedFilter:
             env_docs=[],
             env_revision_docs=[],
             model_docs=[],
-            model_version_docs=[],
+            model_version_ids=[],
         )
 
         with patch("scripts.migrate_registry.get_mongo_client", return_value=mock_client):
@@ -491,30 +498,27 @@ class TestUnarchivedFilter:
 
         assert tags == set()
 
-    def test_get_unarchived_tags_handles_multiple_builds(self, migrator):
-        """Test that model versions with multiple builds have all tags collected"""
+    def test_get_unarchived_tags_excludes_versions_with_no_non_failed_build(self, migrator):
+        """Model versions where every build failed (or that have none) contribute
+        no tag — collect_model_version_slugs() omits them from its result dict
+        entirely rather than mapping them to None, and get_unarchived_tags must
+        not choke on, or otherwise surface, a missing entry."""
         mock_client = self._make_mock_db(
             env_docs=[],
             env_revision_docs=[],
             model_docs=[{"_id": "model-1"}],
-            model_version_docs=[
-                {
-                    "metadata": {
-                        "builds": [
-                            {"slug": {"image": {"tag": "build-tag-1"}}},
-                            {"slug": {"image": {"tag": "build-tag-2"}}},
-                        ]
-                    }
-                },
-            ],
+            model_version_ids=[{"_id": "mv-1"}, {"_id": "mv-2"}],
         )
 
         with patch("scripts.migrate_registry.get_mongo_client", return_value=mock_client):
             with patch("scripts.migrate_registry.config_manager") as mock_config:
                 mock_config.get_mongo_db.return_value = "domino"
-                tags = migrator.get_unarchived_tags()
+                with patch("scripts.migrate_registry.ImageUsageService") as MockService:
+                    # mv-1: all builds failed, so it's absent entirely; mv-2: succeeded.
+                    MockService.return_value.collect_model_version_slugs.return_value = {"mv-2": "build-tag-2"}
+                    tags = migrator.get_unarchived_tags()
 
-        assert tags == {"build-tag-1", "build-tag-2"}
+        assert tags == {"build-tag-2"}
 
     def test_filter_to_unarchived_keeps_matching_tags(self, migrator):
         """Test that filter_to_unarchived keeps only tags in the unarchived set"""
@@ -580,8 +584,12 @@ class TestArchivedFilter:
                 )
                 return m
 
-    def _make_mock_db(self, env_docs, env_revision_docs, model_docs, model_version_docs):
-        """Helper to build a mock MongoDB database with the given documents."""
+    def _make_mock_db(self, env_docs, env_revision_docs, model_docs, model_version_ids):
+        """Helper to build a mock MongoDB database with the given documents.
+
+        model_version_ids is just what model_versions.find({...}, {"_id": 1}) returns
+        (e.g. [{"_id": "mv-1"}]) — actual tag resolution goes through
+        ImageUsageService.collect_model_version_slugs(), mocked separately per test."""
         mock_client = MagicMock()
         mock_db = MagicMock()
         mock_client.__getitem__ = MagicMock(return_value=mock_db)
@@ -596,7 +604,7 @@ class TestArchivedFilter:
         mock_models.find.return_value = model_docs
 
         mock_versions = MagicMock()
-        mock_versions.find.return_value = model_version_docs
+        mock_versions.find.return_value = model_version_ids
 
         mock_db.__getitem__ = MagicMock(
             side_effect=lambda name: {
@@ -617,23 +625,20 @@ class TestArchivedFilter:
                 {"metadata": {"dockerImageName": {"tag": "tag-archived-env"}}},
             ],
             model_docs=[{"_id": "model-archived-1"}],
-            model_version_docs=[
-                {
-                    "metadata": {
-                        "builds": [
-                            {"slug": {"image": {"tag": "tag-archived-model"}}},
-                        ]
-                    }
-                },
-            ],
+            model_version_ids=[{"_id": "mv-archived-1"}],
         )
 
         with patch("scripts.migrate_registry.get_mongo_client", return_value=mock_client):
             with patch("scripts.migrate_registry.config_manager") as mock_config:
                 mock_config.get_mongo_db.return_value = "domino"
-                tags = migrator.get_archived_tags()
+                with patch("scripts.migrate_registry.ImageUsageService") as MockService:
+                    MockService.return_value.collect_model_version_slugs.return_value = {
+                        "mv-archived-1": "tag-archived-model"
+                    }
+                    tags = migrator.get_archived_tags()
 
         assert tags == {"tag-archived-env", "tag-archived-model"}
+        MockService.return_value.collect_model_version_slugs.assert_called_once_with(["mv-archived-1"])
 
         # Verify the MongoDB query used isArchived: True
         mock_db = mock_client.__getitem__.return_value
@@ -646,7 +651,7 @@ class TestArchivedFilter:
             env_docs=[],
             env_revision_docs=[],
             model_docs=[],
-            model_version_docs=[],
+            model_version_ids=[],
         )
 
         with patch("scripts.migrate_registry.get_mongo_client", return_value=mock_client):

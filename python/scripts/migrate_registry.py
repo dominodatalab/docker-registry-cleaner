@@ -48,8 +48,9 @@ if str(_parent_dir) not in sys.path:
 
 from utils.config_manager import config_manager
 from utils.deletion_base import BaseDeletionScript
+from utils.image_usage import ImageUsageService
 from utils.logging_utils import get_logger, setup_logging
-from utils.mongo_utils import get_mongo_client
+from utils.mongo_utils import get_db, get_mongo_client
 from utils.report_utils import save_json
 
 logger = get_logger(__name__)
@@ -153,9 +154,13 @@ class RegistryMigrator(BaseDeletionScript):
         tags = set()
 
         try:
-            db = mongo_client[config_manager.get_mongo_db()]
+            db = get_db(mongo_client)
 
-            # 1. Environments -> their revisions -> Docker tags
+            # 1. Environments -> their revisions -> Docker tags.
+            # "metadata.isBuilt": {"$ne": False} excludes revisions that never
+            # finished building (and so have no real image in the registry) —
+            # same filter org_scope.py's owned_environment_tags() applies, for
+            # the same reason.
             env_collection = db["environments_v2"]
             env_ids = [doc["_id"] for doc in env_collection.find(env_query, {"_id": 1})]
             if env_ids:
@@ -164,6 +169,7 @@ class RegistryMigrator(BaseDeletionScript):
                     {
                         "environmentId": {"$in": env_ids},
                         "metadata.dockerImageName.tag": {"$exists": True, "$ne": None},
+                        "metadata.isBuilt": {"$ne": False},
                     },
                     {"metadata.dockerImageName.tag": 1},
                 ):
@@ -173,22 +179,25 @@ class RegistryMigrator(BaseDeletionScript):
 
             self.logger.info(f"  Found {len(tags)} environment tags from {len(env_ids)} {label} environments")
 
-            # 2. Models -> their versions -> Docker tags
+            # 2. Models -> their versions -> Docker tags.
+            # Resolved via ImageUsageService.collect_model_version_slugs() rather than
+            # reading metadata.builds[].slug.image.tag directly — a model version can
+            # have several build attempts, and only a non-"Failed" one (the method joins
+            # to the builds collection to check) corresponds to a real registry image;
+            # reading the raw field would collect every attempt's tag, failed ones
+            # included. Same reasoning, and the same helper, as org_scope.py uses for
+            # this exact join.
             model_collection = db["models"]
             model_ids = [doc["_id"] for doc in model_collection.find(model_query, {"_id": 1})]
             model_tag_count = 0
             if model_ids:
                 version_collection = db["model_versions"]
-                for doc in version_collection.find(
-                    {
-                        "modelId.value": {"$in": model_ids},
-                        "metadata.builds.slug.image.tag": {"$exists": True, "$ne": None},
-                    },
-                    {"metadata.builds.slug.image.tag": 1},
-                ):
-                    builds = doc.get("metadata", {}).get("builds", [])
-                    for build in builds:
-                        tag = build.get("slug", {}).get("image", {}).get("tag")
+                version_ids = [
+                    doc["_id"] for doc in version_collection.find({"modelId.value": {"$in": model_ids}}, {"_id": 1})
+                ]
+                if version_ids:
+                    slugs = ImageUsageService().collect_model_version_slugs([str(vid) for vid in version_ids])
+                    for tag in slugs.values():
                         if tag:
                             tags.add(tag)
                             model_tag_count += 1
@@ -315,7 +324,7 @@ class RegistryMigrator(BaseDeletionScript):
         results = {}
 
         try:
-            db = mongo_client[config_manager.get_mongo_db()]
+            db = get_db(mongo_client)
 
             # Define the collections and their repository field paths
             collection_updates = [
@@ -627,9 +636,11 @@ def main():
             dest_tls_verify=args.dest_tls_verify,
         )
 
-        # Health checks (MongoDB needed for --update-mongodb, --unarchived, or --archived)
-        needs_mongo = args.update_mongodb or args.unarchived or args.archived
-        if not migrator.run_health_checks(skip_optional=not needs_mongo):
+        # Health checks. Note: MongoDB connectivity is always a required check inside
+        # run_health_checks() — not something that can be conditionally skipped based
+        # on whether this particular run uses --update-mongodb/--unarchived/--archived
+        # (an earlier version of this code assumed otherwise; see docs/migrate_registry.md).
+        if not migrator.run_health_checks():
             logger.error("Health checks failed, aborting migration")
             sys.exit(1)
 
@@ -680,11 +691,13 @@ def main():
             if completed_repos:
                 logger.info(f"Skipping {len(completed_repos)} completed repos, " f"{len(remaining_repos)} remaining")
 
-            # Confirmation
+            # Confirmation (force=args.force lets confirm_deletion's own short-circuit
+            # handle --force, matching every other script's call convention — including
+            # its "Force mode enabled" log line, which the old wrap-in-an-if style skipped)
             remaining_tags = sum(len(tags) for tags in remaining_repos.values())
-            if not dry_run and not args.force:
+            if not dry_run:
                 if not migrator.confirm_deletion(
-                    remaining_tags, f"images across {len(remaining_repos)} repositories to copy"
+                    remaining_tags, f"images across {len(remaining_repos)} repositories to copy", force=args.force
                 ):
                     logger.info("Operation cancelled by user")
                     sys.exit(0)
