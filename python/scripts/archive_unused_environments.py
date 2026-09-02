@@ -131,7 +131,16 @@ def find_unused_environment_docs(
         finder.generate_required_reports()
 
     logger.info("Finding unused environments from metadata...")
-    unused_envs = finder.find_unused_environments()
+    # find_unused_environments() returns (unused_env_list, protected_env_list) — protected_env_list
+    # is Domino-shipped system environments excluded from unused_env_list, surfaced separately so
+    # they can be reported as "skipped, and here's why" (see its docstring in
+    # delete_unused_environments.py). Capturing only the first element here previously left
+    # unused_envs holding the whole 2-tuple, which crashed the very next line
+    # ({env.object_id: env for env in unused_envs} — iterating a 2-tuple hands `env` each of its
+    # two *list* elements, neither of which has an .object_id attribute).
+    unused_envs, protected_envs = finder.find_unused_environments()
+    if protected_envs:
+        logger.info(f"  {len(protected_envs)} Domino-shipped system environments were excluded (protected)")
     if not unused_envs:
         logger.info("No unused environments (or revisions) found by UnusedEnvironmentsFinder")
         return finder, []
