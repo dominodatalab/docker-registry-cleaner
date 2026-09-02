@@ -101,3 +101,21 @@ docker-registry-cleaner health_check
 ### Dry-Run Shows Different Numbers on Re-Run
 
 See [Understanding Report Numbers](backup-restore.md#understanding-report-numbers) for an explanation.
+
+### Frontend Unreachable on a Cluster Running Istio
+
+If the cluster enforces Istio mTLS in `STRICT` mode (mesh-wide or namespace-wide), a caller
+that isn't itself in the mesh — most commonly an ingress controller with no Istio sidecar —
+reaches the frontend in plaintext and gets rejected by the pod's Envoy sidecar. Symptoms in
+the `istio-proxy` container's logs:
+
+```
+"response_flags":"NR", "response_code_details":"filter_chain_not_found"
+```
+
+...and the client sees a connection reset (`unexpected EOF` or similar) rather than an HTTP
+response of any kind — the sidecar drops the connection before it reaches the frontend
+container at all.
+
+See the Helm chart's [Istio mTLS](../charts/docker-registry-cleaner/README.md#istio-mtls)
+section for the fix (`frontend.istio.peerAuthentication.enabled`).
