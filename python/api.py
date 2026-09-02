@@ -34,7 +34,17 @@ from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
 from pydantic import BaseModel
 from pymongo.errors import PyMongoError
 
-from utils.org_scope import resolve_org_scope
+# api.py is imported as the "python.api" submodule (uvicorn python.api:app), which
+# does not put its own directory on sys.path — only the project root is there. Every
+# utils/*.py and scripts/*.py module in this codebase imports its siblings with the
+# bare "from utils.xxx import ..." style below, which only resolves once python/
+# itself is on sys.path, so it's added here the same way every script under
+# python/scripts/ already does for itself.
+_python_dir = Path(__file__).parent.absolute()
+if str(_python_dir) not in sys.path:
+    sys.path.insert(0, str(_python_dir))
+
+from utils.org_scope import resolve_org_scope  # noqa: E402
 
 _API_KEY_HEADER: Optional[str] = Header(default=None)
 _ORG_ID_QUERY: List[str] = Query(default=[])

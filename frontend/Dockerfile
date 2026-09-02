@@ -23,6 +23,7 @@ ENV PATH="/frontend/venv/bin:${PATH}"
 
 # Copy application files (built from project root)
 COPY --chown=nonroot:nonroot frontend/app.py .
+COPY --chown=nonroot:nonroot frontend/report_scope.py .
 COPY --chown=nonroot:nonroot frontend/templates templates/
 
 USER nonroot:nonroot
