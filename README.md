@@ -84,6 +84,12 @@ docker-registry-cleaner delete_archived_tags --environment --apply --backup --s3
 | `mongo_cleanup` | Delete specific MongoDB records by tag or ObjectID, skipping any still referenced in Domino | [docs](docs/mongo_cleanup.md) |
 | `delete_image` | Delete a specific image or analyze/delete unused images from reports | [docs](docs/delete_image.md) |
 
+### Migration
+
+| Command | Description | Docs |
+|---------|-------------|------|
+| `migrate_registry` | Copy images to a different destination registry, with optional MongoDB metadata update | [docs](docs/migrate_registry.md) |
+
 ### Analysis
 
 | Command | Description | Docs |
