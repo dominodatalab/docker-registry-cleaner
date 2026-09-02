@@ -85,6 +85,21 @@ frontend:
     # Traffic is allowed from any pod in a namespace bearing this label.
     ingressNamespaceLabel:
       domino-platform: "true"
+  istio:
+    # Enable if your cluster runs Istio with mTLS set to STRICT (mesh-wide or
+    # namespace-wide) — a non-mesh caller (e.g. an ingress controller without
+    # an Istio sidecar) connecting to the frontend in plaintext gets rejected
+    # by the pod's Envoy sidecar with "filter_chain_not_found" / an EOF, since
+    # only an mTLS filter chain exists on that port. This creates a
+    # PeerAuthentication that relaxes enforcement to PERMISSIVE (accepts
+    # *either* mTLS or plaintext) for the frontend's port only — every other
+    # port (e.g. the backend's metrics port) keeps whatever mesh/namespace
+    # policy already governs it, unaffected. Off by default: most Domino
+    # deployments don't run Istio at all, and this chart can't detect
+    # whether the PeerAuthentication CRD is even installed on your cluster —
+    # enabling this when it isn't would fail the whole helm install/upgrade.
+    peerAuthentication:
+      enabled: false
 
 # ── StatefulSet pod configuration ──────────────────
 imagePullSecrets:

@@ -1,0 +1,26 @@
+{{- if and .Values.frontend.enabled .Values.frontend.istio.peerAuthentication.enabled }}
+# Relaxes Istio mTLS enforcement to PERMISSIVE for the frontend's port only —
+# see frontend.istio.peerAuthentication's comment in values.yaml for why this
+# exists. Every other port on this pod (e.g. the backend's metrics port) is
+# untouched and keeps inheriting whatever mesh/namespace PeerAuthentication
+# already governs it, since portLevelMtls only overrides the port listed here.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: {{ include "docker-registry-cleaner.fullname" . }}-frontend
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "docker-registry-cleaner.name" . }}-frontend
+    helm.sh/chart: {{ include "docker-registry-cleaner.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/component: frontend
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "docker-registry-cleaner.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  portLevelMtls:
+    {{ .Values.frontend.service.targetPort }}:
+      mode: PERMISSIVE
+{{- end }}

@@ -152,7 +152,36 @@ The following table lists the configurable parameters of the Docker Registry Cle
 | `frontend.networkPolicy.enabled` | Create a NetworkPolicy allowing ingress traffic | `true` |
 | `frontend.networkPolicy.ingressNamespaceLabel` | Namespace label identifying the nginx controller | `domino-platform: "true"` |
 | `frontend.networkPolicy.ingressPodLabels` | Optional additional pod labels to restrict ingress | `{}` |
+| `frontend.istio.peerAuthentication.enabled` | Create a PeerAuthentication relaxing Istio mTLS to PERMISSIVE for the frontend's port only | `false` |
 | `dominoUrl` | Public URL of the Domino deployment — used for report links and to derive the ingress hostname | `https://domino.example.com` |
+
+### Istio mTLS
+
+If your cluster runs Istio with mTLS set to `STRICT` (mesh-wide or namespace-wide), a caller
+that isn't itself in the mesh — most commonly an ingress controller with no Istio sidecar —
+connects to the frontend in plaintext, and the pod's Envoy sidecar rejects it outright
+(`filter_chain_not_found` in the sidecar logs, connection reset with an EOF on the client side),
+because only an mTLS filter chain exists for that port.
+
+Enable `frontend.istio.peerAuthentication.enabled` to create a `PeerAuthentication` that sets
+the frontend's port to `PERMISSIVE` (accepts *either* mTLS or plaintext) via Istio's
+per-port `portLevelMtls` — every other port on the pod (e.g. the backend's metrics port) is
+untouched and keeps inheriting whatever mesh/namespace policy already governs it.
+
+```yaml
+frontend:
+  istio:
+    peerAuthentication:
+      enabled: true
+```
+
+Off by default: most Domino deployments don't run Istio at all, and this chart has no way to
+detect whether the `PeerAuthentication` CRD is even installed on your cluster — enabling this
+when it isn't would fail the whole `helm install`/`upgrade`.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `frontend.istio.peerAuthentication.enabled` | Create the PeerAuthentication described above | `false` |
 
 ### Prometheus Metrics
 
